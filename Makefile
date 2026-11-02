@@ -8,13 +8,15 @@ GO ?= go
 RELEASE_DIR ?= studio/web/dist-release
 
 # The workspace joins the framework module (the root: facade, adapters,
-# thread, otel, obsdb, studio, runtime), the core module (the loop
+# thread, otel — and, until they move to weftbase, the platform's
+# obsdb, studio, runtime and exporter; make layering keeps the two
+# apart), the core module (the loop
 # alone; its only dependency is the OTel API) and the example modules
 # (ADR 0027), so build/test/vet/lint loop over the modules `go list -m`
 # reports from go.work.
 MODULES = $(shell $(GO) list -m -f '{{.Dir}}')
 
-.PHONY: build test vet fmt lint tidy generate vacuum live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress studio-build studio-bin studio-check studio-panel-asset devtools-npm devtools-vite-check mcp-check
+.PHONY: build test vet fmt lint layering tidy generate vacuum live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress studio-build studio-bin studio-check studio-panel-asset devtools-npm devtools-vite-check mcp-check
 
 build:
 	for m in $(MODULES); do (cd $$m && $(GO) build ./...) || exit 1; done
@@ -41,6 +43,14 @@ fmt:
 # bare shell (as apidiff does) and a golangci-lint already on PATH wins.
 lint:
 	for m in $(MODULES); do (cd $$m && PATH="$$PATH:$$(go env GOPATH)/bin" golangci-lint run) || exit 1; done
+
+# The layering guard (WEFTBASE-REPO-SPLIT.md §7): no framework package
+# — its tests included — imports a platform package (studio, obsdb,
+# runtime, scope, exporter, cmd/weft, the platform's internal packages
+# and examples). The platform imports the framework, never the
+# reverse. CI runs it.
+layering:
+	GO=$(GO) scripts/check-layering.sh
 
 tidy:
 	for m in $(MODULES); do (cd $$m && $(GO) mod tidy) || exit 1; done
