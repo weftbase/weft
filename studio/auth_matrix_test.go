@@ -14,6 +14,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -1849,7 +1850,7 @@ func TestSpansHideOverrideTools(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, tok), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, tok), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

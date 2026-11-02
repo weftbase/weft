@@ -3,10 +3,8 @@ package otel
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +34,7 @@ import (
 // says. The OTLP exporters read OTEL_EXPORTER_OTLP_ENDPOINT themselves
 // and take their TLS posture from its scheme; a bare host handed to
 // them (WithEndpoint) leaves that posture in force, so a sidecar
-// collector's http:// variable sent Studio's bearer token and content
+// collector's http:// variable sent a viewer's bearer token and content
 // in cleartext — NoEnv or not.
 func TestEnvEndpointDoesNotDowngradeTLS(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -64,7 +62,7 @@ func TestEnvEndpointDoesNotDowngradeTLS(t *testing.T) {
 
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Studio("https://"+ln.Addr().String(), "secret-token", Timeout(time.Second)),
+		OTLP("https://"+ln.Addr().String(), FirstParty(), bearer("secret-token"), Timeout(time.Second)),
 		Heartbeat(0),
 	)
 	if err != nil {
@@ -247,62 +245,60 @@ func openFilesUnder(t *testing.T, dir string) int {
 	return n
 }
 
-// Every Local destination's database closes at Shutdown, not only the
-// last one configured; and a Start that fails after opening one closes
-// it.
-func TestEveryLocalDBCloses(t *testing.T) {
-	dir := t.TempDir()
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(filepath.Join(dir, "a.db")),
-		Local(filepath.Join(dir, "b.db")),
-		Heartbeat(0),
-	)
+// Every Sink's exporters shut down at Shutdown, each once, not only the
+// last one configured; and a Start that fails after opening one shuts
+// it down.
+func TestEverySinkCloses(t *testing.T) {
+	a, b := newMemSink(), newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), a.option(), b.option(), Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if openFilesUnder(t, dir) == 0 {
-		t.Fatal("no open database files while running (test bug)")
+	if a.shutdowns() != 0 || b.shutdowns() != 0 {
+		t.Fatal("a Sink closed while running")
 	}
 	if err := p.Shutdown(testCtx(t)); err != nil {
 		t.Fatal(err)
 	}
-	if n := openFilesUnder(t, dir); n != 0 {
-		t.Errorf("%d database descriptors still open after Shutdown with two Local destinations", n)
+	if a.shutdowns() != 2 || b.shutdowns() != 2 {
+		t.Errorf("Sink exporter shutdowns = %d, %d; want 2 each", a.shutdowns(), b.shutdowns())
 	}
-
-	// The half-built path: a Local with neither signal opened its DB
-	// before failing.
-	dir2 := t.TempDir()
-	if _, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(filepath.Join(dir2, "c.db"), Signals(false, false))); err == nil {
+	// The half-built path: a Sink with neither signal opened its
+	// exporters before failing.
+	c := newMemSink()
+	if _, err := Start(testCtx(t), NoGlobal(), NoEnv(), c.option(Signals(false, false))); err == nil {
 		t.Fatal("a destination with neither signal built")
 	}
-	if n := openFilesUnder(t, dir2); n != 0 {
-		t.Errorf("%d database descriptors still open after a failed Start", n)
+	if c.opened != 1 || c.shutdowns() != 2 {
+		t.Errorf("failed Start: opened %d, shutdowns %d; want 1 and 2", c.opened, c.shutdowns())
+	}
+	// A failing opener fails the destination.
+	if _, err := Start(testCtx(t), NoGlobal(), NoEnv(), Sink("broken", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+		return nil, nil, errors.New("disk gone")
+	})); err == nil || !strings.Contains(err.Error(), "disk gone") {
+		t.Errorf("a failing opener: err = %v", err)
 	}
 }
 
-// The package accessors stop handing out a shut-down pipeline's closed
-// database and dead endpoint.
-func TestPackageAccessorsClearOnShutdown(t *testing.T) {
-	shutdown := Install(NoEnv(),
-		Local(filepath.Join(t.TempDir(), "acc.db")),
-		Studio("https://studio.invalid", "tok", Signals(true, false)),
-	)
-	if LocalDB() == nil {
+// Installed hands out the registered pipeline, and stops at its
+// Shutdown.
+func TestInstalledClearsOnShutdown(t *testing.T) {
+	shutdown := Install(NoEnv(), newMemSink().option())
+	if Installed() == nil {
 		shutdown()
-		t.Fatal("LocalDB() is nil while installed")
-	}
-	if u, tok := StudioEndpoint(); u != "https://studio.invalid" || tok != "tok" {
-		shutdown()
-		t.Fatalf("StudioEndpoint() = %q, %q while installed", u, tok)
+		t.Fatal("Installed() is nil while installed")
 	}
 	shutdown()
-	if db := LocalDB(); db != nil {
-		t.Error("LocalDB() still returns the closed database after shutdown")
+	if Installed() != nil {
+		t.Error("Installed() still returns the pipeline after shutdown")
 	}
-	if u, _ := StudioEndpoint(); u != "" {
-		t.Errorf("StudioEndpoint() = %q after shutdown", u)
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), newMemSink().option())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Shutdown(testCtx(t)) }()
+	if Installed() == p {
+		t.Error("a NoGlobal pipeline is Installed()")
 	}
 }
 
@@ -419,17 +415,17 @@ func TestDedupResolvedURL(t *testing.T) {
 }
 
 // Endpoints: a scheme-less URL is https (the env OTLP rule, for every
-// OTLP-family destination — WEFT_STUDIO_URL=studio.example:7331 used
-// to fail the build), anything but http(s) is refused instead of
+// OTLP-family destination — studio.example:7331 used to fail the
+// build), anything but http(s) is refused instead of
 // silently exported as https, and errors never echo credentials.
 func TestTransportEndpointForms(t *testing.T) {
-	d := mustDest(t, Studio("studio.example:7331", "tok"))
+	d := mustDest(t, OTLP("studio.example:7331", FirstParty(), bearer("tok")))
 	endpoint, _, _, insecure, err := transportOf(d)
 	if err != nil {
-		t.Fatalf("scheme-less Studio URL: %v", err)
+		t.Fatalf("scheme-less URL: %v", err)
 	}
 	if endpoint != "studio.example:7331" || insecure {
-		t.Errorf("scheme-less Studio URL resolved to %q (insecure=%v)", endpoint, insecure)
+		t.Errorf("scheme-less URL resolved to %q (insecure=%v)", endpoint, insecure)
 	}
 	if _, _, _, _, err := transportOf(mustDest(t, OTLP("grpc://collector:4317"))); err == nil {
 		t.Error("a grpc:// endpoint built as OTLP/HTTP")
@@ -440,17 +436,6 @@ func TestTransportEndpointForms(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "%!") {
 		t.Errorf("endpoint error leaks or is malformed: %v", err)
-	}
-	// The env Studio URL is normalized where it is read, so
-	// StudioEndpoint (what weft/runtime dials) carries the scheme too.
-	envD := envDestinations(func(k string) string {
-		if k == "WEFT_STUDIO_URL" {
-			return "studio.example:7331"
-		}
-		return ""
-	})
-	if len(envD) != 1 || envD[0].url != "https://studio.example:7331" {
-		t.Errorf("env Studio URL = %+v", envD)
 	}
 }
 
@@ -545,29 +530,6 @@ func TestExportersHonourBatchDelay(t *testing.T) {
 	}
 }
 
-// The Local path keeps the attribute types the OTLP path keeps (S3.3:
-// both make identical rows): bytes → base64, slices → []any, maps →
-// map[string]any. They were dropped here and stored by Studio ingest.
-func TestAttrValueStructuredTypes(t *testing.T) {
-	cases := []struct {
-		name string
-		in   attribute.Value
-		want any
-	}{
-		{"bytes", attribute.ByteSliceValue([]byte("hi")), "aGk="},
-		{"slice", attribute.SliceValue(attribute.StringValue("a"), attribute.Int64Value(2)), []any{"a", int64(2)}},
-		{"map", attribute.MapValue(attribute.String("k", "v"), attribute.Bool("b", true)),
-			map[string]any{"k": "v", "b": true}},
-		{"nested", attribute.MapValue(attribute.KeyValue{Key: "l", Value: attribute.SliceValue(attribute.Float64Value(1.5))}),
-			map[string]any{"l": []any{1.5}}},
-	}
-	for _, c := range cases {
-		if got := attrValue(c.in); !reflect.DeepEqual(got, c.want) {
-			t.Errorf("%s: attrValue = %#v, want %#v", c.name, got, c.want)
-		}
-	}
-}
-
 // weftVersion (the resource's weft.version) is the root module's
 // version. Root's constant is unexported, but every run_start record
 // carries it, so the pin reads it off the wire: when root's version
@@ -609,7 +571,7 @@ func TestWeftVersionMatchesRoot(t *testing.T) {
 // runs that finished. (-race is the assertion.)
 func TestConcurrentRunsAcrossShutdown(t *testing.T) {
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(filepath.Join(t.TempDir(), "race.db")),
+		newMemSink().option(),
 		Exporters(&spanCapture{}, newMemExporter(), WithContent(ContentConfig{
 			MaxBytes: 8,
 			Redact:   func(_ core.ContentKind, s string) string { return strings.ToUpper(s) },
@@ -680,19 +642,20 @@ func goroutineDump() string {
 
 // Shutdown is bounded by its context while a heartbeat is stuck in a
 // destination. The heartbeat goroutine emits one record per open run,
-// each through the Local sink's synchronous write, and Shutdown waited
+// each through a Sink's synchronous write, and Shutdown waited
 // for it with no bound: stopHeartbeat's <-p.beatDone ignored ctx, and
 // the pass ran to its end whatever stop said. With the database's write
-// lock held elsewhere (another process: Studio's delete, weft vacuum —
-// here a second connection), each heartbeat write waits out SQLite's
+// lock held elsewhere (another process: a viewer's delete, a vacuum —
+// here a Sink that blocks; weft/exporter's twin holds a real SQLite
+// lock), each heartbeat write waits out SQLite's
 // 30 s busy timeout, so `defer otel.Install()()` (a 5 s context) hung
 // for 30 s per open run; under concurrent runs on a slow disk the same
 // wait, a pass of open-runs × queued writes, is what blew the CI test
 // above's 20 s. Shutdown must return on its context, and a second
 // Shutdown returns the first's result.
 func TestShutdownBoundedWhileHeartbeatBlocked(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hb.db")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Local(path), Heartbeat(time.Millisecond))
+	sink := newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), sink.option(), Heartbeat(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,22 +689,11 @@ func TestShutdownBoundedWhileHeartbeatBlocked(t *testing.T) {
 		<-entered
 	}
 
-	// Another connection takes the database's write lock: every Local
-	// write now waits in SQLite's busy handler.
-	locker, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = locker.Close() }()
-	conn, err := locker.Conn(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+	// The store stops answering (a write lock held elsewhere, a hung
+	// disk): every Sink export now waits until the test ends.
+	stuck := make(chan struct{})
+	defer close(stuck)
+	sink.setBlock(stuck)
 
 	// Wait until the heartbeat goroutine is inside the Local chain's
 	// synchronous processor: blocked there until the lock goes.
@@ -822,12 +774,12 @@ type errorHandlerFunc func(error)
 
 func (f errorHandlerFunc) Handle(err error) { f(err) }
 
-// A failing local database does not flood the process's error output:
+// A failing Sink does not flood the process's error output:
 // every lost record is counted and the throttled WARN names the cause;
 // the write error is not also handed to OTel's global error handler —
 // one stderr line per record, per delta, for as long as the disk is
 // full.
-func TestLocalWriteFailureIsCountedNotFlooded(t *testing.T) {
+func TestSinkWriteFailureIsCountedNotFlooded(t *testing.T) {
 	buf := &threadSafeBuffer{}
 	prevLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
@@ -837,12 +789,12 @@ func TestLocalWriteFailureIsCountedNotFlooded(t *testing.T) {
 	otelapi.SetErrorHandler(errorHandlerFunc(func(error) { handled.Add(1) }))
 	defer otelapi.SetErrorHandler(prev)
 
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(filepath.Join(t.TempDir(), "gone.db")), Heartbeat(0))
+	sink := newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), sink.option(), Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = p.LocalDB().Close() // the sink fails from here on
+	sink.setFail(errors.New("database is closed")) // the sink fails from here on
 	agt := core.New(
 		wefttest.Script(wefttest.Say("x")),
 		core.TracerProvider(p.TracerProvider()),
@@ -856,8 +808,8 @@ func TestLocalWriteFailureIsCountedNotFlooded(t *testing.T) {
 		t.Errorf("%d write errors reached OTel's global error handler (one line each on stderr)", n)
 	}
 	out := buf.String()
-	if strings.Count(out, "destination dropped records") != 1 || !strings.Contains(out, "dest=local") {
-		t.Errorf("want exactly one throttled WARN for the local sink, got: %s", out)
+	if strings.Count(out, "destination dropped records") != 1 || !strings.Contains(out, "dest=mem") {
+		t.Errorf("want exactly one throttled WARN for the sink, got: %s", out)
 	}
 	if !strings.Contains(out, "err=") {
 		t.Errorf("the WARN does not name the cause: %s", out)
@@ -865,10 +817,10 @@ func TestLocalWriteFailureIsCountedNotFlooded(t *testing.T) {
 }
 
 // The clone rule with every shaping at once: a redacting, capping
-// content-on chain and a content-off chain beside the Local sink — no
-// chain sees another's edits.
+// content-on chain and a content-off chain beside a Sink — no chain
+// sees another's edits.
 func TestCloneRuleAcrossShapingChains(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "clone.db")
+	sink := newMemSink()
 	shaped, stripped := newMemExporter(), newMemExporter()
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0),
 		Exporters(nil, shaped, WithContent(ContentConfig{
@@ -876,12 +828,12 @@ func TestCloneRuleAcrossShapingChains(t *testing.T) {
 			Redact:   func(_ core.ContentKind, s string) string { return strings.ToUpper(s) },
 		})),
 		Exporters(nil, stripped, NoContent()),
-		Local(path),
+		sink.option(),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, runID := agentThrough(t, p)
+	_, _ = agentThrough(t, p)
 	if err := p.Shutdown(testCtx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -915,25 +867,8 @@ func TestCloneRuleAcrossShapingChains(t *testing.T) {
 	if got, r := toolFinish(stripped.snapshot()); got != "" || attrOf(r, "weft.content") != "stripped" {
 		t.Errorf("stripped chain content = %q (weft.content=%q)", got, attrOf(r, "weft.content"))
 	}
-	db, err := sqliteOpen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	page, err := db.Events(context.Background(), runID, -1, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var local string
-	for _, e := range page.Events {
-		if ev, err := core.UnmarshalEvent(e.Event); err == nil {
-			if tf, ok := ev.(core.ToolFinish); ok {
-				local = tf.Content
-			}
-		}
-	}
-	if local != "done:one" {
-		t.Errorf("Local stored %q: another chain's edit leaked into it (want the original)", local)
+	if local, _ := toolFinish(sink.records()); local != "done:one" {
+		t.Errorf("the Sink received %q: another chain's edit leaked into it (want the original)", local)
 	}
 }
 
@@ -960,8 +895,8 @@ func TestShapeStringRuneBoundary(t *testing.T) {
 }
 
 // OTEL_EXPORTER_OTLP_HEADERS belongs to the env OTLP destination: the
-// exporters read the variable themselves, and it must not ride on
-// Studio's (or any other destination's) requests.
+// exporters read the variable themselves, and it must not ride on any
+// other destination's requests.
 func TestEnvHeadersStayOffOtherDestinations(t *testing.T) {
 	var mu sync.Mutex
 	var leaked []string
@@ -974,7 +909,7 @@ func TestEnvHeadersStayOffOtherDestinations(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-collector-key=secret")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Studio(srv.URL, "tok"), Heartbeat(0))
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), OTLP(srv.URL, FirstParty(), bearer("tok")), Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -992,33 +927,7 @@ func TestEnvHeadersStayOffOtherDestinations(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(leaked) != 0 {
-		t.Errorf("the environment's OTLP headers rode on Studio's requests: %v", leaked)
-	}
-}
-
-// A non-string body (a stock bridge's structured record) renders as
-// JSON through the attribute mapping — what obsdb.FromOTLPLogs stores
-// for the same body — not as "".
-func TestBodyStringStructuredBodies(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		in   attribute.Value
-		want string
-	}{
-		{"string", attribute.StringValue(`{"type":"run_start"}`), `{"type":"run_start"}`},
-		{"empty", attribute.Value{}, ""},
-		{"int", attribute.Int64Value(7), "7"},
-		{"bool", attribute.BoolValue(true), "true"},
-		{"double", attribute.Float64Value(1.5), "1.5"},
-		{"bytes", attribute.ByteSliceValue([]byte("hi")), "aGk="},
-		{"map", attribute.MapValue(attribute.String("msg", "hello"), attribute.Int64("n", 2)), `{"msg":"hello","n":2}`},
-		{"slice", attribute.SliceValue(attribute.StringValue("a"), attribute.BoolValue(false)), `["a",false]`},
-		{"strings", attribute.StringSliceValue([]string{"a", "b"}), `["a","b"]`},
-		{"nan", attribute.Float64Value(math.NaN()), "NaN"},
-	} {
-		if got := bodyString(c.in); got != c.want {
-			t.Errorf("%s: bodyString = %q, want %q", c.name, got, c.want)
-		}
+		t.Errorf("the environment's OTLP headers rode on another destination's requests: %v", leaked)
 	}
 }
 

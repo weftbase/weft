@@ -1,4 +1,4 @@
-package otel
+package exporter
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/otel"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -45,9 +46,9 @@ func TestStudioTransportEndToEnd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
+	p, err := Start(testCtx(t), otel.NoGlobal(), otel.NoEnv(),
 		Studio(srv.URL, "studio-token"),
-		Heartbeat(0), // the tracker's records are not this test's subject
+		otel.Heartbeat(0), // the tracker's records are not this test's subject
 	)
 	if err != nil {
 		t.Fatal(err)

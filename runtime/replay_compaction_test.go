@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
@@ -128,7 +129,7 @@ func stepMessagesJSON(t *testing.T, db obsdb.DB, runID string, step int) (string
 // the local obsdb and Studio's transcript route with ?step=.
 func TestReplayAcrossCompactionReproducesTheModelsInput(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestReplayAcrossCompactionReproducesTheModelsInput(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	source := model.take() // the source's four requests, as the model saw them
 	if len(source) != 4 {
 		t.Fatalf("the source made %d model calls, want 4", len(source))
@@ -320,7 +321,7 @@ func TestReplayAcrossCompactionReproducesTheModelsInput(t *testing.T) {
 // (side_effects park leaves it pending for a human instead).
 func TestReplayChildRunAsItsOwnRun(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +353,7 @@ func TestReplayChildRunAsItsOwnRun(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	det, err := db.Run(ctx, "r_parent")
 	if err != nil || len(det.Children) != 1 {
 		t.Fatalf("parent = %+v %v, want one child", det, err)
@@ -465,7 +466,7 @@ func (f modelFunc) Stream(_ context.Context, req core.ModelRequest) iter.Seq2[co
 // own messages, as it did before ADR 0029; it is never refused.
 func TestThreadSourceWithContentOffRecords(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db"), otel.NoContent()), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db"), otel.NoContent()), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +490,7 @@ func TestThreadSourceWithContentOffRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	saw := model.take()
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	if _, err := obsdb.MessagesAsOf(ctx, db, turn.RunID(), 1); !errors.Is(err, obsdb.ErrStepMessages) {
 		t.Fatalf("the content-off records answer step 1 with %v, want ErrStepMessages", err)
 	}
@@ -530,7 +531,7 @@ func TestThreadSourceWithContentOffRecords(t *testing.T) {
 // prefix; what its model saw is not.
 func TestReplayRerunsTheAgentsPrepareStep(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +564,7 @@ func TestReplayRerunsTheAgentsPrepareStep(t *testing.T) {
 	}
 	cfg := &config{agents: []*core.Agent{agent}}
 	l := newLink(cfg, newRegistry(cfg), "http://127.0.0.1:1", "")
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	l.localDB = func() obsdb.DB { return db }
 	defer l.stop()
 	cmd := command{CommandID: "cmd_count", Agent: "counter", Engine: "live",
@@ -609,7 +610,7 @@ func TestReplayRerunsTheAgentsPrepareStep(t *testing.T) {
 // and is never refused for it.
 func TestThreadSourceWithUnreachableStudio(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +631,7 @@ func TestThreadSourceWithUnreachableStudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	saw := model.take()
-	walled := httptest.NewServer(studio.New(studio.DB(p.LocalDB()), studio.Token("srv-token")).Handler())
+	walled := httptest.NewServer(studio.New(studio.DB(exporter.LocalDBOf(p)), studio.Token("srv-token")).Handler())
 	defer walled.Close()
 	for name, url := range map[string]string{
 		"401":         walled.URL, // the link carries no token
@@ -659,7 +660,7 @@ func TestThreadSourceWithUnreachableStudio(t *testing.T) {
 			if err := p.ForceFlush(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if row, err := p.LocalDB().Run(ctx, "pg_thread_"+name); err != nil || row.Meta["weft.replay.view"] != "unknown" {
+			if row, err := exporter.LocalDBOf(p).Run(ctx, "pg_thread_"+name); err != nil || row.Meta["weft.replay.view"] != "unknown" {
 				t.Errorf("replay row meta = %v (%v), want weft.replay.view unknown", row.Meta, err)
 			}
 		})
@@ -677,7 +678,7 @@ func TestThreadSourceWithUnreachableStudio(t *testing.T) {
 // any from_step past it.
 func TestReplayFromTheStepCountAnswersTheCalls(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +718,7 @@ func TestReplayFromTheStepCountAnswersTheCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	tail.take()
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	ts := httptest.NewServer(studio.New(studio.DB(db)).Handler())
 	defer ts.Close()
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
@@ -43,7 +44,7 @@ func editOrdersAgent(p *otel.Pipeline, model core.Model) *core.Agent {
 // sentence; input beside from_step > 0 points at the user edit.
 func TestReplayWithEditedRequest(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestReplayWithEditedRequest(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	ts := httptest.NewServer(studio.New(studio.DB(db)).Handler())
 	defer ts.Close()
 
@@ -202,7 +203,7 @@ func TestReplayWithEditedRequest(t *testing.T) {
 // after the view's summary. Over the local and the Studio path.
 func TestReplayEditsOverACompactedPrefix(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestReplayEditsOverACompactedPrefix(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	source := model.take()
 	ts := httptest.NewServer(studio.New(studio.DB(db)).Handler())
 	defer ts.Close()

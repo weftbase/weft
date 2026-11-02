@@ -46,7 +46,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/otel"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/runtime"
 	"github.com/weftgo/weft/scope"
 	"github.com/weftgo/weft/studio"
@@ -265,7 +265,7 @@ func (a *app) ask(w http.ResponseWriter, r *http.Request) {
 func serve(addr, dir string) error {
 	// The embedded Studio's own file: weft dev's WEFT_DB belongs to its
 	// Studio, and two Studios never share one database.
-	defer otel.Install(otel.Local(filepath.Join(dir, "weft.db")))()
+	defer exporter.Install(exporter.Local(filepath.Join(dir, "weft.db")))()
 	served := filepath.Join(dir, "served")
 	if err := os.MkdirAll(served, 0o755); err != nil {
 		return err
@@ -275,7 +275,7 @@ func serve(addr, dir string) error {
 		return err
 	}
 	a := &app{st: st, agent: servedAgent()}
-	srv := studio.New(studio.DB(otel.LocalDB()), studio.Playground(true))
+	srv := studio.New(studio.DB(exporter.LocalDB()), studio.Playground(true))
 	defer func() { _ = srv.Close() }()
 	defer a.install(runtime.Local(srv))()
 

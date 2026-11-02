@@ -39,6 +39,7 @@ import (
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/mw"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/mcp"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/clickhouse"
@@ -61,7 +62,7 @@ import (
 //
 // The inputs are what the pipeline really emits: `go test ./obsdb -run
 // TestContract -update-contract` regenerates them from real runs (a
-// wefttest.Script agent under otel.Start, exporting OTLP/HTTP to a
+// wefttest.Script agent under exporter.Start, exporting OTLP/HTTP to a
 // loopback receiver), normalised so a regeneration with no code change
 // is byte-identical (normaliseCase: ids renumbered in first-seen order,
 // times ranked onto a fixed epoch, measured durations and the framework
@@ -1231,7 +1232,7 @@ func TestRecordContractMigrationNames(t *testing.T) {
 type genCase struct {
 	name, desc string
 	dest       []otel.DestOption
-	// studio captures through a Studio destination (otel.Studio) rather
+	// studio captures through a Studio destination (exporter.Studio) rather
 	// than OTLP, and start adds pipeline options: the development detail
 	// level reaches a Studio destination alone (U23.1).
 	studio bool
@@ -1285,11 +1286,11 @@ func captureCase(t *testing.T, gc genCase, epoch time.Time, dir string) []string
 	defer srv.Close()
 	dest := otel.OTLP(srv.URL, gc.dest...)
 	if gc.studio {
-		dest = otel.Studio(srv.URL, "", gc.dest...)
+		dest = exporter.Studio(srv.URL, "", gc.dest...)
 	}
 	opts := append([]otel.Option{otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
 		otel.Service("contract-app"), dest}, gc.start...)
-	p, err := otel.Start(ctx, opts...)
+	p, err := exporter.Start(ctx, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

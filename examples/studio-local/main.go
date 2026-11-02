@@ -48,7 +48,7 @@
 // 127.0.0.1:8080 (that Studio holds 7331), the pipeline exports to that
 // Studio besides the local sink, and the runtime link registers there
 // instead of with the embedded server: build reads
-// otel.StudioEndpoint() after Install. The page's panel follows the
+// exporter.StudioEndpoint() after Install. The page's panel follows the
 // runtime: its script tag loads panel.js from that Studio, with
 // data-endpoint naming it and a panel token the app mints for the
 // page's public id (POST /api/panel-tokens with WEFT_STUDIO_TOKEN,
@@ -64,8 +64,8 @@
 // shared WEFT_DB twice, through its local sink and through Studio's
 // ingest: harmless, the sqlite writer is INSERT OR IGNORE. Run bare
 // beside a `weft studio` (no WEFT_STUDIO_URL), the demo stays its own
-// setup A: otel.Local switches the discovery file off, so nothing joins
-// that Studio (README "When weft/otel reads the file") — only the port
+// setup A: exporter.Local switches the discovery file off, so nothing joins
+// that Studio (README "When weft/exporter reads the file") — only the port
 // moves to 8080, because 7331 is taken. -addr still overrides 8080.
 package main
 
@@ -88,6 +88,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/mw"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/runtime"
@@ -262,12 +263,12 @@ func build(threadsDir string) (*app, error) {
 	// (WEFT_STUDIO_URL under weft dev): the embedded Studio reads it.
 	// Slog bridges slog.Default, so the app's log lines (mw.Log's
 	// included) reach Studio under the span they were logged in.
-	stopOtel := otel.Install(otel.Local(""), otel.Slog())
+	stopOtel := exporter.Install(exporter.Local(""), otel.Slog())
 
 	// Under weft dev the pipeline also exports to the Studio
 	// WEFT_STUDIO_URL names (the explicit Local keeps the discovery
 	// file out: run bare, nothing joins a running weft studio).
-	studioURL, studioToken := otel.StudioEndpoint()
+	studioURL, studioToken := exporter.StudioEndpoint()
 
 	agent := demoAgent()
 
@@ -289,7 +290,7 @@ func build(threadsDir string) (*app, error) {
 	}
 	// Under weft dev that Studio owns the playground and the command
 	// store (the shared WEFT_DB): the embedded one is a read-only view.
-	srv := studio.New(studio.DB(otel.LocalDB()), studio.Playground(studioURL == ""))
+	srv := studio.New(studio.DB(exporter.LocalDB()), studio.Playground(studioURL == ""))
 	demo := newDemo(store, agent)
 	// The runtime link dials the embedded server in-process — or, under
 	// weft dev, the Studio WEFT_STUDIO_URL names, so its playground

@@ -2,111 +2,30 @@ package otel
 
 import (
 	"context"
-	"database/sql"
-	"encoding/base64"
 	"encoding/json"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/obsdb"
-	"github.com/weftgo/weft/obsdb/sqlite"
-	"github.com/weftgo/weft/wefttest"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	// The kill-9 and heartbeat-row tests read the SQLite file directly.
 	_ "modernc.org/sqlite"
 )
 
-func testCtx(t *testing.T) context.Context {
-	t.Helper()
-	return context.Background()
-}
-
-func enabledParams(name string) log.EnabledParameters {
-	return log.EnabledParameters{EventName: name}
-}
-
-func base64Std(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-
-// sqliteOpen reopens a Local sink file after Shutdown closed it.
-func sqliteOpen(path string) (obsdb.DB, error) { return sqlite.Open(path) }
-
-// memExporter is an in-memory log exporter (the "Exporters(inMemory)"
-// of the S7 gates).
-type memExporter struct {
-	mu      sync.Mutex
-	records []sdklog.Record
-}
-
-func newMemExporter() *memExporter { return &memExporter{} }
-
-func (m *memExporter) Export(_ context.Context, recs []sdklog.Record) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, r := range recs {
-		m.records = append(m.records, r.Clone())
-	}
-	return nil
-}
-
-func (m *memExporter) Shutdown(context.Context) error   { return nil }
-func (m *memExporter) ForceFlush(context.Context) error { return nil }
-
-func (m *memExporter) snapshot() []sdklog.Record {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]sdklog.Record, len(m.records))
-	copy(out, m.records)
-	return out
-}
-
-// agentThrough runs one scripted agent run against the pipeline's
-// providers (hermetic: NoGlobal, providers passed explicitly). The run
-// is two steps (a tool step and a final say), so its durable events
-// are run_start, step_start, tool_start, tool_finish, step_finish,
-// step_start, step_finish, run_finish — eight.
-func agentThrough(t *testing.T, p *Pipeline) (*core.RunResult, string) {
-	t.Helper()
-	slow := core.Tool("slow", "Sleeps briefly.", func(ctx context.Context, in struct {
-		Note string `json:"note"`
-	}) (string, error) {
-		time.Sleep(30 * time.Millisecond)
-		return "done:" + in.Note, nil
-	})
-	agt := core.New(
-		wefttest.Script(
-			wefttest.Think("plan", wefttest.ToolCalls(wefttest.Call{Name: "slow", Args: `{"note":"one"}`})),
-			wefttest.Say("all done"),
-		),
-		core.Name("s7"),
-		core.TracerProvider(p.TracerProvider()),
-		core.LoggerProvider(p.LoggerProvider()),
-		slow,
-	)
-	res, err := agt.Generate(context.Background(), core.Prompt("go"),
-		core.Metadata(map[string]string{"weft.session.id": "s7-session", "tenant": "acme"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res, res.ID
-}
-
-// S7 gate 1: Local + Exporters(inMemory) + a stripped destination at
-// once — Local has content, the stripped one has none, both have every
-// durable record (the clone rule: no chain sees another's edits).
-func TestS7LocalPlusMemoryPlusStripped(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s7.db")
+// S7 gate 1: a Sink + Exporters(inMemory) + a stripped destination at
+// once — the Sink (first-party) has content, the stripped one has none,
+// both have every durable record (the clone rule: no chain sees
+// another's edits). The store-side form of the gate (the transcript
+// rebuilt byte-for-byte from obsdb) is weft/exporter's.
+func TestS7SinkPlusMemoryPlusStripped(t *testing.T) {
+	sink := newMemSink()
 	stripped := newMemExporter()
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(path),
+		sink.option(),
 		Exporters(nil, stripped, NoContent()),
 	)
 	if err != nil {
@@ -117,22 +36,18 @@ func TestS7LocalPlusMemoryPlusStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Local has content: the transcript is there and rebuilds the run's
-	// messages byte-for-byte (the replay gate, exercised fully below).
-	db, err := sqliteOpen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	tr, err := db.Transcript(context.Background(), runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tr) == 0 {
-		t.Fatal("Local stored no messages records — its content default is on")
+	// The Sink has content: the messages records concatenate to the
+	// run's transcript byte-for-byte.
+	msgs := sink.ofRecord("messages")
+	if len(msgs) == 0 {
+		t.Fatal("the Sink received no messages records — its content default is on")
 	}
 	rebuilt := []byte{'['}
-	for i, batch := range tr {
+	for i, r := range msgs {
+		if attrOf(r, "weft.run.id") != runID {
+			t.Errorf("messages record of run %q", attrOf(r, "weft.run.id"))
+		}
+		batch := r.Body().AsString()
 		if i > 0 {
 			rebuilt = append(rebuilt, ',')
 		}
@@ -144,7 +59,7 @@ func TestS7LocalPlusMemoryPlusStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(rebuilt) != string(want) {
-		t.Fatalf("Local transcript mismatch:\n got %s\nwant %s", rebuilt, want)
+		t.Fatalf("Sink transcript mismatch:\n got %s\nwant %s", rebuilt, want)
 	}
 
 	// The stripped destination: no content, no messages records, every
@@ -179,13 +94,17 @@ func TestS7LocalPlusMemoryPlusStripped(t *testing.T) {
 		t.Errorf("stripped destination saw %d event records, want 8 (every durable record of a two-step run)", events)
 	}
 
-	// And Local saw every durable record too.
-	page, err := db.Events(context.Background(), runID, -1, 100)
-	if err != nil {
-		t.Fatal(err)
+	// And the Sink saw every durable record too, with content.
+	if got := sink.eventTypes(); len(got) != 8 {
+		t.Errorf("the Sink saw %d event records, want 8: %v", len(got), got)
 	}
-	if len(page.Events) != 8 {
-		t.Errorf("Local saw %d event records, want 8", len(page.Events))
+	for _, r := range sink.ofRecord("event") {
+		if attrOf(r, "weft.content") == "stripped" {
+			t.Error("the Sink received a stripped event")
+		}
+	}
+	if sink.shutdowns() != 2 {
+		t.Errorf("the Sink's exporters were shut down %d times, want 2 (one each)", sink.shutdowns())
 	}
 }
 
@@ -216,335 +135,6 @@ func TestS7ContentOffOnlyEmitsNoMessages(t *testing.T) {
 	if len(res.Messages) == 0 {
 		t.Fatal("the run itself produced no transcript (test bug)")
 	}
-}
-
-// S7 gate 3: heartbeats keep a long quiet tool call reading running and
-// store no rows. The real numbers are a 10 s interval under a 45 s tool
-// call; the test scales them (30 ms under a blocked call).
-func TestS7HeartbeatKeepsLongToolRunning(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hb.db")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(),
-		Local(path),
-		Heartbeat(30*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := make(chan struct{})
-	release := make(chan struct{})
-	slow := core.Tool("slow", "Blocks until released.", func(ctx context.Context, _ struct{}) (string, error) {
-		close(started)
-		<-release
-		return "done", nil
-	})
-	agt := core.New(
-		wefttest.Script(
-			wefttest.ToolCalls(wefttest.Call{Name: "slow"}),
-			wefttest.Say("done"),
-		),
-		core.Name("hb"),
-		core.TracerProvider(p.TracerProvider()),
-		core.LoggerProvider(p.LoggerProvider()),
-		slow,
-	)
-	done := make(chan struct{})
-	go func() {
-		_, _ = agt.Generate(context.Background(), core.Prompt("go"),
-			core.Metadata(map[string]string{"weft.session.id": "s7-hb"}))
-		close(done)
-	}()
-	<-started
-
-	db := p.LocalDB()
-	var first time.Time
-	deadline := time.Now().Add(3 * time.Second)
-	for first.IsZero() && time.Now().Before(deadline) {
-		page, err := db.Runs(context.Background(), obsdb.RunQuery{})
-		if err == nil && page.Total > 0 && page.Runs[0].Status == obsdb.StatusRunning {
-			first = page.Runs[0].LastSeen
-		} else {
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	if first.IsZero() {
-		close(release)
-		<-done
-		t.Fatal("the run never read running mid-tool-call")
-	}
-	// The quiet window: nothing but heartbeats can move last-seen.
-	time.Sleep(90 * time.Millisecond)
-	page, err := db.Runs(context.Background(), obsdb.RunQuery{})
-	if err != nil || page.Total != 1 {
-		close(release)
-		<-done
-		t.Fatalf("mid-run read: %v", err)
-	}
-	if page.Runs[0].Status != obsdb.StatusRunning {
-		close(release)
-		<-done
-		t.Fatalf("quiet run read %q, want running (heartbeats are fresh evidence)", page.Runs[0].Status)
-	}
-	if !page.Runs[0].LastSeen.After(first) {
-		close(release)
-		<-done
-		t.Fatal("last-seen did not advance during the quiet tool call — no heartbeats flowed")
-	}
-	close(release)
-	<-done
-	if err := p.Shutdown(testCtx(t)); err != nil {
-		t.Fatal(err)
-	}
-
-	// No heartbeat rows were stored.
-	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(30000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = raw.Close() }()
-	var hb int
-	if err := raw.QueryRow(`SELECT COUNT(*) FROM records WHERE kind='heartbeat'`).Scan(&hb); err != nil {
-		t.Fatal(err)
-	}
-	if hb != 0 {
-		t.Errorf("%d heartbeat rows stored; heartbeats only move last-seen", hb)
-	}
-}
-
-// S7 gate 4: kill -9 mid-run. The child writes through a Local pipeline
-// into a real file; SIGKILL leaves the run with no terminal record; the
-// parent reads it running while last-seen is fresh, and interrupted
-// once it is older than InterruptedAfter (simulated by ageing
-// last_seen_ns — the sole input of the derivation — rather than
-// sleeping 30 s; the boundary itself is pinned by obsdb's tests).
-func TestS7Kill9ShowsInterrupted(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "crash.db")
-	src := filepath.Join(dir, "child.go")
-	child := "package main\n\nimport (\n" +
-		"\t\"context\"\n\t\"os\"\n\t\"time\"\n\n" +
-		"\tweftotel \"github.com/weftgo/weft/otel\"\n\n" +
-		"\t\"github.com/weftgo/weft\"\n\t\"github.com/weftgo/weft/wefttest\"\n)\n\n" +
-		"func main() {\n" +
-		"\tshutdown := weftotel.Install(\n" +
-		"\t\tweftotel.Local(" + "`" + dbPath + "`" + "),\n" +
-		"\t\tweftotel.Heartbeat(50 * time.Millisecond),\n" +
-		"\t)\n\tdefer shutdown()\n" +
-		"\tslow := weft.Tool(\"slow\", \"Outlives the process.\", func(ctx context.Context, _ struct{}) (string, error) {\n" +
-		"\t\ttime.Sleep(10 * time.Minute)\n\t\treturn \"never\", nil\n\t})\n" +
-		"\tagt := weft.New(\n" +
-		"\t\twefttest.Script(wefttest.ToolCalls(wefttest.Call{Name: \"slow\"}), wefttest.Say(\"late\")),\n" +
-		"\t\tweft.Name(\"victim\"),\n" +
-		"\t\tslow,\n\t)\n" +
-		"\t_, _ = agt.Generate(context.Background(), weft.Prompt(\"go\"),\n" +
-		"\t\tweft.Metadata(map[string]string{\"weft.session.id\": \"crash\"}))\n" +
-		"\tos.Exit(0)\n}\n"
-	if err := os.WriteFile(src, []byte(child), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Build the child to a binary and run THAT: killing a "go run"
-	// wrapper orphans the compiled child, which would keep heartbeating
-	// through the "crash" (go run execs the binary as its own process).
-	// The build runs from this module's directory, where the workspace
-	// resolves weft, obsdb and otel locally.
-	bin := filepath.Join(dir, "child.bin")
-	build := exec.Command("go", "build", "-o", bin, src)
-	build.Dir = "."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the child: %v: %s", err, out)
-	}
-	cmd := exec.Command(bin)
-	cmd.Dir = "."
-	cmd.Env = append(os.Environ(), "WEFT_MODEL_REQUESTS=deny")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	// Wait until the run exists, then kill -9.
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		page, err := readRuns(dbPath)
-		if err == nil && len(page) > 0 && page[0].Status == obsdb.StatusRunning {
-			break
-		}
-		if !time.Now().Before(deadline) {
-			_ = cmd.Process.Kill()
-			t.Fatal("the child's run never appeared")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err := cmd.Process.Kill(); err != nil { // SIGKILL: no flush, no run_finish
-		t.Fatal(err)
-	}
-	_ = cmd.Wait()
-
-	// Fresh crash: running (evidence, not a corpse).
-	page, err := readRuns(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != 1 || page[0].Status != obsdb.StatusRunning {
-		t.Fatalf("after kill -9: %+v", page)
-	}
-	// Age the last-seen past InterruptedAfter — the only input the rule
-	// reads — and read again: interrupted.
-	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(30000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(`UPDATE runs SET last_seen_ns = last_seen_ns - ?`,
-		(obsdb.InterruptedAfter + time.Second).Nanoseconds()); err != nil {
-		t.Fatal(err)
-	}
-	_ = raw.Close()
-	page, err = readRuns(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != 1 || page[0].Status != obsdb.StatusInterrupted {
-		t.Fatalf("after the crash window: %+v, want interrupted", page)
-	}
-}
-
-func readRuns(path string) ([]obsdb.RunRow, error) {
-	db, err := sqliteOpen(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-	page, err := db.Runs(context.Background(), obsdb.RunQuery{})
-	if err != nil {
-		return nil, err
-	}
-	return page.Runs, nil
-}
-
-// S7 gate 5: a hub subscriber sees a record before Write returns —
-// through the Local destination's shared handle.
-func TestS7HubSeesRecordBeforeWriteReturns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.db")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Local(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := p.LocalDB()
-	hub := db.(interface{ Hub() obsdb.Hub }).Hub()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	frames, err := hub.Subscribe(ctx, obsdb.Selector{Agent: "s7"}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sawRecord := make(chan obsdb.Frame, 1)
-	go func() {
-		for f := range frames {
-			if f.Kind == obsdb.FrameRecord {
-				sawRecord <- f
-				return
-			}
-		}
-	}()
-	written := make(chan struct{})
-	go func() {
-		_, _ = agentThrough(t, p)
-		close(written)
-	}()
-	select {
-	case f := <-sawRecord:
-		if f.Record == nil || f.Seq == 0 {
-			t.Fatalf("frame = %+v", f)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no record frame before the run's Write returned")
-	}
-	<-written
-	if err := p.Shutdown(testCtx(t)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The store's replay test, ported: a run recorded through Local
-// rebuilds the transcript byte-for-byte from DB.Transcript.
-func TestS7ReplayRebuildsTranscriptByteForByte(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "replay.db")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Local(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, runID := agentThrough(t, p)
-	if err := p.Shutdown(testCtx(t)); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sqliteOpen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	tr, err := db.Transcript(context.Background(), runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The batches concatenate to res.Messages exactly.
-	rebuilt := []byte{'['}
-	for i, batch := range tr {
-		if i > 0 {
-			rebuilt = append(rebuilt, ',')
-		}
-		rebuilt = append(rebuilt, batch[1:len(batch)-1]...) // drop the outer [ ]
-	}
-	rebuilt = append(rebuilt, ']')
-	want, err := json.Marshal(res.Messages)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(rebuilt) != string(want) {
-		t.Fatalf("transcript mismatch:\n got %s\nwant %s", rebuilt, want)
-	}
-	// And the run reads succeeded with the identity chain intact.
-	det, err := db.Run(context.Background(), runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if det.Status != obsdb.StatusSucceeded {
-		t.Errorf("status = %q, want succeeded", det.Status)
-	}
-	if det.Agent != "s7" || det.SessionID != "s7-session" || det.Meta["tenant"] != "acme" {
-		t.Errorf("identity = %+v meta=%v", det.RunRow, det.Meta)
-	}
-}
-
-// sdkRecordWith builds one SDK record through a real provider — a bare
-// sdklog.Record keeps no attributes (the provider sets the limits the
-// record's store consults).
-func sdkRecordWith(t *testing.T, eventName, body string, attrs ...attribute.KeyValue) *sdklog.Record {
-	t.Helper()
-	capture := &recordCapture{}
-	provider := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewSimpleProcessor(capture)),
-	)
-	defer func() { _ = provider.Shutdown(context.Background()) }()
-	var r log.Record
-	r.SetEventName(eventName)
-	if body != "" {
-		r.SetBody(attribute.StringValue(body))
-	}
-	r.AddAttributes(attrs...)
-	provider.Logger("github.com/weftgo/weft/core").Emit(context.Background(), r)
-	if len(capture.records) == 0 {
-		t.Fatal("no record captured")
-	}
-	return &capture.records[0]
-}
-
-// attrOf reads one attribute off a record.
-func attrOf(r sdklog.Record, key string) string {
-	var out string
-	r.WalkAttributes(func(kv attribute.KeyValue) bool {
-		if string(kv.Key) == key {
-			out = kv.Value.AsString()
-			return false
-		}
-		return true
-	})
-	return out
 }
 
 // The tracker: open runs tracked from run_start/run_finish records and
@@ -654,51 +244,61 @@ func TestStripEventMarksStripped(t *testing.T) {
 	}
 }
 
-// Install's zero-config rule: with no options and no env it writes the
-// local sink only (WEFT_DB pointed at a temp file), and the returned
-// function shuts down cleanly.
-func TestInstallZeroConfigLocalOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "zero.db")
-	t.Setenv("WEFT_DB", path)
+// Install with nothing configured records nothing: no destination, one
+// INFO line naming how to configure one, a no-op shutdown, no global
+// pipeline.
+func TestInstallZeroConfigRecordsNothing(t *testing.T) {
+	devEnv(t, nil)
+	logs := captureSlog(t)
 	shutdown := Install()
-	installedMu.RLock()
-	p := installedPipeline
-	installedMu.RUnlock()
-	if p == nil || p.LocalDB() == nil {
-		shutdown()
-		t.Fatal("zero-config Install did not open the local sink")
+	defer shutdown()
+	if Installed() != nil {
+		t.Fatal("Install() with nothing configured registered a pipeline")
 	}
-	// One scripted run through the installed globals.
-	agt := core.New(
-		wefttest.Script(wefttest.Say("zero")),
-		core.Name("zero"),
-	)
-	if _, err := agt.Generate(context.Background(), core.Prompt("go"),
-		core.Metadata(map[string]string{"weft.session.id": "zero"})); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(logs.String(), "no destination configured") ||
+		!strings.Contains(logs.String(), "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Errorf("Install() INFO line missing or without its hint:\n%s", logs.String())
 	}
-	shutdown()
-	// The run landed in the sink with content on (Local's default).
-	db, err := sqliteOpen(path)
+	if n := strings.Count(logs.String(), "level="); n != 1 {
+		t.Errorf("Install() logged %d lines, want 1:\n%s", n, logs.String())
+	}
+	// Start says why.
+	if _, err := Start(testCtx(t), NoGlobal()); !errors.Is(err, ErrNoDestinations) {
+		t.Errorf("Start() = %v, want ErrNoDestinations", err)
+	}
+}
+
+// Fallback: used when nothing else is configured, never beside a named
+// destination.
+func TestFallback(t *testing.T) {
+	devEnv(t, nil)
+	fb, named := newMemSink(), newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Fallback(fb.option()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
-	page, err := db.Runs(context.Background(), obsdb.RunQuery{})
-	if err != nil || page.Total != 1 {
-		t.Fatalf("runs after Install(): %d, %v", page.Total, err)
+	_, _ = agentThrough(t, p)
+	_ = p.Shutdown(testCtx(t))
+	if len(fb.eventTypes()) != 8 {
+		t.Errorf("fallback received %d events, want 8", len(fb.eventTypes()))
 	}
-	tr, err := db.Transcript(context.Background(), page.Runs[0].ID)
-	if err != nil || len(tr) == 0 {
-		t.Fatalf("transcript = %v, %v: content must be on", tr, err)
+	fb2 := newMemSink()
+	p, err = Start(testCtx(t), NoGlobal(), Heartbeat(0), named.option(), Fallback(fb2.option()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = agentThrough(t, p)
+	_ = p.Shutdown(testCtx(t))
+	if fb2.opened != 0 || len(named.eventTypes()) != 8 {
+		t.Errorf("fallback opened %d times beside a named destination (named got %d events)", fb2.opened, len(named.eventTypes()))
 	}
 }
 
 // Shutdown is idempotent (heartbeats stop, providers shut down, the
-// local DB closes last and only once).
+// Sink's exporters close last and only once).
 func TestShutdownIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sd.db")
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Local(path), Heartbeat(10*time.Millisecond))
+	sink := newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), sink.option(), Heartbeat(10*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,6 +308,9 @@ func TestShutdownIdempotent(t *testing.T) {
 	}
 	if err := p.Shutdown(testCtx(t)); err != nil {
 		t.Fatalf("second Shutdown: %v", err)
+	}
+	if n := sink.shutdowns(); n != 2 {
+		t.Errorf("the Sink's exporters were shut down %d times, want 2 (once each)", n)
 	}
 }
 

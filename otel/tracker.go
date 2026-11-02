@@ -184,7 +184,7 @@ func isInvokeAgentName(name string) bool {
 // provider's logger: weft.run.id plus the run's metadata, no body, no
 // position. Sinks never store it; it only moves last_seen. A closed
 // stop ends the pass before its next record: each emit may be a
-// synchronous write (the Local sink) queued behind every run's, and
+// synchronous write (a Sink) queued behind every run's, and
 // Shutdown waits for this goroutine.
 //
 // bridged is the pipeline's slog bridge count (Pipeline.bridged): with

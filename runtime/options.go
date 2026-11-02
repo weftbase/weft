@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/internal/discovery"
-	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 	"github.com/weftgo/weft/thread"
 	"github.com/weftgo/weft/version"
@@ -37,21 +37,23 @@ type config struct {
 // Studio dials the Studio at url with token (setups B and C: the local
 // binary or the hosted one). Empty token is the dev mode of setup B.
 // Without a Studio or Local option, Install falls back to the pipeline's
-// own Studio destination — otel.StudioEndpoint() — then, when that is
+// own Studio destination — exporter.StudioEndpoint() — then, when that is
 // empty, to the discovery file a running `weft studio` / `weft dev`
 // wrote (unless WEFT_STUDIO_URL is set or WEFT_DISCOVERY=off; a stale
 // file is never trusted), and opens nothing when there is none. A
-// pipeline with a Local destination and no Studio (otel.LocalDB() set,
-// otel.StudioEndpoint() empty) skips the file: the link would register
+// pipeline with a Local destination and no Studio (exporter.LocalDB() set,
+// exporter.StudioEndpoint() empty) skips the file: the link would register
 // with a Studio its runs never reach, so Install opens nothing and
 // WARNs once, naming Local(srv) and Studio(url, token). The rule reads
-// the *installed* pipeline only (otel.LocalDB(), set by otel.Install /
-// otel.Start without otel.NoGlobal): an app that builds its pipeline
-// with otel.Start(otel.Local(p), otel.NoGlobal()) leaves it unset, so
+// the *installed* pipeline only (exporter.LocalDB(), set by
+// exporter.Install / exporter.Start without otel.NoGlobal; the Studio
+// endpoint is known only for a pipeline those built): an app that builds
+// its pipeline with exporter.Start(exporter.Local(p), otel.NoGlobal())
+// leaves it unset, so
 // Install without Studio or Local still joins a discovered Studio —
 // one whose spans never arrive, since the pipeline sends them nowhere
 // but p. Such an app names its Studio itself: Local(srv) for the
-// embedded one, or Studio(url, token) beside otel.Studio(url, token).
+// embedded one, or Studio(url, token) beside exporter.Studio(url, token).
 func Studio(url, token string) Option {
 	return func(c *config) { c.studioURL, c.studioToken = url, token }
 }
@@ -259,7 +261,7 @@ func Enabled(on bool) Option {
 // (nothing enabled, no endpoint, no named agents) logs a WARN and
 // opens nothing. The returned function stops the link — the command
 // stream ends, the runs the link started are canceled, and it waits
-// (bounded) for both; call it on exit, like otel.Install's. Calling it
+// (bounded) for both; call it on exit, like exporter.Install's. Calling it
 // again is harmless.
 //
 // The link registers on connect and after every reconnect, receives
@@ -297,17 +299,17 @@ func Install(opts ...Option) (shutdown func()) {
 	url, token := c.studioURL, c.studioToken
 	if c.local == nil && url == "" {
 		// The default endpoint: the pipeline's own Studio destination
-		// (otel.StudioEndpoint, S2.1). weft/otel knows nothing about
-		// this package; this is the one place the two meet.
-		url, token = otel.StudioEndpoint()
+		// (exporter.StudioEndpoint, S2.1). weft/otel knows nothing about
+		// Studio; the platform's exporter package records it.
+		url, token = exporter.StudioEndpoint()
 	}
-	if c.local == nil && url == "" && otel.LocalDB() != nil {
+	if c.local == nil && url == "" && exporter.LocalDB() != nil {
 		// The pipeline records into a Local store and names no Studio
-		// (issue 001): weft/otel did not join the file's Studio, so the
+		// (issue 001): weft/exporter did not join the file's Studio, so the
 		// link must not either — a Studio that starts runs whose spans
 		// never reach it. One WARN; no link.
-		slog.Warn("weft/runtime: the pipeline records only into a Local store (otel.Local, or otel.Install's default) and names no Studio: no link opened",
-			"hint", "runtime.Local(srv) dials the embedded Studio; runtime.Studio(url, token) with otel.Studio(url, token) a running one")
+		slog.Warn("weft/runtime: the pipeline records only into a Local store (exporter.Local, or exporter.Install's default) and names no Studio: no link opened",
+			"hint", "runtime.Local(srv) dials the embedded Studio; runtime.Studio(url, token) with exporter.Studio(url, token) a running one")
 		return func() {}
 	}
 	if c.local == nil && url == "" {

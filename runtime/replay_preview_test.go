@@ -18,6 +18,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
@@ -99,7 +100,7 @@ func preview(t *testing.T, url string, body previewBody) previewWill {
 // instructions override) and the tool names agree too.
 func TestPreviewMatchesTheReplayInput(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestPreviewMatchesTheReplayInput(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	srv := studio.New(studio.DB(db), studio.Playground(true))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -211,7 +212,7 @@ func TestPreviewMatchesTheReplayInput(t *testing.T) {
 // (worded alike, §5.5 suffix included), then the input.
 func TestOneSentenceOnBothSides(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestOneSentenceOnBothSides(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	ts := httptest.NewServer(studio.New(studio.DB(db), studio.Playground(true)).Handler())
 	defer ts.Close()
 	cfg := &config{agents: []*core.Agent{source}}
@@ -344,7 +345,7 @@ func TestOneSentenceOnBothSides(t *testing.T) {
 // re-issued with the original arguments no longer matches and parks.
 func TestSubstituteKeysOnTheEditedPair(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func TestSubstituteKeysOnTheEditedPair(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	ran.Store(0)
 	argsEdit := transcriptEdit{Kind: "tool_args", Step: 0, CallID: "c1", Args: json.RawMessage(`{"order_id":"7"}`)}
 	for _, c := range []struct {
@@ -467,7 +468,7 @@ func (m *wideModel) Stream(_ context.Context, req core.ModelRequest) iter.Seq2[c
 // step 0's user message 1 and a user edit of it applies, on both sides.
 func TestEditsInsideAWideView(t *testing.T) {
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(t.TempDir(), "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +495,7 @@ func TestEditsInsideAWideView(t *testing.T) {
 	if err := p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	db := p.LocalDB()
+	db := exporter.LocalDBOf(p)
 	if _, view := stepMessagesJSON(t, db, "r_wide", 3); view == nil || view.FromSeq != 1 || view.ToSeq != 6 {
 		t.Fatalf("step 3's view = %+v, want [1, 6)", view)
 	}

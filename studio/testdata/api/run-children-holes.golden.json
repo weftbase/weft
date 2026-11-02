@@ -8,7 +8,7 @@
     "provider": "wefttest",
     "name": "glm-a"
   },
-  "manifest_hash": "12e9cc7bee36469b0b0f9808326501a1131042fcf47ed166e73db8ca052223c9",
+  "manifest_hash": "f2e4865d31b9879f492d71d6458f23d342bdcda7f70b9d67a4e5c7ed64a99cd5",
   "weft_version": "(test)",
   "service": "studio.test",
   "session_id": "",

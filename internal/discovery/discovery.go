@@ -32,11 +32,11 @@
 // The file is a convenience, never a requirement: WEFT_STUDIO_URL
 // always wins (the reader does not look), WEFT_DISCOVERY=off turns the
 // read off and the write too (Off: weft studio / weft dev write no
-// file), and runtime.Studio(url, tok) / otel.Studio(url, tok) name a
-// Studio in code. weft/otel skips the read when the pipeline names an
-// otel.Studio or an otel.Local, or under otel.NoDiscovery / NoEnv;
+// file), and runtime.Studio(url, tok) / exporter.Studio(url, tok) name a
+// Studio in code. weft/exporter skips the read when the pipeline names an
+// exporter.Studio or an exporter.Local, or under exporter.NoDiscovery / NoEnv;
 // weft/runtime skips it when the installed pipeline has a Local and no
-// Studio (the README's "When weft/otel reads the file"). The core
+// Studio (the README's "When weft/exporter reads the file"). The core
 // never imports this package.
 package discovery
 

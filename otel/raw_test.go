@@ -1,8 +1,8 @@
 package otel
 
 // otel.RawBodies (ADR 0028 §12, plan A6): dev only, one WARN and off
-// elsewhere; when on, weft.raw is asked for and delivered by the Local
-// and Studio chains alone.
+// elsewhere; when on, weft.raw is asked for and delivered by the
+// first-party chains alone (Sink, FirstParty).
 
 import (
 	"bytes"
@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/obsdb"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -124,7 +122,8 @@ func TestRawBodiesDevOnly(t *testing.T) {
 			devEnv(t, c.env)
 			logs := captureSlog(t)
 			on := c.warn == ""
-			opts := []Option{NoGlobal(), Heartbeat(0), Local(filepath.Join(t.TempDir(), "weft.db")), RawBodies(true)}
+			sink := newMemSink()
+			opts := []Option{NoGlobal(), Heartbeat(0), sink.option(), RawBodies(true)}
 			if c.noEnv {
 				opts = append(opts, NoEnv())
 			}
@@ -153,22 +152,22 @@ func TestRawBodiesDevOnly(t *testing.T) {
 			}
 			enabled := p.LoggerProvider().Logger(instrumentationName).Enabled(context.Background(), enabledParams("weft.raw"))
 			wanted, id := rawThrough(t, p)
-			reqs, err := p.LocalDB().Requests(context.Background(), id, obsdb.RequestQuery{})
-			if err != nil || len(reqs) != 1 {
-				t.Fatalf("requests = %d, %v", len(reqs), err)
+			if n := len(runRecords(sink, id, "request")); n != 1 {
+				t.Fatalf("request records = %d, want 1", n)
 			}
-			if enabled != on || wanted != on || (reqs[0].Wire != nil) != on {
-				t.Fatalf("Enabled %v, WantsRaw %v, stored %v; want all %v", enabled, wanted, reqs[0].Wire != nil, on)
+			raws := runRecords(sink, id, "raw")
+			if enabled != on || wanted != on || (len(raws) == 1) != on || len(raws) > 1 {
+				t.Fatalf("Enabled %v, WantsRaw %v, raw records %d; want all %v", enabled, wanted, len(raws), on)
 			}
-			if on && strings.Contains(reqs[0].Wire.Request.Body+strings.Join(reqs[0].Wire.RedactedHeaders, ","), "SECRET") {
-				t.Error("a credential was stored")
+			if on && strings.Contains(raws[0].Body().AsString(), "SECRET") {
+				t.Error("a credential was exported")
 			}
 		})
 	}
 	t.Run("absent", func(t *testing.T) {
 		devEnv(t, nil)
 		logs := captureSlog(t)
-		p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Local(filepath.Join(t.TempDir(), "weft.db")))
+		p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), newMemSink().option())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,20 +182,21 @@ func TestRawBodiesDevOnly(t *testing.T) {
 }
 
 // An isolated NoEnv pipeline opts into raw bodies with DevMode (issue
-// 002): the operator's WEFT_ENV, WEFT_STUDIO_URL and discovery file stay
-// unread, and each model call attempt of a two-step run stores its one
+// 002): the operator's WEFT_ENV and OTEL_EXPORTER_OTLP_ENDPOINT stay
+// unread, and each model call attempt of a two-step run exports its one
 // weft.raw — with no WARN.
 func TestRawBodiesNoEnvDevModePerAttempt(t *testing.T) {
-	devEnv(t, map[string]string{"WEFT_STUDIO_URL": "http://127.0.0.1:1"})
+	devEnv(t, map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:1"})
 	logs := captureSlog(t)
+	sink := newMemSink()
 	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), NoEnv(), DevMode(),
-		Local(filepath.Join(t.TempDir(), "weft.db")), RawBodies(true))
+		sink.option(), RawBodies(true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
 	if len(p.dests) != 1 {
-		t.Fatalf("destinations = %d, want the Local alone (NoEnv)", len(p.dests))
+		t.Fatalf("destinations = %d, want the Sink alone (NoEnv)", len(p.dests))
 	}
 	var wanted bool
 	echo := core.Tool("echo", "Echo.", func(_ context.Context, in struct{}) (string, error) { return "ok", nil })
@@ -219,35 +219,28 @@ func TestRawBodiesNoEnvDevModePerAttempt(t *testing.T) {
 	if n := strings.Count(logs.String(), `level=INFO msg="`+rawInfo+`"`); n != 1 {
 		t.Errorf("want one INFO %q, got %d:\n%s", rawInfo, n, logs.String())
 	}
-	reqs, err := p.LocalDB().Requests(context.Background(), res.ID, obsdb.RequestQuery{})
-	if err != nil || len(reqs) != 2 {
-		t.Fatalf("requests = %d, %v; want 2 attempts", len(reqs), err)
+	if n := len(runRecords(sink, res.ID, "request")); n != 2 {
+		t.Fatalf("request records = %d; want 2 attempts", n)
 	}
-	for i, r := range reqs {
-		if r.Wire == nil {
-			t.Errorf("attempt %d stored no weft.raw", i)
-		}
+	if n := len(runRecords(sink, res.ID, "raw")); n != 2 {
+		t.Errorf("raw records = %d; want one per attempt (2)", n)
 	}
 	if !wanted {
 		t.Error("WantsRaw false under NoEnv+DevMode")
 	}
 }
 
-// Each destination kind's chain under RawBodies in force: Local and
-// Studio take raw records (content on), every third party refuses them
-// whatever its content setting, and a content-off Local or Studio too.
+// Each destination kind's chain under RawBodies in force: a Sink and a
+// FirstParty destination take raw records (content on), every third
+// party refuses them whatever its content setting, and a content-off
+// first-party destination too.
 func TestRawBodiesPerDestination(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config{rawBodies: true}
-	local := func(opts ...DestOption) dest {
-		d := newDest(destLocal, "local")
-		d.path = filepath.Join(t.TempDir(), "weft.db")
-		d.apply(opts)
-		return d
-	}
+	local := func(opts ...DestOption) dest { return mustDest(t, newMemSink().option(opts...)) }
 	remote := func(kind destKind, name string, opts ...DestOption) dest {
 		d := newDest(kind, name)
-		d.url, d.host, d.token = "http://127.0.0.1:1", "http://127.0.0.1:1", "tok"
+		d.url, d.host = "http://127.0.0.1:1", "http://127.0.0.1:1"
 		d.apply(opts)
 		return d
 	}
@@ -262,10 +255,11 @@ func TestRawBodiesPerDestination(t *testing.T) {
 		d    dest
 		want bool
 	}{
-		{"local", local(), true},
-		{"local NoContent", local(NoContent()), false},
-		{"studio", remote(destStudio, "studio"), true},
-		{"studio NoContent", remote(destStudio, "studio", NoContent()), false},
+		{"sink", local(), true},
+		{"sink NoContent", local(NoContent()), false},
+		{"first-party otlp", remote(destOTLP, "studio", FirstParty()), true},
+		{"first-party otlp NoContent", remote(destOTLP, "studio", FirstParty(), NoContent()), false},
+		{"first-party exporters", exporters(FirstParty()), true},
 		{"datadog", remote(destDatadog, "datadog"), false},
 		{"datadog WithContent", remote(destDatadog, "datadog", WithContent()), false},
 		{"otlp", remote(destOTLP, "otlp"), false},
@@ -299,27 +293,26 @@ func TestRawBodiesPerDestination(t *testing.T) {
 // records, and only those — pinned on the chain itself, not on how a
 // batch forms (under -race emission is slow and batches stay small, so
 // TestRawBodiesBatchBoundedByBytes alone would not notice the split
-// dropped). Local has no batch chain: its simple processor writes the
-// database, with no ingest limit to respect.
+// dropped). A Sink has no batch chain: its simple processor exports
+// synchronously, with no ingest limit to respect.
 func TestRawBodiesSplitWired(t *testing.T) {
 	ctx := testCtx(t)
 	remote := func(kind destKind, name string, opts ...DestOption) dest {
 		d := newDest(kind, name)
-		d.url, d.host, d.token = "http://127.0.0.1:1", "http://127.0.0.1:1", "tok"
+		d.url, d.host = "http://127.0.0.1:1", "http://127.0.0.1:1"
 		d.apply(opts)
 		return d
 	}
-	local := newDest(destLocal, "local")
-	local.path = filepath.Join(t.TempDir(), "weft.db")
+	local := mustDest(t, newMemSink().option())
 	for _, c := range []struct {
 		name  string
 		d     dest
 		raw   bool
 		split bool
 	}{
-		{"studio", remote(destStudio, "studio"), true, true},
-		{"studio without RawBodies", remote(destStudio, "studio"), false, false},
-		{"studio NoContent", remote(destStudio, "studio", NoContent()), true, false},
+		{"first-party", remote(destOTLP, "studio", FirstParty()), true, true},
+		{"first-party without RawBodies", remote(destOTLP, "studio", FirstParty()), false, false},
+		{"first-party NoContent", remote(destOTLP, "studio", FirstParty(), NoContent()), true, false},
 		{"otlp WithContent", remote(destOTLP, "otlp", WithContent()), true, false},
 		{"datadog WithContent", remote(destDatadog, "datadog", WithContent()), true, false},
 	} {
@@ -338,33 +331,35 @@ func TestRawBodiesSplitWired(t *testing.T) {
 			}
 		})
 	}
-	t.Run("local", func(t *testing.T) {
+	t.Run("sink", func(t *testing.T) {
 		rt, err := buildDest(ctx, local, config{rawBodies: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer rt.release(ctx)
 		if rt.logExp != nil {
-			t.Errorf("Local has a batch exporter %T; want its simple processor alone", rt.logExp)
+			t.Errorf("a Sink has a batch exporter %T; want its simple processor alone", rt.logExp)
 		}
 	})
 }
 
-// End to end under dev: the Local sink stores the raw record, a
-// content-on Exporters destination beside it receives none (counted as
-// filtered), and the record shows on the Local side only.
+// End to end under dev: a Sink receives the raw record, a content-on
+// Exporters destination beside it receives none (counted as filtered),
+// and the record shows on the Sink's side only. (weft/exporter pins the
+// store's reading of it.)
 func TestRawBodiesNeverToThirdParty(t *testing.T) {
 	devEnv(t, map[string]string{"WEFT_ENV": "dev"})
 	mem := newMemExporter()
+	sink := newMemSink()
 	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), RawBodies(true),
-		Local(filepath.Join(t.TempDir(), "weft.db")), Exporters(nil, mem, WithContent()))
+		sink.option(), Exporters(nil, mem, WithContent()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
 	wanted, id := rawThrough(t, p)
 	if !wanted {
-		t.Fatal("WantsRaw = false with a Local sink under RawBodies and dev")
+		t.Fatal("WantsRaw = false with a Sink under RawBodies and dev")
 	}
 	if n := len(recordsOfKind(mem.snapshot(), "raw")); n != 0 {
 		t.Errorf("the Exporters destination received %d raw records", n)
@@ -372,13 +367,12 @@ func TestRawBodiesNeverToThirdParty(t *testing.T) {
 	if len(recordsOfKind(mem.snapshot(), "request")) != 1 {
 		t.Error("the Exporters destination lost its request record")
 	}
-	reqs, err := p.LocalDB().Requests(context.Background(), id, obsdb.RequestQuery{})
-	if err != nil || len(reqs) != 1 || reqs[0].Wire == nil {
-		t.Fatalf("local requests = %+v, %v; want one with its raw record", reqs, err)
+	raws := runRecords(sink, id, "raw")
+	if len(raws) != 1 {
+		t.Fatalf("the Sink received %d raw records, want 1", len(raws))
 	}
-	w := reqs[0].Wire
-	if w.Request.Body != `{"q":"wire"}` || w.Response.Body != "data: ok\n\n" || w.RedactedHeaders[0] != "authorization" {
-		t.Errorf("stored wire = %+v / %+v", w.Request, w.Response)
+	if b := raws[0].Body().AsString(); !strings.Contains(b, `q\":\"wire`) || !strings.Contains(b, "authorization") || strings.Contains(b, "SECRET") {
+		t.Errorf("raw record body = %s", b)
 	}
 }
 
@@ -387,8 +381,9 @@ func TestRawBodiesNeverToThirdParty(t *testing.T) {
 func TestRawBodiesRedact(t *testing.T) {
 	devEnv(t, map[string]string{"WEFT_ENV": "dev"})
 	var kinds []core.ContentKind
+	sink := newMemSink()
 	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), RawBodies(true),
-		Local(filepath.Join(t.TempDir(), "weft.db"), WithContent(ContentConfig{Redact: func(k core.ContentKind, s string) string {
+		sink.option(WithContent(ContentConfig{Redact: func(k core.ContentKind, s string) string {
 			if k == core.ContentRaw {
 				kinds = append(kinds, k)
 				return strings.ReplaceAll(s, "wire", "[X]")
@@ -400,12 +395,12 @@ func TestRawBodiesRedact(t *testing.T) {
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
 	_, id := rawThrough(t, p)
-	reqs, err := p.LocalDB().Requests(context.Background(), id, obsdb.RequestQuery{})
-	if err != nil || len(reqs) != 1 || reqs[0].Wire == nil {
-		t.Fatalf("requests = %+v, %v", reqs, err)
+	raws := runRecords(sink, id, "raw")
+	if len(raws) != 1 {
+		t.Fatalf("raw records = %d, want 1", len(raws))
 	}
-	if reqs[0].Wire.Request.Body != `{"q":"[X]"}` || len(kinds) != 2 {
-		t.Errorf("redacted body = %q, Redact calls = %d", reqs[0].Wire.Request.Body, len(kinds))
+	if b := raws[0].Body().AsString(); !strings.Contains(b, `q\":\"[X]`) || strings.Contains(b, "wire") || len(kinds) != 2 {
+		t.Errorf("redacted body = %s, Redact calls = %d", b, len(kinds))
 	}
 }
 
@@ -438,20 +433,17 @@ func TestRawBodiesStockSDKProviderNever(t *testing.T) {
 	}
 }
 
-// The global path: otel.Install's zero-config local sink registered
-// globally and an agent with no LoggerProvider option. Under dev with
-// RawBodies the marker is reached through the registered global
-// provider (the core re-reads the global at each ask) and the raw
-// record lands in the sink. The agent is built after Install: an
-// earlier test in this process may have left its own (shut-down)
-// provider registered, which an agent built then would emit to.
+// The global path: a pipeline registered by Install and an agent with
+// no LoggerProvider option. Under dev with RawBodies the marker is
+// reached through the registered global provider (the core re-reads the
+// global at each ask) and the raw record reaches the Sink. The agent is
+// built after Install: an earlier test in this process may have left
+// its own (shut-down) provider registered, which an agent built then
+// would emit to.
 func TestRawBodiesThroughTheGlobalProvider(t *testing.T) {
-	t.Setenv("WEFT_ENV", "dev")
-	t.Setenv("WEFT_DISCOVERY", "off")
-	t.Setenv("WEFT_STUDIO_URL", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	t.Setenv("WEFT_DB", filepath.Join(t.TempDir(), "weft.db"))
-	shutdown := Install(RawBodies(true), Heartbeat(0))
+	devEnv(t, map[string]string{"WEFT_ENV": "dev"})
+	sink := newMemSink()
+	shutdown := Install(RawBodies(true), Heartbeat(0), sink.option())
 	defer shutdown()
 	var wanted bool
 	agt := core.New(wefttest.Script(wefttest.Say("done")),
@@ -463,14 +455,20 @@ func TestRawBodiesThroughTheGlobalProvider(t *testing.T) {
 	if !wanted {
 		t.Fatal("WantsRaw = false through the globally installed pipeline")
 	}
-	db := LocalDB()
-	if db == nil {
-		t.Fatal("no local sink installed")
+	if n := len(runRecords(sink, res.ID, "raw")); n != 1 {
+		t.Fatalf("raw records = %d; want one", n)
 	}
-	reqs, err := db.Requests(context.Background(), res.ID, obsdb.RequestQuery{})
-	if err != nil || len(reqs) != 1 || reqs[0].Wire == nil || reqs[0].Wire.Request.Body != `{"q":"wire"}` {
-		t.Fatalf("requests = %+v, %v; want one with its raw record", reqs, err)
+}
+
+// runRecords is the sink's records of kind for run id.
+func runRecords(sink *memSink, id, kind string) []sdklog.Record {
+	var out []sdklog.Record
+	for _, r := range sink.ofRecord(kind) {
+		if attrOf(r, "weft.run.id") == id {
+			out = append(out, r)
+		}
 	}
+	return out
 }
 
 // worstRawModel reports n exchanges whose bodies are the raw record's
@@ -492,8 +490,8 @@ func (m worstRawModel) Stream(ctx context.Context, req core.ModelRequest) iter.S
 	return m.next.Stream(ctx, req)
 }
 
-// Under RawBodies a Studio destination's log export never posts a body
-// over Studio's 16 MiB ingest limit, whatever the raw records hold: a
+// Under RawBodies a first-party OTLP destination's log export never
+// posts a body over a viewer's 16 MiB ingest limit (Studio's), whatever the raw records hold: a
 // burst of worst-case records (each ≈ 3 MiB encoded) is split by bytes
 // across posts, and every record still arrives.
 func TestRawBodiesBatchBoundedByBytes(t *testing.T) {
@@ -516,7 +514,7 @@ func TestRawBodiesBatchBoundedByBytes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Studio(srv.URL, "tok"), RawBodies(true))
+	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), OTLP(srv.URL, FirstParty(), bearer("tok")), RawBodies(true))
 	if err != nil {
 		t.Fatal(err)
 	}

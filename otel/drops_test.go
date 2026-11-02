@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -248,31 +247,40 @@ func TestHeartbeatCarriesDestinationDrops(t *testing.T) {
 	}
 }
 
-// TestLocalFloodLosesNothing: the Local destination writes each record
-// synchronously on the emitting goroutine — no queue — so a storm costs
-// it time, never records: every event the root reports emitted is
-// stored, and nothing is counted lost.
-func TestLocalFloodLosesNothing(t *testing.T) {
-	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0),
-		Local(filepath.Join(t.TempDir(), "weft.db")))
+// TestSinkFloodLosesNothing: a Sink is written synchronously on the
+// emitting goroutine — no queue — so a storm costs it time, never
+// records: every event the run reports emitted (the root span's
+// weft.run.events) reaches the Sink, and nothing is counted lost. The
+// store-side form (obsdb's EventCount) is weft/exporter's.
+func TestSinkFloodLosesNothing(t *testing.T) {
+	sink := newMemSink()
+	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0), sink.option())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(testCtx(t)) }()
-	res, err := stormAgent(10, 200, 3, core.TracerProvider(p.TracerProvider()),
-		core.LoggerProvider(p.LoggerProvider())).Generate(context.Background(), core.Prompt("storm"))
-	if err != nil {
+	if _, err := stormAgent(10, 200, 3, core.TracerProvider(p.TracerProvider()),
+		core.LoggerProvider(p.LoggerProvider())).Generate(context.Background(), core.Prompt("storm")); err != nil {
 		t.Fatal(err)
 	}
-	det, err := p.LocalDB().Run(context.Background(), res.ID)
-	if err != nil {
-		t.Fatal(err)
+	var emitted int64 = -1
+	for _, sp := range sink.spanStubs() {
+		for _, kv := range sp.Attributes {
+			if string(kv.Key) == "weft.run.events" {
+				emitted = kv.Value.AsInt64()
+			}
+		}
 	}
-	if det.EventsEmitted == 0 || det.EventCount != det.EventsEmitted {
-		t.Errorf("stored %d of %d emitted events: Local lost records", det.EventCount, det.EventsEmitted)
+	got := int64(len(sink.ofRecord("event")))
+	if emitted <= 0 || got != emitted {
+		t.Errorf("the Sink received %d of %d emitted events: it lost records", got, emitted)
+	}
+	// 200 deltas per storm step, plus the final answer's one.
+	if deltas := len(sink.ofRecord("delta")); deltas != 10*200+1 {
+		t.Errorf("the Sink received %d deltas, want %d", deltas, 10*200+1)
 	}
 	if got := p.dests[0].logProc.(*destProc).drops.lost(); got != 0 {
-		t.Errorf("Local counted %d lost", got)
+		t.Errorf("the Sink counted %d lost", got)
 	}
 }
 
@@ -350,15 +358,15 @@ func TestBlockingDevGateLocalAndBoth(t *testing.T) {
 		warns   int
 		warn    string
 	}{
-		{"Local, NoEnv with DevMode", nil, true, true, false, false, 0, ""},
-		{"Local, DevMode, WEFT_ENV unset", nil, false, true, false, false, 0, ""},
-		{"Local, WEFT_ENV unset", nil, false, false, false, false, 0, ""},
+		{"Sink, NoEnv with DevMode", nil, true, true, false, false, 0, ""},
+		{"Sink, DevMode, WEFT_ENV unset", nil, false, true, false, false, 0, ""},
+		{"Sink, WEFT_ENV unset", nil, false, false, false, false, 0, ""},
 		{"both, DevMode, WEFT_ENV=prod", map[string]string{"WEFT_ENV": "prod"}, false, true, true, true, 1, "otel: DevMode ignored: WEFT_ENV=prod"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			devEnv(t, c.env)
 			logBuf := captureSlogSafe(t)
-			opts := []Option{NoGlobal(), Heartbeat(0), Local(filepath.Join(t.TempDir(), "weft.db"), Blocking())}
+			opts := []Option{NoGlobal(), Heartbeat(0), newMemSink().option(Blocking())}
 			if c.queued {
 				opts = append(opts, Exporters(nil, newMemExporter(), Blocking()))
 			}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/runtime"
 	"github.com/weftgo/weft/scope"
@@ -44,7 +45,7 @@ func newServed(t *testing.T, build func(...weft.Option) *weft.Agent) *served {
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { _ = srv.Close() })
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

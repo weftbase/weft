@@ -9,6 +9,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -45,7 +46,7 @@ func (c *capture) ForceFlush(context.Context) error { return nil }
 func (c *capture) batch() obsdb.Batch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return obsdb.Batch{Spans: otel.FromSDKSpans(c.spans), Records: otel.FromSDKRecords(c.logs)}
+	return obsdb.Batch{Spans: exporter.FromSDKSpans(c.spans), Records: exporter.FromSDKRecords(c.logs)}
 }
 
 // fiftySteps runs a 50-step scripted agent — 49 tool steps and a final
@@ -88,14 +89,14 @@ func TestRequestRecordsThroughThePipeline(t *testing.T) {
 	ctx := context.Background()
 	off := &capture{}
 	path := filepath.Join(t.TempDir(), "weft.db")
-	p, err := otel.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
-		otel.Local(path), otel.Exporters(off, off))
+	p, err := exporter.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
+		exporter.Local(path), otel.Exporters(off, off))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(ctx) }()
 	runID := fiftySteps(t, p)
-	local := p.LocalDB()
+	local := exporter.LocalDBOf(p)
 
 	run, err := local.Run(ctx, runID)
 	if err != nil {

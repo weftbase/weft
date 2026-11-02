@@ -14,7 +14,7 @@
 // records and invoke span a run produces — so the example stays
 // dependency-light. A real app records the same rows through weft/otel:
 //
-//	p, _ := otel.Start(ctx, otel.Local(path), otel.NoGlobal())
+//	p, _ := exporter.Start(ctx, exporter.Local(path), otel.NoGlobal())
 //	agent := weft.New(model, weft.LoggerProvider(p.LoggerProvider()),
 //		weft.TracerProvider(p.TracerProvider()))
 //

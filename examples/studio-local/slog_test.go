@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 	"github.com/weftgo/weft/thread"
@@ -57,13 +58,13 @@ func getLogs(t *testing.T, h http.Handler, runID string) logsDoc {
 }
 
 func TestModelLogLinesArriveUnderTheStep(t *testing.T) {
-	shutdown := otel.Install(otel.NoEnv(), otel.Local(t.TempDir()+"/weft.db"), otel.Slog())
+	shutdown := exporter.Install(otel.NoEnv(), exporter.Local(t.TempDir()+"/weft.db"), otel.Slog())
 	defer shutdown()
-	h := studio.Handler(studio.DB(otel.LocalDB()))
+	h := studio.Handler(studio.DB(exporter.LocalDB()))
 	runID := runDemoTurn(t, "where is order 42?")
 
 	// Each step's chat span, by step index.
-	spans, err := otel.LocalDB().RunSpans(context.Background(), runID)
+	spans, err := exporter.LocalDB().RunSpans(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +104,9 @@ func TestModelLogLinesArriveUnderTheStep(t *testing.T) {
 }
 
 func TestNoBridgeHintNamesSlog(t *testing.T) {
-	shutdown := otel.Install(otel.NoEnv(), otel.Local(t.TempDir()+"/weft.db"))
+	shutdown := exporter.Install(otel.NoEnv(), exporter.Local(t.TempDir()+"/weft.db"))
 	defer shutdown()
-	h := studio.Handler(studio.DB(otel.LocalDB()))
+	h := studio.Handler(studio.DB(exporter.LocalDB()))
 	doc := getLogs(t, h, runDemoTurn(t, "where is order 42?"))
 	if len(doc.Logs) != 0 || doc.Badge != "not_recorded" || !strings.Contains(doc.Fix, "otel.Slog()") {
 		t.Errorf("an unbridged run's logs = %+v, want an empty page with the not_recorded hint naming otel.Slog()", doc)

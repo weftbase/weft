@@ -82,14 +82,14 @@ type destProc struct {
 	noDeltas bool
 	drops    *dropCounter
 	// raw is whether this chain takes weft.raw records (ADR 0028 §12):
-	// RawBodies in force (dev only) and a Local or Studio destination
+	// RawBodies in force (dev only) and a first-party destination
 	// with content on (dest.rawOn). It answers Enabled for weft.raw, so
 	// with no such chain the core builds no raw record and the adapters
 	// buffer no body; a raw record that reaches a chain without it is
 	// dropped.
 	raw bool
 	// adm admits records ahead of a batch chain's SDK queue (nil for
-	// Local, written synchronously: no queue to overflow).
+	// a Sink, written synchronously: no queue to overflow).
 	adm *admission
 	// appLogs is whether this chain takes the slog bridge's records
 	// (dest.appLogsOn): it answers Enabled for the bridge's scope, and a
@@ -208,7 +208,7 @@ func (p *destProc) OnEmit(ctx context.Context, r *sdklog.Record) error {
 	if t == tierPriority {
 		// The heartbeat and the run's bracket (run_start, run_finish)
 		// carry this destination's own loss so far (weft.records.dropped,
-		// record contract §4): Studio's ingest health hears what the app
+		// record contract §4): a viewer's ingest health hears what the app
 		// lost on the way to it — at every run's end, however short the
 		// run, and every heartbeat of a long one.
 		if n := p.drops.lost(); n > 0 {
@@ -344,7 +344,7 @@ func (p *destProc) redactRaw(clone *sdklog.Record) (keep bool) {
 // shapeAppLog applies the destination's content policy to one bridged
 // app log line (record contract §4) — an app may log anything, prompts
 // and PII included, so its lines are content like any transcript
-// field. Content off (a Local or Studio destination under NoContent, or
+// field. Content off (a first-party destination under NoContent, or
 // a content-off third party that opted in with AppLogs(true)): the
 // message and every string attribute value are emptied and the record
 // marked weft.content=stripped — its existence, time, severity, span
@@ -795,8 +795,8 @@ func throttle(last *atomic.Int64) bool {
 
 // countingLogExporter and countingSpanExporter wrap a batch
 // destination's exporters: what a failed export loses is the
-// destination's own drops, counted and warned like the Local sink's
-// failed writes. (The OTLP exporters retry inside Export; an error here
+// destination's own drops, counted and warned like a Sink's failed
+// writes. (The OTLP exporters retry inside Export; an error here
 // is after they gave up.)
 type countingLogExporter struct {
 	sdklog.Exporter

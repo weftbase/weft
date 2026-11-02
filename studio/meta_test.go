@@ -17,6 +17,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -47,7 +48,7 @@ func metaOf(t *testing.T, ts *httptest.Server, host string) metaDoc {
 func runThrough(t *testing.T, ts *httptest.Server, agentOpts []core.Option, dest ...otel.DestOption) string {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, "", dest...), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, "", dest...), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

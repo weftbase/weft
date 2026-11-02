@@ -45,7 +45,7 @@ type config struct {
 	offReasons   map[string]string // OffReason: capability → the host's own words
 }
 
-// DB serves Studio over db (setup A: DB(otel.LocalDB()) — the same
+// DB serves Studio over db (setup A: DB(exporter.LocalDB()) — the same
 // handle weft/otel's Local destination writes, so the UI reads what
 // the run wrote, live, through the handle's own hub). Without DB or
 // Open, New opens the history database at $WEFT_DB or ./.weft/weft.db

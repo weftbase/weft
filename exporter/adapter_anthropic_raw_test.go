@@ -1,0 +1,274 @@
+package exporter_test
+
+// Moved from weft/anthropic: plan A6's Done line for the anthropic
+// adapter, store side: under
+// otel.RawBodies(true) and WEFT_ENV=dev, a step's wire pair round-trips
+// through the local sink byte for byte, and no credential the SDK (or
+// a gateway in front of it) sent reaches any stored byte.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/weftgo/weft/anthropic"
+	"github.com/weftgo/weft/exporter"
+
+	antsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/obsdb"
+	"github.com/weftgo/weft/otel"
+)
+
+// anthropicRawEnv is the development environment RawBodies needs, with every
+// environment destination and the discovery file switched off, so the
+// pipeline is exactly the test's Local sink.
+func anthropicRawEnv(t *testing.T) {
+	t.Setenv("WEFT_ENV", "dev")
+	t.Setenv("WEFT_DISCOVERY", "off")
+	t.Setenv("WEFT_STUDIO_URL", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+}
+
+// anthropicWireServer serves the SSE fixture with response headers that include
+// a cookie, and records the request exactly as it arrived.
+type anthropicWireServer struct {
+	*httptest.Server
+	sse    []byte
+	mu     sync.Mutex
+	body   []byte
+	header http.Header
+}
+
+func anthropicNewWireServer(t *testing.T) *anthropicWireServer {
+	t.Helper()
+	sse, err := os.ReadFile("../anthropic/testdata/text_only.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := &anthropicWireServer{sse: sse}
+	ws.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		ws.mu.Lock()
+		ws.body, ws.header = b, r.Header.Clone()
+		ws.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Request-Id", "req_wire_1")
+		w.Header().Set("Set-Cookie", "session=SECRET-set-cookie")
+		_, _ = w.Write(sse)
+	}))
+	t.Cleanup(ws.Close)
+	return ws
+}
+
+// anthropicRawRound runs one step of an anthropic model on c under a Local sink
+// with RawBodies, and returns the attempt's request record, the sink's
+// file bytes (database and WAL, after shutdown) and the run id.
+func anthropicRawRound(t *testing.T, c antsdk.Client) (obsdb.RequestRecord, []byte) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "weft.db")
+	p, err := exporter.Start(ctx, otel.NoGlobal(), exporter.Local(path), otel.RawBodies(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agt := core.New(anthropic.Model("claude-test", anthropic.Client(&c)),
+		core.LoggerProvider(p.LoggerProvider()), core.TracerProvider(p.TracerProvider()))
+	res, err := agt.Generate(ctx, core.Prompt("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ForceFlush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := exporter.LocalDBOf(p).Requests(ctx, res.ID, obsdb.RequestQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("request records = %d, want 1", len(reqs))
+	}
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var stored []byte
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored = append(stored, b...)
+	}
+	return reqs[0], stored
+}
+
+// anthropicStripList is ADR 0028 §12's header floor plus anthropic-sdk-go's own
+// sensitive list.
+var anthropicStripList = []string{
+	"authorization", "proxy-authorization", "x-api-key", "api-key",
+	"cookie", "set-cookie", "x-goog-api-key",
+}
+
+func anthropicAssertNoStripped(t *testing.T, side string, h map[string][]string) {
+	t.Helper()
+	for k := range h {
+		for _, s := range anthropicStripList {
+			if strings.EqualFold(k, s) {
+				t.Errorf("%s header %q survived", side, k)
+			}
+		}
+	}
+}
+
+func TestAnthropicRawBodiesRoundTripLocalSink(t *testing.T) {
+	anthropicRawEnv(t)
+	ws := anthropicNewWireServer(t)
+	c := antsdk.NewClient(option.WithBaseURL(ws.URL), option.WithAPIKey("SECRET-api-key"),
+		option.WithAuthToken("SECRET-auth-token"), option.WithMaxRetries(0),
+		option.WithHeader("Cookie", "c=SECRET-cookie"),
+		option.WithHeader("Proxy-Authorization", "Basic SECRET-proxy"))
+	rec, stored := anthropicRawRound(t, c)
+	w := rec.Wire
+	if w == nil {
+		t.Fatal("the attempt's request record carries no raw record")
+	}
+	ws.mu.Lock()
+	sent, got := ws.body, ws.header
+	ws.mu.Unlock()
+	if w.Request.Body != string(sent) || w.Request.Encoding != "" {
+		t.Errorf("stored request body differs from what the server received:\n got %q\nwant %q", w.Request.Body, sent)
+	}
+	if w.Response == nil || w.Response.Body != string(ws.sse) {
+		t.Fatalf("stored response body differs from what the server sent: %+v", w.Response)
+	}
+	if w.Request.Method != http.MethodPost || !strings.HasSuffix(w.Request.URL, "/v1/messages") ||
+		w.Request.MediaType != "application/json" || w.Response.Status != 200 ||
+		w.Response.MediaType != "text/event-stream" || w.Step != 0 || w.Attempt != 1 {
+		t.Errorf("wire = %s %s (%s) → %d (%s), step %d attempt %d", w.Request.Method, w.Request.URL,
+			w.Request.MediaType, w.Response.Status, w.Response.MediaType, w.Step, w.Attempt)
+	}
+	if w.Response.Headers["Request-Id"][0] != "req_wire_1" || w.Request.Headers["Anthropic-Version"] == nil {
+		t.Errorf("kept headers = %v / %v", w.Request.Headers, w.Response.Headers)
+	}
+	anthropicAssertNoStripped(t, "request", w.Request.Headers)
+	anthropicAssertNoStripped(t, "response", w.Response.Headers)
+	for _, h := range []string{"authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"} {
+		listed := false
+		for _, r := range w.RedactedHeaders {
+			listed = listed || r == h
+		}
+		if !listed {
+			t.Errorf("redacted_headers %v does not name %s", w.RedactedHeaders, h)
+		}
+	}
+	// The server did receive the credentials: the capture stripped them
+	// from the record, never from the request.
+	if got.Get("X-Api-Key") != "SECRET-api-key" || got.Get("Authorization") != "Bearer SECRET-auth-token" {
+		t.Errorf("the request lost its credentials: %v", got)
+	}
+	if bytes.Contains(stored, []byte("SECRET")) {
+		t.Error("a credential reached the local sink's file")
+	}
+}
+
+// Every case variant of every credential header the SDKs send, times
+// every value shape — set on the wire by a client middleware outside the
+// adapter's, so non-canonical spellings reach the capture as written —
+// plus Bearer/Basic values under an innocuous name: the header is
+// stripped from the stored record and named in redacted_headers, and
+// its value is in no byte of the local sink (database and WAL) nor of
+// the requests row. Fuzz-seeded: the seeds are FuzzRawRedaction's.
+func TestAnthropicRawBodiesNoCredentialStored(t *testing.T) {
+	anthropicRawEnv(t)
+	names := []string{
+		"authorization", "AUTHORIZATION", "Authorization", "X-API-Key", "x-api-key", "X-Api-Key",
+		"api-key", "Api-Key", "Proxy-Authorization", "cookie", "COOKIE", "x-goog-api-key",
+		"X-Goog-Api-Key", "X-Auth-Token", "X-Client-Secret",
+	}
+	shapes := []func(id string) string{
+		func(id string) string { return "SECRET-" + id },
+		func(id string) string { return "Bearer SECRET-" + id },
+		func(id string) string { return "Basic U0VDUkVU" + id },
+		func(id string) string { return `SECRET-"q"<&>` + id },
+	}
+	type tc struct{ name, value string }
+	var cases []tc
+	for _, n := range names {
+		for i, shape := range shapes {
+			cases = append(cases, tc{n, shape(strings.ToLower(n) + "-" + string(rune('a'+i)))})
+		}
+	}
+	for _, v := range []string{"Bearer SECRET-trace", "basic SECRET-trace2", "BEARER SECRET-trace3"} {
+		cases = append(cases, tc{"X-Trace", v})
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/"+c.value, func(t *testing.T) {
+			ws := anthropicNewWireServer(t)
+			cl := antsdk.NewClient(option.WithBaseURL(ws.URL), option.WithAPIKey("SECRET-key"), option.WithMaxRetries(0),
+				option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+					r.Header[c.name] = []string{c.value}
+					return next(r)
+				}))
+			rec, stored := anthropicRawRound(t, cl)
+			if rec.Wire == nil {
+				t.Fatal("no raw record")
+			}
+			anthropicAssertNoStripped(t, "request", rec.Wire.Request.Headers)
+			for k := range rec.Wire.Request.Headers {
+				if strings.EqualFold(k, c.name) {
+					t.Errorf("%q survived as %q", c.name, k)
+				}
+			}
+			listed := false
+			for _, r := range rec.Wire.RedactedHeaders {
+				listed = listed || r == strings.ToLower(c.name)
+			}
+			if !listed {
+				t.Errorf("redacted_headers %v does not name %q", rec.Wire.RedactedHeaders, c.name)
+			}
+			esc, _ := json.Marshal(c.value)
+			for _, needle := range [][]byte{[]byte(c.value), esc[1 : len(esc)-1], []byte("SECRET-key")} {
+				if bytes.Contains(stored, needle) {
+					t.Errorf("%q reached the local sink's file", needle)
+				}
+			}
+			b, _ := json.Marshal(rec)
+			if bytes.Contains(b, []byte("SECRET")) || bytes.Contains(b, []byte("U0VDUkVU")) {
+				t.Errorf("the requests row carries a credential: %s", b)
+			}
+		})
+	}
+}
+
+// Outside WEFT_ENV=dev the option is a no-op: the adapter's capture
+// asks and is told no, the request goes out untouched, and the run
+// holds no raw record.
+func TestAnthropicRawBodiesOffOutsideDev(t *testing.T) {
+	anthropicRawEnv(t)
+	t.Setenv("WEFT_ENV", "")
+	ws := anthropicNewWireServer(t)
+	var asked, wanted bool
+	c := antsdk.NewClient(option.WithBaseURL(ws.URL), option.WithAPIKey("k"), option.WithMaxRetries(0),
+		option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			asked, wanted = true, core.ReportFromContext(r.Context()).WantsRaw()
+			return next(r)
+		}))
+	rec, _ := anthropicRawRound(t, c)
+	if !asked || wanted {
+		t.Errorf("asked %v, WantsRaw %v; want the adapter told no", asked, wanted)
+	}
+	if rec.Wire != nil {
+		t.Errorf("a raw record was stored outside dev: %+v", rec.Wire)
+	}
+}

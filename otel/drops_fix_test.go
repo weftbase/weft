@@ -475,7 +475,7 @@ func TestOverflowWarnsOncePerDestination(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer ts.Close()
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0),
-		Studio(ts.URL, "", QueueSize(64), BatchDelay(time.Hour)),
+		OTLP(ts.URL, Name("studio"), FirstParty(), QueueSize(64), BatchDelay(time.Hour)),
 		Exporters(&spanCapture{}, newMemExporter(), QueueSize(64), BatchDelay(time.Hour)))
 	if err != nil {
 		t.Fatal(err)

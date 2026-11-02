@@ -7,9 +7,9 @@
 // Setup A embeds the handler next to the app's own pipeline — the
 // five lines of WEFT-OTEL-DATA-ARCHITECTURE §10.1:
 //
-//	defer otel.Install()() // local sink ./.weft/weft.db, content on, no network
+//	defer exporter.Install()() // local sink ./.weft/weft.db, content on, no network
 //	mux.Handle("/studio/", http.StripPrefix("/studio",
-//		studio.Handler(studio.DB(otel.LocalDB())))) // same DB, same live hub [D4]
+//		studio.Handler(studio.DB(exporter.LocalDB())))) // same DB, same live hub [D4]
 //
 // Passing the pipeline's handle is what makes it live: writes publish
 // to the handle's hub and the /api/live stream follows, no network

@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -44,11 +43,7 @@ type Pipeline struct {
 	tp *sdktrace.TracerProvider
 	lp *LoggerProvider
 
-	local       obsdb.DB   // the Local destination's DB (the last one configured): what LocalDB returns
-	locals      []obsdb.DB // every Local destination's DB; all close at Shutdown
-	dests       []*destRuntime
-	studioURL   string
-	studioToken string
+	dests []*destRuntime
 
 	tracker  *runTracker
 	bridge   bridgeState // the slog bridge (slog.go)
@@ -87,7 +82,7 @@ type LoggerProvider struct {
 // detail level: otel.DevDetail() and the dev gate at Start. It is the
 // duck-typed marker the core asks before it starts a layer span or
 // keeps a repair's original arguments (ADR 0016's 2026-10-26
-// amendment); the destinations still decide (Local and Studio with
+// amendment); the destinations still decide (first-party ones with
 // content on only).
 func (p *LoggerProvider) DevDetail() bool { return p != nil && p.detail }
 
@@ -95,22 +90,19 @@ func (p *LoggerProvider) DevDetail() bool { return p != nil && p.detail }
 // otel.RawBodies(true) and the dev gate at Start (WEFT_ENV=dev read
 // without NoEnv, or otel.DevMode unless an explicit WEFT_ENV overrules it).
 // It is the duck-typed marker core.Reporter.WantsRaw asks for; the
-// destinations still decide per chain (Local and Studio only).
+// destinations still decide per chain (first-party ones only).
 func (p *LoggerProvider) RawBodies() bool { return p != nil && p.raw }
 
-// LocalDB returns the pipeline's local obsdb.DB — the handle setup A
-// shares with Studio (studio.DB(otel.LocalDB())). nil without a Local
-// destination.
-//
-// The spec's S2.1 names this accessor otel.Local(), which cannot
-// coexist with the Local(path) destination option in Go (one package,
-// one name); LocalDB is the recorded deviation — see
-// weft-otel-build/notes-lane-a2.md.
-func (p *Pipeline) LocalDB() obsdb.DB { return p.local }
-
-// StudioEndpoint returns the pipeline's Studio destination (url and
-// token), which weft/runtime dials by default. "" without one.
-func (p *Pipeline) StudioEndpoint() (string, string) { return p.studioURL, p.studioToken }
+// Destinations names the destinations the pipeline built, in order —
+// each one's label (Name, or the kind's: "otlp", "otlp(env)",
+// "datadog", …). A destination Install skipped is not among them.
+func (p *Pipeline) Destinations() []string {
+	out := make([]string, len(p.dests))
+	for i, rt := range p.dests {
+		out[i] = rt.name
+	}
+	return out
+}
 
 // ForceFlush flushes every destination, all at once: each
 // destination's span and log chains flush on their own goroutines
@@ -145,10 +137,10 @@ func (p *Pipeline) ForceFlush(ctx context.Context) error {
 }
 
 // Shutdown runs S2.4's order: stop heartbeats → flush every destination
-// in parallel (5 s budget) → shut down the providers → close the local
-// DB last. Every wait in it is bounded by ctx: a destination stuck in a
-// write (the Local sink behind another process's lock, a hung
-// exporter) costs the caller its context, never more. Shutdown runs
+// in parallel (5 s budget) → shut down the providers → shut every
+// Sink's exporters down last. Every wait in it is bounded by ctx: a
+// destination stuck in a write (a Sink behind another process's lock,
+// a hung exporter) costs the caller its context, never more. Shutdown runs
 // once; a concurrent or later call returns the first's result, or its
 // own ctx's error should that come first.
 func (p *Pipeline) Shutdown(ctx context.Context) error {
@@ -166,8 +158,8 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 	if p.bridge.restore != nil {
 		p.bridge.restore()
 	}
-	// The package accessors stop handing this pipeline out first: a
-	// LocalDB() after shutdown is nil, not a closed database.
+	// Installed stops handing this pipeline out first: a wrapper's
+	// accessor never hands out a Sink being closed.
 	installedMu.Lock()
 	if installedPipeline == p {
 		installedPipeline = nil
@@ -183,8 +175,8 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 	if p.tp != nil {
 		_ = p.tp.Shutdown(ctx)
 	}
-	for _, db := range p.locals {
-		p.closeErr = errors.Join(p.closeErr, db.Close())
+	for _, rt := range p.dests {
+		p.closeErr = errors.Join(p.closeErr, rt.closeSink(ctx))
 	}
 	return p.closeErr
 }
@@ -221,22 +213,14 @@ func Start(ctx context.Context, opts ...Option) (*Pipeline, error) {
 		o.apply(&cfg)
 	}
 	dests := append([]dest{}, cfg.dests...)
-	var joined *discovered
 	if !cfg.noEnv {
-		getenv := envGetenv
-		// Explicit > environment > file: a Studio or a Local named in
-		// code (otel.Studio, otel.Local) switches the discovery read
-		// off, as WEFT_STUDIO_URL and NoDiscovery do — the file never
-		// adds a second Studio, never writes runs into a store the
-		// caller did not name (issue 001), and never becomes the one
-		// StudioEndpoint (and runtime.Install) reports.
-		if !cfg.noDiscovery && !hasStudio(cfg.dests) && !hasLocal(cfg.dests) {
-			getenv, joined = discoverStudio(getenv)
-		}
-		dests = append(dests, dedupe(cfg.dests, envDestinations(getenv))...)
+		dests = append(dests, dedupe(cfg.dests, envDestinations(envGetenv))...)
 	}
 	if len(dests) == 0 {
-		return nil, errNoDestinations
+		if len(cfg.fallback) == 0 {
+			return nil, ErrNoDestinations
+		}
+		dests = append(dests, cfg.fallback...)
 	}
 	// RawBodies is a development switch (ADR 0028 §12): kept only when
 	// the dev gate holds (devGate: WEFT_ENV=dev read from the
@@ -259,23 +243,16 @@ func Start(ctx context.Context, opts ...Option) (*Pipeline, error) {
 	if !dev {
 		for i := range dests {
 			if dests[i].blocking {
-				// Local has no queue and ignores Blocking: nothing to
+				// A Sink has no queue and ignores Blocking: nothing to
 				// refuse, so nothing to warn about.
 				dests[i].blocking = false
-				blockingRefused = blockingRefused || dests[i].kind != destLocal
+				blockingRefused = blockingRefused || dests[i].kind != destSink
 			}
 		}
 	}
 	p, failed := build(ctx, cfg, dests)
 	if failed != nil {
 		return nil, failed
-	}
-	if joined != nil && p.studioURL == normalizeEnvEndpoint(joined.info.URL) {
-		// The one INFO line: which Studio this process joined, and how
-		// to stop it doing so.
-		slog.Info("weft/otel: joined the running Studio", "url", joined.info.URL,
-			"pid", joined.info.PID, "file", joined.path,
-			"hint", "WEFT_STUDIO_URL names another; otel.NoDiscovery() or WEFT_DISCOVERY=off ignores the file")
 	}
 	switch {
 	case refusal.devMode && (rawRefused || blockingRefused || detailRefused):
@@ -300,11 +277,11 @@ func Start(ctx context.Context, opts ...Option) (*Pipeline, error) {
 	// says so at Start.
 	if byDevMode && cfg.rawBodies {
 		slog.Info("otel: raw bodies on by otel.DevMode()",
-			"hint", "every model call's provider request and response is recorded (Local and Studio); a production binary never sets DevMode")
+			"hint", "every model call's provider request and response is recorded (first-party destinations); a production binary never sets DevMode")
 	}
 	if byDevMode && cfg.devDetail {
 		slog.Info("otel: dev detail on by otel.DevDetail() under otel.DevMode()",
-			"hint", "every model and tool call records one span per middleware layer (Local and Studio); a production binary never sets DevMode")
+			"hint", "every model and tool call records one span per middleware layer (first-party destinations); a production binary never sets DevMode")
 	}
 	if byDevMode && hasBlocking(dests) {
 		slog.Info("otel: Blocking on by otel.DevMode()",
@@ -319,26 +296,28 @@ func Start(ctx context.Context, opts ...Option) (*Pipeline, error) {
 	return p, nil
 }
 
-// errNoDestinations is Start's answer when nothing is configured —
-// Install's cue to fall back to the zero-config local sink.
-var errNoDestinations = errors.New("otel: no destinations configured")
+// ErrNoDestinations is Start's answer when nothing is configured: no
+// destination option, no environment destination and no Fallback.
+// Install answers it with one INFO line and a no-op.
+var ErrNoDestinations = errors.New("otel: no destinations configured")
 
 // errAllFailed is Install's WARN-and-skip mode ending with nothing
-// built. Not errNoDestinations: a program that named its destinations
-// does not get the local sink behind its back (Install falls back only
-// when every failed destination came from the environment).
+// built. Not ErrNoDestinations: a program that named its destinations
+// does not get a Fallback destination behind its back (Install falls
+// back only when every failed destination came from the environment).
 var errAllFailed = errors.New("otel: every destination failed to build")
 
 // Install starts the pipeline and registers it globally. It never
-// panics and never fails the program: with no options at all (and no
-// environment destinations) it writes the local sink only (the
-// zero-config rule), and a destination that cannot be built is logged
-// (slog, WARN) and skipped. When no destination option was passed and
-// every environment destination failed to build, it falls back to the
-// local sink with one WARN rather than recording nothing (Start returns
-// the error instead); a program that passed its own destinations gets
-// no destination it did not name. The returned function flushes and
-// shuts everything down; call it on exit.
+// panics and never fails the program: a destination that cannot be
+// built is logged (slog, WARN) and skipped. With nothing configured —
+// no destination option, no OTEL_EXPORTER_OTLP_ENDPOINT, no Fallback —
+// it records nothing: one INFO line says how to configure a
+// destination, and the returned function is a no-op. When no
+// destination option was passed and every environment destination
+// failed to build, it uses the Fallback destinations with one WARN, if
+// there are any; a program that passed its own destinations gets no
+// destination it did not name. The returned function flushes and shuts
+// everything down; call it on exit.
 func Install(opts ...Option) func() {
 	// NoGlobal is Start's test escape hatch; Install always registers.
 	// dropFailed from the first attempt: each destination is built
@@ -347,15 +326,16 @@ func Install(opts ...Option) func() {
 	opts = append(append([]Option{}, opts...), forceGlobal{}, dropFailed{})
 	p, err := Start(context.Background(), opts...)
 	switch {
-	case errors.Is(err, errNoDestinations):
-		p, err = Start(context.Background(), append(opts, Local(""))...)
-	case errors.Is(err, errAllFailed) && !explicitDestinations(opts):
+	case errors.Is(err, ErrNoDestinations):
+		slog.Info("weft/otel: no destination configured; recording nothing",
+			"hint", "set OTEL_EXPORTER_OTLP_ENDPOINT, or pass a destination to otel.Install (otel.OTLP, otel.Exporters, a local viewer's sink such as weft/exporter.Local)")
+		return func() {}
+	case errors.Is(err, errAllFailed) && !explicitDestinations(opts) && hasFallback(opts):
 		// Only environment destinations were configured and none built:
-		// the zero-config local sink rather than recording nothing. A
-		// program that named its own destinations is never handed one.
-		slog.Warn("weft/otel: every environment destination failed to build; falling back to the local sink",
-			"path", defaultLocalPath(envGetenv))
-		p, err = Start(context.Background(), append(opts, NoEnv(), Local(""))...)
+		// the fallback rather than recording nothing. A program that
+		// named its own destinations is never handed one.
+		slog.Warn("weft/otel: every environment destination failed to build; using the fallback destination")
+		p, err = Start(context.Background(), append(opts, NoEnv())...)
 	}
 	if err != nil {
 		slog.Warn("weft/otel: install failed", "err", err.Error())
@@ -369,13 +349,18 @@ func Install(opts ...Option) func() {
 }
 
 // explicitDestinations reports whether opts name any destination
-// (Local, Studio, Datadog, Langfuse, OTLP, Exporters).
-func explicitDestinations(opts []Option) bool {
+// (Sink, Datadog, Langfuse, OTLP, Exporters), Fallback's aside.
+func explicitDestinations(opts []Option) bool { return len(configOf(opts).dests) > 0 }
+
+// hasFallback reports whether opts carry Fallback destinations.
+func hasFallback(opts []Option) bool { return len(configOf(opts).fallback) > 0 }
+
+func configOf(opts []Option) config {
 	var c config
 	for _, o := range opts {
 		o.apply(&c)
 	}
-	return len(c.dests) > 0
+	return c
 }
 
 // forceGlobal clears the NoGlobal flag (Install always registers).
@@ -520,13 +505,6 @@ func build(ctx context.Context, cfg config, dests []dest) (p *Pipeline, failed e
 		if rt.logProc != nil {
 			logProcs = append(logProcs, rt.logProc)
 		}
-		if rt.localDB != nil {
-			p.local = rt.localDB
-			p.locals = append(p.locals, rt.localDB)
-		}
-		if d.kind == destStudio {
-			p.studioURL, p.studioToken = normalizeEnvEndpoint(d.url), d.token
-		}
 	}
 	if len(built) == 0 {
 		return nil, errAllFailed
@@ -551,11 +529,16 @@ func build(ctx context.Context, cfg config, dests []dest) (p *Pipeline, failed e
 
 // destRuntime is one built destination.
 type destRuntime struct {
+	name     string
 	spanProc sdktrace.SpanProcessor
 	logProc  sdklog.Processor
-	localDB  obsdb.DB
+	// sinkSpan and sinkLog are a Sink's exporters, which closeSink shuts
+	// down after the providers — whichever signal they serve: one a
+	// disabled signal leaves unused is still the Sink's to close.
+	sinkSpan sdktrace.SpanExporter
+	sinkLog  sdklog.Exporter
 	// logExp is the exporter the log batch processor exports through
-	// (nil for Local, whose simple processor writes the database) —
+	// (nil for a Sink, whose simple processor exports synchronously) —
 	// kept so a test can pin the chain's shape (the raw byte split)
 	// without depending on how a batch happens to form.
 	logExp sdklog.Exporter
@@ -563,7 +546,7 @@ type destRuntime struct {
 
 // release shuts a built destination down outside a provider — the
 // build-failure path, where no provider exists yet to do it: the batch
-// processors' goroutines end, the exporters close, the database closes.
+// processors' goroutines end, the exporters close, a Sink's too.
 func (rt *destRuntime) release(ctx context.Context) {
 	if rt.spanProc != nil {
 		_ = rt.spanProc.Shutdown(ctx)
@@ -571,15 +554,30 @@ func (rt *destRuntime) release(ctx context.Context) {
 	if rt.logProc != nil {
 		_ = rt.logProc.Shutdown(ctx)
 	}
-	if rt.localDB != nil {
-		_ = rt.localDB.Close()
+	_ = rt.closeSink(ctx)
+}
+
+// closeSink shuts a Sink's exporters down, once each. The simple
+// processors' Shutdown reaches only the sinkSpanExporter and
+// sinkLogExporter wrappers (a no-op), so the Sink's own exporters close
+// here, last: the store outlives every flush.
+func (rt *destRuntime) closeSink(ctx context.Context) error {
+	var err error
+	if rt.sinkSpan != nil {
+		err = errors.Join(err, rt.sinkSpan.Shutdown(ctx))
+		rt.sinkSpan = nil
 	}
+	if rt.sinkLog != nil {
+		err = errors.Join(err, rt.sinkLog.Shutdown(ctx))
+		rt.sinkLog = nil
+	}
+	return err
 }
 
 // buildDest builds one destination's exporters and processor chains.
 // A destination that fails partway releases what it had built.
 func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err error) {
-	rt := &destRuntime{}
+	rt := &destRuntime{name: d.name}
 	defer func() {
 		if err != nil {
 			rt.release(ctx)
@@ -600,23 +598,26 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 	var spanExp sdktrace.SpanExporter
 	var logExp sdklog.Exporter
 	switch d.kind {
-	case destLocal:
-		db, err := openLocal(d.path)
+	case destSink:
+		if d.open == nil {
+			return nil, errors.New("sink: no opener")
+		}
+		se, le, err := d.open(ctx)
 		if err != nil {
 			return nil, err
 		}
-		rt.localDB = db
-		if d.traces {
-			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, &localSpanExporter{db: db, drops: drops})))
+		rt.sinkSpan, rt.sinkLog = se, le
+		if d.traces && se != nil {
+			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, sinkSpanExporter{exp: se, drops: drops})))
 		}
-		if d.logs {
+		if d.logs && le != nil {
 			rt.logProc = &destProc{
-				name: d.name, inner: sdklog.NewSimpleProcessor(&localLogExporter{db: db, drops: drops}),
+				name: d.name, inner: sdklog.NewSimpleProcessor(sinkLogExporter{exp: le, drops: drops}),
 				content: content, contentC: contentCfg, noDeltas: d.noDeltas, drops: drops,
 				raw: cfg.rawBodies && d.rawOn(), appLogs: d.appLogsOn(),
 			}
 		}
-	case destStudio, destDatadog, destLangfuse, destOTLP:
+	case destDatadog, destLangfuse, destOTLP:
 		endpoint, pathPrefix, headers, insecure, err := transportOf(d)
 		if err != nil {
 			return nil, err
@@ -646,7 +647,7 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 	default:
 		return nil, fmt.Errorf("unknown destination kind %d", d.kind)
 	}
-	// The batch chains (every kind but Local). The exporters are
+	// The batch chains (every kind but Sink). The exporters are
 	// wrapped to count what a failed export lost — the destination's
 	// own drops (S2.4).
 	//
@@ -672,9 +673,8 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 		if cfg.rawBodies && d.rawOn() {
 			// A raw record is typically ≈ 650 KiB and at worst ≈ 3 MiB
 			// (two 256 KiB bodies of control bytes, JSON-escaped): the
-			// SDK's default 512-record batch would far exceed Studio's
-			// 16 MiB ingest limit (studio/ingest.MaxBody) and be refused
-			// whole. rawBatchSize bounds the batch by count, and the
+			// SDK's default 512-record batch would far exceed a viewer's
+			// 16 MiB ingest limit and be refused whole. rawBatchSize bounds the batch by count, and the
 			// byte split each export by size, whatever the records hold.
 			batch = append(batch, sdklog.WithExportMaxBatchSize(rawBatchSize))
 			exp = byteSplitLogExporter{Exporter: exp, limit: rawExportBytes}
@@ -700,11 +700,6 @@ func transportOf(d dest) (endpoint, pathPrefix string, headers map[string]string
 	}
 	var raw string
 	switch d.kind {
-	case destStudio:
-		raw = d.url
-		if d.token != "" {
-			headers["Authorization"] = "Bearer " + d.token
-		}
 	case destDatadog:
 		raw = d.url
 		if raw == "" {
@@ -847,32 +842,13 @@ func registerGlobals(p *Pipeline) {
 	installedMu.Unlock()
 }
 
-// LocalDB returns the installed pipeline's local obsdb.DB — for
-// studio.DB(otel.LocalDB()) (setup A, [D4]). nil before Install, after
-// its shutdown, or without a Local destination.
-//
-// S2.1 names this otel.Local(), which cannot coexist with the
-// Local(path) destination option in Go; LocalDB is the recorded
-// deviation (notes-lane-a2.md).
-func LocalDB() obsdb.DB {
+// Installed returns the pipeline Install (or Start without NoGlobal)
+// registered globally; nil before that and after its Shutdown. A
+// package that wraps otel uses it to tell which pipeline is live.
+func Installed() *Pipeline {
 	installedMu.RLock()
 	defer installedMu.RUnlock()
-	if installedPipeline == nil {
-		return nil
-	}
-	return installedPipeline.local
-}
-
-// StudioEndpoint returns the installed pipeline's Studio destination,
-// which weft/runtime dials by default. "" without one (or after the
-// pipeline's shutdown).
-func StudioEndpoint() (string, string) {
-	installedMu.RLock()
-	defer installedMu.RUnlock()
-	if installedPipeline == nil {
-		return "", ""
-	}
-	return installedPipeline.studioURL, installedPipeline.studioToken
+	return installedPipeline
 }
 
 // startHeartbeat runs the tracker's ticker: every interval, one
@@ -935,7 +911,7 @@ func devGate(cfg config) (open, byDevMode bool, r gateRefusal) {
 		}
 		return false, false, gateRefusal{
 			reason: "otel.NoEnv reads no WEFT_ENV",
-			hint:   "add otel.DevMode(), or drop otel.NoEnv (otel.NoDiscovery() isolates from the discovery file and keeps WEFT_ENV) and set WEFT_ENV=dev",
+			hint:   "add otel.DevMode(), or drop otel.NoEnv and set WEFT_ENV=dev",
 		}
 	}
 	switch env := envGetenv("WEFT_ENV"); {
@@ -958,10 +934,10 @@ func devGate(cfg config) (open, byDevMode bool, r gateRefusal) {
 }
 
 // hasBlocking reports whether any queued destination kept Blocking
-// (Local has no queue and ignores it).
+// (a Sink has no queue and ignores it).
 func hasBlocking(dests []dest) bool {
 	for _, d := range dests {
-		if d.blocking && d.kind != destLocal {
+		if d.blocking && d.kind != destSink {
 			return true
 		}
 	}

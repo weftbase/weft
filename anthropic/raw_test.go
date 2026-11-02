@@ -1,9 +1,10 @@
 package anthropic
 
 // Plan A6's Done line for the anthropic adapter: under
-// otel.RawBodies(true) and WEFT_ENV=dev, a step's wire pair round-trips
-// through the local sink byte for byte, and no credential the SDK (or
-// a gateway in front of it) sent reaches any stored byte.
+// otel.RawBodies(true) and WEFT_ENV=dev, a step's wire pair reaches a
+// first-party destination byte for byte, and no credential the SDK (or
+// a gateway in front of it) sent reaches any exported byte. (The
+// platform's twin pins the store's round trip.)
 
 import (
 	"bytes"
@@ -13,25 +14,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+
 	antsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
-// rawEnv is the development environment RawBodies needs, with every
-// environment destination and the discovery file switched off, so the
-// pipeline is exactly the test's Local sink.
+// rawEnv is the development environment RawBodies needs, with the
+// environment destination switched off, so the pipeline is exactly the
+// test's capture.
 func rawEnv(t *testing.T) {
 	t.Setenv("WEFT_ENV", "dev")
-	t.Setenv("WEFT_DISCOVERY", "off")
-	t.Setenv("WEFT_STUDIO_URL", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 }
 
@@ -66,47 +66,32 @@ func newWireServer(t *testing.T) *wireServer {
 	return ws
 }
 
-// rawRound runs one step of an anthropic model on c under a Local sink
-// with RawBodies, and returns the attempt's request record, the sink's
-// file bytes (database and WAL, after shutdown) and the run id.
-func rawRound(t *testing.T, c antsdk.Client) (obsdb.RequestRecord, []byte) {
+// rawRound runs one step of an anthropic model on c under a
+// first-party capture with RawBodies, and returns the attempt's raw
+// record (nil without one), its request record's body and every byte
+// the destination was handed.
+func rawRound(t *testing.T, c antsdk.Client) (*rawWire, string, []byte) {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "weft.db")
-	p, err := otel.Start(ctx, otel.NoGlobal(), otel.Local(path), otel.RawBodies(true))
+	capture := &rawCapture{}
+	p, err := otel.Start(ctx, otel.NoGlobal(), otel.Exporters(nil, capture, otel.FirstParty()), otel.RawBodies(true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	agt := core.New(Model("claude-test", Client(&c)),
 		core.LoggerProvider(p.LoggerProvider()), core.TracerProvider(p.TracerProvider()))
-	res, err := agt.Generate(ctx, core.Prompt("hi"))
-	if err != nil {
+	if _, err := agt.Generate(ctx, core.Prompt("hi")); err != nil {
 		t.Fatal(err)
-	}
-	if err := p.ForceFlush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	reqs, err := p.LocalDB().Requests(ctx, res.ID, obsdb.RequestQuery{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reqs) != 1 {
-		t.Fatalf("request records = %d, want 1", len(reqs))
 	}
 	if err := p.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var stored []byte
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		stored = append(stored, b...)
+	reqs, _ := capture.of(t, "request")
+	if len(reqs) != 1 {
+		t.Fatalf("request records = %d, want 1", len(reqs))
 	}
-	return reqs[0], stored
+	w, exported := capture.wire(t)
+	return w, reqs[0], exported
 }
 
 // stripList is ADR 0028 §12's header floor plus anthropic-sdk-go's own
@@ -127,15 +112,14 @@ func assertNoStripped(t *testing.T, side string, h map[string][]string) {
 	}
 }
 
-func TestRawBodiesRoundTripLocalSink(t *testing.T) {
+func TestRawBodiesRoundTrip(t *testing.T) {
 	rawEnv(t)
 	ws := newWireServer(t)
 	c := antsdk.NewClient(option.WithBaseURL(ws.URL), option.WithAPIKey("SECRET-api-key"),
 		option.WithAuthToken("SECRET-auth-token"), option.WithMaxRetries(0),
 		option.WithHeader("Cookie", "c=SECRET-cookie"),
 		option.WithHeader("Proxy-Authorization", "Basic SECRET-proxy"))
-	rec, stored := rawRound(t, c)
-	w := rec.Wire
+	w, _, stored := rawRound(t, c)
 	if w == nil {
 		t.Fatal("the attempt's request record carries no raw record")
 	}
@@ -174,7 +158,7 @@ func TestRawBodiesRoundTripLocalSink(t *testing.T) {
 		t.Errorf("the request lost its credentials: %v", got)
 	}
 	if bytes.Contains(stored, []byte("SECRET")) {
-		t.Error("a credential reached the local sink's file")
+		t.Error("a credential reached the destination")
 	}
 }
 
@@ -182,9 +166,9 @@ func TestRawBodiesRoundTripLocalSink(t *testing.T) {
 // every value shape — set on the wire by a client middleware outside the
 // adapter's, so non-canonical spellings reach the capture as written —
 // plus Bearer/Basic values under an innocuous name: the header is
-// stripped from the stored record and named in redacted_headers, and
-// its value is in no byte of the local sink (database and WAL) nor of
-// the requests row. Fuzz-seeded: the seeds are FuzzRawRedaction's.
+// stripped from the exported record and named in redacted_headers, and
+// its value is in no byte the destination was handed nor in the request
+// record. Fuzz-seeded: the seeds are FuzzRawRedaction's.
 func TestRawBodiesNoCredentialStored(t *testing.T) {
 	rawEnv(t)
 	names := []string{
@@ -216,32 +200,33 @@ func TestRawBodiesNoCredentialStored(t *testing.T) {
 					r.Header[c.name] = []string{c.value}
 					return next(r)
 				}))
-			rec, stored := rawRound(t, cl)
-			if rec.Wire == nil {
+			w, req, stored := rawRound(t, cl)
+			if w == nil {
 				t.Fatal("no raw record")
 			}
-			assertNoStripped(t, "request", rec.Wire.Request.Headers)
-			for k := range rec.Wire.Request.Headers {
+			assertNoStripped(t, "request", w.Request.Headers)
+			for k := range w.Request.Headers {
 				if strings.EqualFold(k, c.name) {
 					t.Errorf("%q survived as %q", c.name, k)
 				}
 			}
 			listed := false
-			for _, r := range rec.Wire.RedactedHeaders {
+			for _, r := range w.RedactedHeaders {
 				listed = listed || r == strings.ToLower(c.name)
 			}
 			if !listed {
-				t.Errorf("redacted_headers %v does not name %q", rec.Wire.RedactedHeaders, c.name)
+				t.Errorf("redacted_headers %v does not name %q", w.RedactedHeaders, c.name)
 			}
 			esc, _ := json.Marshal(c.value)
 			for _, needle := range [][]byte{[]byte(c.value), esc[1 : len(esc)-1], []byte("SECRET-key")} {
 				if bytes.Contains(stored, needle) {
-					t.Errorf("%q reached the local sink's file", needle)
+					t.Errorf("%q reached the destination", needle)
 				}
 			}
-			b, _ := json.Marshal(rec)
+			b, _ := json.Marshal(w)
+			b = append(b, req...)
 			if bytes.Contains(b, []byte("SECRET")) || bytes.Contains(b, []byte("U0VDUkVU")) {
-				t.Errorf("the requests row carries a credential: %s", b)
+				t.Errorf("the raw or request record carries a credential: %s", b)
 			}
 		})
 	}
@@ -249,7 +234,7 @@ func TestRawBodiesNoCredentialStored(t *testing.T) {
 
 // Outside WEFT_ENV=dev the option is a no-op: the adapter's capture
 // asks and is told no, the request goes out untouched, and the run
-// holds no raw record.
+// exports no raw record.
 func TestRawBodiesOffOutsideDev(t *testing.T) {
 	rawEnv(t)
 	t.Setenv("WEFT_ENV", "")
@@ -260,11 +245,91 @@ func TestRawBodiesOffOutsideDev(t *testing.T) {
 			asked, wanted = true, core.ReportFromContext(r.Context()).WantsRaw()
 			return next(r)
 		}))
-	rec, _ := rawRound(t, c)
+	w, _, _ := rawRound(t, c)
 	if !asked || wanted {
 		t.Errorf("asked %v, WantsRaw %v; want the adapter told no", asked, wanted)
 	}
-	if rec.Wire != nil {
-		t.Errorf("a raw record was stored outside dev: %+v", rec.Wire)
+	if w != nil {
+		t.Errorf("a raw record was exported outside dev: %+v", w)
 	}
+}
+
+// rawCapture is the test's first-party destination: an in-memory log
+// exporter marked otel.FirstParty, so RawBodies' weft.raw records reach
+// it (a store's round trip of the same records is the platform's test).
+type rawCapture struct {
+	mu   sync.Mutex
+	recs []sdklog.Record
+}
+
+func (c *rawCapture) Export(_ context.Context, recs []sdklog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range recs {
+		c.recs = append(c.recs, r.Clone())
+	}
+	return nil
+}
+
+func (c *rawCapture) Shutdown(context.Context) error   { return nil }
+func (c *rawCapture) ForceFlush(context.Context) error { return nil }
+
+// rawWire is a weft.raw record's body (ADR 0028 §12).
+type rawWire struct {
+	Step            int          `json:"step"`
+	Attempt         int64        `json:"attempt"`
+	Request         rawWireSide  `json:"request"`
+	Response        *rawWireSide `json:"response"`
+	RedactedHeaders []string     `json:"redacted_headers"`
+}
+
+type rawWireSide struct {
+	Method    string              `json:"method"`
+	URL       string              `json:"url"`
+	Status    int                 `json:"status"`
+	Headers   map[string][]string `json:"headers"`
+	MediaType string              `json:"media_type"`
+	Body      string              `json:"body"`
+	Encoding  string              `json:"encoding"`
+}
+
+// of returns the bodies of the records of kind (weft.record) and every
+// byte the destination was handed: each record's body and attribute
+// values.
+func (c *rawCapture) of(t *testing.T, kind string) (bodies []string, exported []byte) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.recs {
+		exported = append(exported, r.Body().AsString()...)
+		var k string
+		r.WalkAttributes(func(kv attribute.KeyValue) bool {
+			exported = append(exported, kv.Value.Emit()...)
+			if kv.Key == "weft.record" {
+				k = kv.Value.AsString()
+			}
+			return true
+		})
+		if k == kind {
+			bodies = append(bodies, r.Body().AsString())
+		}
+	}
+	return bodies, exported
+}
+
+// wire decodes the run's one raw record; nil when there is none.
+func (c *rawCapture) wire(t *testing.T) (*rawWire, []byte) {
+	t.Helper()
+	bodies, exported := c.of(t, "raw")
+	if len(bodies) == 0 {
+		return nil, exported
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("raw records = %d, want 1", len(bodies))
+	}
+	var w rawWire
+	if err := json.Unmarshal([]byte(bodies[0]), &w); err != nil {
+		t.Fatalf("raw record body: %v", err)
+	}
+	return &w, exported
 }

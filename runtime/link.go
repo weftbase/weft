@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
-	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/thread"
 )
 
@@ -70,7 +70,7 @@ type link struct {
 	client *http.Client
 	base   string // Studio's, no trailing slash; "" in-process (URLs are absolute anyway)
 	token  string
-	// localDB is the source path 2's database: otel.LocalDB, read per
+	// localDB is the source path 2's database: exporter.LocalDB, read per
 	// command (a field so a test aims it at its own sink).
 	localDB func() obsdb.DB
 
@@ -126,7 +126,7 @@ func newLink(c *config, reg *registry, url, token string) *link {
 		beat:        ackHeartbeat,
 		cfg:         c,
 		reg:         reg,
-		localDB:     otel.LocalDB,
+		localDB:     exporter.LocalDB,
 		token:       token,
 		id:          reg.stableID(),
 		instance:    newULID(),

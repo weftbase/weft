@@ -16,6 +16,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/internal/discovery"
 	"github.com/weftgo/weft/internal/doctor"
 	"github.com/weftgo/weft/obsdb"
@@ -102,7 +103,7 @@ func TestEveryLineMapsToMeta(t *testing.T) {
 	discPath := writeDiscovery(t, discovery.Info{URL: "http://127.0.0.1:1"})
 	ts := newStudio(t, studio.Manifest(manifest), studio.IngestToken("ing"), studio.DiscoveryFile(discPath))
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, "ing", otel.NoContent()), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, "ing", otel.NoContent()), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestStaleManifest(t *testing.T) {
 	}
 	ts := newStudio(t, studio.Manifest(older), studio.IngestToken("ing"))
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, "ing"), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, "ing"), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

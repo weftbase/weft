@@ -10,6 +10,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 )
@@ -86,7 +87,7 @@ func TestRegisteredManifestStale(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, "ing"), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, "ing"), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

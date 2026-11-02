@@ -23,7 +23,7 @@ import (
 //
 //  1. thread storage, when runtime.Threads is set (readers never
 //     lock, so an open session is readable);
-//  2. the runtime's own local obsdb — otel.LocalDB() — whose input
+//  2. the runtime's own local obsdb — exporter.LocalDB() — whose input
 //     record makes every run self-contained (D1);
 //  3. GET /api/runs/{id}/transcript from Studio, with this link's
 //     token.

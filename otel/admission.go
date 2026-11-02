@@ -46,13 +46,9 @@ import (
 // (dropCounter.stalled): the overflow WARN says the queue is full, this
 // one that the exporter stopped.
 
-// Default queue sizes: the SDK's 2,048 for third-party destinations,
-// sixteen thousand for Studio — a dev loop's event storm (thousands of
-// deltas and events in milliseconds) fits.
-const (
-	defaultQueueSize       = 2048
-	defaultStudioQueueSize = 16384
-)
+// defaultQueueSize is a batch destination's queue size unless
+// QueueSize says otherwise: the SDK's 2,048.
+const defaultQueueSize = 2048
 
 // blockMax bounds one Blocking wait: past it the record is refused and
 // counted like any overflow — a hung exporter never hangs the app for

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -31,7 +32,7 @@ import (
 func recordAttrsRun(t *testing.T, url, runID string, dest ...otel.DestOption) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(url, "", dest...), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, "", dest...), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +397,7 @@ func TestRunHolesV090(t *testing.T) {
 func TestContentOffAgent(t *testing.T) {
 	ts, _ := requestsServer(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +521,7 @@ func TestLiveBackfillAttrs(t *testing.T) {
 func TestStepHolesBothCuts(t *testing.T) {
 	ts, _ := requestsServer(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, "", otel.WithContent(otel.ContentConfig{MaxBytes: 48})), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, "", otel.WithContent(otel.ContentConfig{MaxBytes: 48})), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

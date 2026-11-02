@@ -60,7 +60,6 @@ func (b *threadSafeBuffer) String() string {
 // is skipped with a WARN, and the returned shutdown is safe to call
 // even when nothing could be installed.
 func TestInstallSkipsBrokenDestinations(t *testing.T) {
-	t.Setenv("WEFT_DB", t.TempDir()+"/broken.db")
 	// http to a non-loopback host without Insecure() cannot build; the
 	// only destination failing leaves nothing installed, but Install
 	// still returns rather than panicking or exiting.

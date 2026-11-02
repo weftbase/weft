@@ -59,9 +59,9 @@
 // clean exit — SIGINT, SIGTERM and (unix) SIGHUP all stop it
 // gracefully; a second live Studio's exit puts the first's file back.
 // The writer drops a .gitignore ("*") into ./.weft when it has none.
-// otel.Install and runtime.Install read the file when WEFT_STUDIO_URL
-// is unset and the pipeline names no otel.Studio or otel.Local (the
-// README's "When weft/otel reads the file"), trusting it only when its url
+// exporter.Install and runtime.Install read the file when WEFT_STUDIO_URL
+// is unset and the pipeline names no exporter.Studio or exporter.Local (the
+// README's "When weft/exporter reads the file"), trusting it only when its url
 // is loopback, it is fresh and, on unix, it is 0600 and the reader's,
 // so an app joins this Studio with no configuration (WEFT_DISCOVERY=off
 // turns the read off). The playground is on (studio.Playground):
@@ -106,7 +106,7 @@
 // The API over a terminal. runs, open, export, doctor and mcp share one
 // resolver: the Studio is --url, else $WEFT_STUDIO_URL, else the
 // discovery file a running weft studio / weft dev wrote (the trust rules
-// otel.Install uses; WEFT_DISCOVERY=off skips it), else
+// exporter.Install uses; WEFT_DISCOVERY=off skips it), else
 // http://127.0.0.1:7331; one stderr line names it when the user did not
 // ("weft: Studio http://127.0.0.1:7347 (discovery file …)"). The token
 // is --token, else $WEFT_STUDIO_TOKEN, else the discovery file's when

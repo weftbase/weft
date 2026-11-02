@@ -22,7 +22,7 @@ import (
 // log/slog lines — its own, weft.Logger's run lines, mw.Log, mw.Audit —
 // teed to the pipeline's LoggerProvider as app log records, carrying
 // the trace and span ids of the context they were logged under, so
-// Studio attributes each to the run (and the step) that produced it.
+// a viewer attributes each to the run (and the step) that produced it.
 
 // bridgeScope is the instrumentation scope of every record the bridge
 // emits: what the destination chains and the run tracker recognise a
@@ -157,8 +157,8 @@ func Slog() Option {
 // stays with next alone — and only at a level some destination takes:
 // the bridge itself has no level, every slog level (DEBUG included:
 // weft's own lines are Debug) goes to the pipeline. Which destinations
-// receive the lines is AppLogs': Local and Studio with content on by
-// default, never a third party unless it opts in. Each destination
+// receive the lines is AppLogs': first-party destinations with content
+// on by default, never a third party unless it opts in. Each destination
 // shapes a line by its content policy (ContentConfig): Redact over the
 // message and string attributes (ContentLog), each capped at MaxBytes
 // with weft.content.truncated_bytes; a content-off destination that

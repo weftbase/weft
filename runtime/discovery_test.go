@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/internal/discovery"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
@@ -178,9 +179,9 @@ func TestInstallLocalPipelineSkipsDiscovery(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	stopOtel := otel.Install(otel.Local(filepath.Join(t.TempDir(), "app.db")), otel.Heartbeat(0))
+	stopOtel := exporter.Install(exporter.Local(filepath.Join(t.TempDir(), "app.db")), otel.Heartbeat(0))
 	defer stopOtel()
-	if otel.LocalDB() == nil {
+	if exporter.LocalDB() == nil {
 		t.Fatal("no Local store installed: the test proves nothing")
 	}
 	stop := Install(Agents(testAgent("local-agent")))
@@ -210,8 +211,8 @@ func TestInstallLocalPipelineSkipsDiscovery(t *testing.T) {
 			warns = append(warns, l)
 		}
 	}
-	if len(warns) != 1 || !strings.Contains(warns[0], "records only into a Local store (otel.Local, or otel.Install's default)") ||
+	if len(warns) != 1 || !strings.Contains(warns[0], "records only into a Local store (exporter.Local, or exporter.Install's default)") ||
 		!strings.Contains(warns[0], "runtime.Local(srv)") || !strings.Contains(warns[0], "runtime.Studio(url, token)") {
-		t.Errorf("runtime WARN lines %q, want exactly one saying the pipeline records only into a Local store (otel.Local, or otel.Install's default), naming runtime.Local(srv) and runtime.Studio(url, token)", warns)
+		t.Errorf("runtime WARN lines %q, want exactly one saying the pipeline records only into a Local store (exporter.Local, or exporter.Install's default), naming runtime.Local(srv) and runtime.Studio(url, token)", warns)
 	}
 }

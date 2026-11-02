@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -37,12 +38,12 @@ func TestOutOfTheBoxLive(t *testing.T) {
 	// The five lines of setup A (§10.1), verbatim in shape: Install
 	// the defaults with an explicit Local path so the test owns the
 	// file, and mount Studio over the pipeline's own handle.
-	shutdown := otel.Install(
+	shutdown := exporter.Install(
 		otel.NoEnv(),
-		otel.Local(path),
+		exporter.Local(path),
 	)
 	defer shutdown()
-	handler := studio.Handler(studio.DB(otel.LocalDB()))
+	handler := studio.Handler(studio.DB(exporter.LocalDB()))
 
 	// Subscribe first: the panel's position.
 	frames := make(chan string, 64)
@@ -207,9 +208,9 @@ func TestRunTakesTheQuestionFromTheBody(t *testing.T) {
 // its run answering the new words, recorded in the same local sink.
 func TestPlaygroundOverTheInProcessLink(t *testing.T) {
 	path := t.TempDir() + "/weft.db"
-	defer otel.Install(otel.NoEnv(), otel.Local(path))()
+	defer exporter.Install(otel.NoEnv(), exporter.Local(path))()
 	agent := weft.New(echoModel{}, weft.Name("studio-local"), lookupOrder)
-	srv := studio.New(studio.DB(otel.LocalDB()), studio.Playground(true))
+	srv := studio.New(studio.DB(exporter.LocalDB()), studio.Playground(true))
 	defer func() { _ = srv.Close() }()
 	defer runtime.Install(runtime.Local(srv), runtime.Agents(agent), runtime.Enabled(true))()
 	api := httptest.NewServer(srv.Handler())
@@ -386,7 +387,7 @@ func TestPageScopesFromTheRunHeader(t *testing.T) {
 // the pending call first, so the session is not held behind it.
 func TestRefundParksOnApproval(t *testing.T) {
 	path := t.TempDir() + "/weft.db"
-	defer otel.Install(otel.NoEnv(), otel.Local(path))()
+	defer exporter.Install(otel.NoEnv(), exporter.Local(path))()
 	agent := weft.New(echoModel{}, weft.Name("studio-local"), lookupOrder, refundOrder) // the demo's tools, unpaced
 	d := newDemo(thread.Memory(), agent)
 	ask := func(q string) string {
@@ -412,7 +413,7 @@ func TestRefundParksOnApproval(t *testing.T) {
 	ctx := context.Background()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		det, err := otel.LocalDB().Run(ctx, runID)
+		det, err := exporter.LocalDB().Run(ctx, runID)
 		if err == nil && det.Status == obsdb.StatusSucceeded && det.Pending == 1 {
 			break
 		}
@@ -421,7 +422,7 @@ func TestRefundParksOnApproval(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	events, err := otel.LocalDB().Events(ctx, runID, -1, 1000)
+	events, err := exporter.LocalDB().Events(ctx, runID, -1, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

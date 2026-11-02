@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -67,9 +66,9 @@ func TestDestinationsHitTheirPathsOnTheWire(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{"studio at the root", func(b string) []Option { return []Option{NoEnv(), Studio(b, "tok")} }, nil,
+		{"first-party otlp at the root", func(b string) []Option { return []Option{NoEnv(), OTLP(b, FirstParty(), bearer("tok"))} }, nil,
 			[]string{"POST /v1/logs auth=Bearer tok", "POST /v1/traces auth=Bearer tok"}},
-		{"studio mounted under a prefix", func(b string) []Option { return []Option{NoEnv(), Studio(b+"/studio/", "tok")} }, nil,
+		{"first-party otlp mounted under a prefix", func(b string) []Option { return []Option{NoEnv(), OTLP(b+"/studio/", FirstParty(), bearer("tok"))} }, nil,
 			[]string{"POST /studio/v1/logs auth=Bearer tok", "POST /studio/v1/traces auth=Bearer tok"}},
 		{"otlp with a base path", func(b string) []Option { return []Option{NoEnv(), OTLP(b + "/otlp")} }, nil,
 			[]string{"POST /otlp/v1/logs auth=", "POST /otlp/v1/traces auth="}},
@@ -79,8 +78,6 @@ func TestDestinationsHitTheirPathsOnTheWire(t *testing.T) {
 			[]string{"POST /api/public/otel/v1/traces auth=Basic cGs6c2s="}},
 		{"env otlp with a base path", func(string) []Option { return nil }, map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "/collector"},
 			[]string{"POST /collector/v1/logs auth=", "POST /collector/v1/traces auth="}},
-		{"env studio", func(string) []Option { return nil }, map[string]string{"WEFT_STUDIO_URL": "", "WEFT_STUDIO_TOKEN": "envtok"},
-			[]string{"POST /v1/logs auth=Bearer envtok", "POST /v1/traces auth=Bearer envtok"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := &pathRecorder{}
@@ -93,7 +90,7 @@ func TestDestinationsHitTheirPathsOnTheWire(t *testing.T) {
 				if !ok {
 					return ""
 				}
-				if k == "OTEL_EXPORTER_OTLP_ENDPOINT" || k == "WEFT_STUDIO_URL" {
+				if k == "OTEL_EXPORTER_OTLP_ENDPOINT" {
 					return srv.URL + v
 				}
 				return v
@@ -106,6 +103,10 @@ func TestDestinationsHitTheirPathsOnTheWire(t *testing.T) {
 	}
 }
 
+func bearer(tok string) DestOption {
+	return Headers(map[string]string{"Authorization": "Bearer " + tok})
+}
+
 // Install's WARN-and-skip: destinations that cannot be built are
 // skipped, the others record, and the WARN names neither a header nor
 // a URL's credentials.
@@ -115,15 +116,15 @@ func TestInstallSkipsOnlyTheBrokenDestinations(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	defer slog.SetDefault(prev)
 
+	sink := newMemSink()
 	shutdown := Install(NoEnv(), Heartbeat(0),
 		OTLP("http://collector.invalid:4318", Headers(map[string]string{"Authorization": "Bearer hdr-secret"})),
-		Studio("ftp://user:url-secret@studio.invalid", "tok-secret"),
-		Local(filepath.Join(t.TempDir(), "kept.db")),
+		OTLP("ftp://user:url-secret@studio.invalid", FirstParty(), bearer("tok-secret")),
+		sink.option(),
 	)
-	db := LocalDB()
-	if db == nil {
+	if Installed() == nil {
 		shutdown()
-		t.Fatal("a broken destination disabled the Local sink")
+		t.Fatal("a broken destination disabled the Sink")
 	}
 	agt := core.New(wefttest.Script(wefttest.Say("kept")))
 	res, err := agt.Generate(context.Background(), core.Prompt("go"))
@@ -131,11 +132,14 @@ func TestInstallSkipsOnlyTheBrokenDestinations(t *testing.T) {
 		shutdown()
 		t.Fatal(err)
 	}
-	if _, err := db.Run(context.Background(), res.ID); err != nil {
-		shutdown()
-		t.Fatalf("the run did not reach the Local sink: %v", err)
-	}
 	shutdown()
+	reached := false
+	for _, r := range sink.ofRecord("event") {
+		reached = reached || attrOf(r, "weft.run.id") == res.ID
+	}
+	if !reached {
+		t.Fatal("the run did not reach the Sink")
+	}
 	out := buf.String()
 	if strings.Count(out, "destination skipped") != 2 {
 		t.Errorf("want one WARN per broken destination, got: %s", out)

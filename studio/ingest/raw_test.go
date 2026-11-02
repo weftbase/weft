@@ -18,6 +18,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -75,7 +76,7 @@ func TestRawRecordThroughIngest(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.NoGlobal(), otel.Heartbeat(0), otel.Studio(srv.URL, ""), otel.RawBodies(true))
+	p, err := exporter.Start(ctx, otel.NoGlobal(), otel.Heartbeat(0), exporter.Studio(srv.URL, ""), otel.RawBodies(true))
 	if err != nil {
 		t.Fatal(err)
 	}

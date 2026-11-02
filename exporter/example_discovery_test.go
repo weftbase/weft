@@ -1,4 +1,4 @@
-package otel_test
+package exporter_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/wefttest"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -20,7 +21,7 @@ import (
 // NoDiscovery — either switches the discovery file off on its own.
 func ExampleNoDiscovery() {
 	spans := tracetest.NewInMemoryExporter()
-	p, err := otel.Start(context.Background(), otel.NoGlobal(), otel.NoDiscovery(),
+	p, err := exporter.Start(context.Background(), otel.NoGlobal(), exporter.NoDiscovery(),
 		otel.Exporters(spans, nil), otel.Heartbeat(0))
 	if err != nil {
 		log.Fatal(err)

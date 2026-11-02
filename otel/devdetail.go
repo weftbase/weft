@@ -10,9 +10,10 @@ import (
 
 // The development detail level's destination rule (DevDetail; ADR
 // 0016's 2026-10-26 amendment): the layer spans and a repair's original
-// arguments are for the Local and Studio destinations with content on
-// alone — the rawOn rule — so an OTLP preset (Datadog, Langfuse, OTLP,
-// Exporters) never receives one, even in development. The layer spans
+// arguments are for first-party destinations (Sink, FirstParty) with
+// content on alone — the rawOn rule — so a third party (Datadog,
+// Langfuse, OTLP, Exporters without FirstParty) never receives one,
+// even in development. The layer spans
 // parent nothing but each other (core keeps them off the context's
 // span), so dropping them orphans no span.
 

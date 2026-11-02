@@ -208,7 +208,7 @@ func openHandles(path string) (*DB, *sql.DB, error) {
 
 // Hub returns the DB's in-process live hub: every Write publishes its
 // frames to it before returning (D4 — this handle is what setup A's
-// studio.DB(otel.LocalDB()) shares).
+// studio.DB(exporter.LocalDB()) shares).
 func (d *DB) Hub() obsdb.Hub { return d.hub }
 
 // Path returns the database file's absolute path, as Open resolved it

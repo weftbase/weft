@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"context"
 	"time"
 
 	"github.com/weftgo/weft/core"
@@ -15,6 +16,56 @@ type Option interface{ apply(*config) }
 type optionFunc func(*config)
 
 func (f optionFunc) apply(c *config) { f(c) }
+
+// flagOption is an option without parameters, a comparable value: a
+// package wrapping otel can recognise it among the options it is handed
+// (opt == otel.NoEnv()).
+type flagOption int
+
+const (
+	flagNoEnv flagOption = iota + 1
+	flagNoGlobal
+)
+
+func (f flagOption) apply(c *config) {
+	switch f {
+	case flagNoEnv:
+		c.noEnv = true
+	case flagNoGlobal:
+		c.noGlobal = true
+	}
+}
+
+// Options bundles opts into one Option — for a package that offers a
+// preset made of several of otel's own options. The result is a
+// pointer, so it is comparable: a wrapper may recognise the presets it
+// handed out among the options it is given.
+func Options(opts ...Option) Option { return &optionSet{opts: append([]Option(nil), opts...)} }
+
+type optionSet struct{ opts []Option }
+
+func (o *optionSet) apply(c *config) {
+	for _, x := range o.opts {
+		x.apply(c)
+	}
+}
+
+// Fallback names destinations used only when the pipeline would
+// otherwise have none: no destination option and no environment
+// destination (OTEL_EXPORTER_OTLP_ENDPOINT) — and, under Install, when
+// only environment destinations were configured and every one failed to
+// build (one WARN). A program that names its own destinations never
+// gets a fallback one. Only the destinations among opts count; any
+// other option inside it is ignored.
+func Fallback(opts ...Option) Option {
+	return optionFunc(func(c *config) {
+		var fb config
+		for _, o := range opts {
+			o.apply(&fb)
+		}
+		c.fallback = append(c.fallback, fb.dests...)
+	})
+}
 
 // ContentConfig carries the caps and redaction that live per
 // destination, not in the core ([D2]: the core cannot discover them —
@@ -87,19 +138,15 @@ func Sampler(s sdktrace.Sampler) Option {
 	})
 }
 
-// NoEnv ignores the WEFT_* / OTEL_* destination variables, and the
-// discovery file a running `weft studio` / `weft dev` wrote (which
-// otherwise stands in for WEFT_STUDIO_URL when that is unset). Explicit
-// options are unaffected. It reads nothing, WEFT_ENV included: under
-// NoEnv the development gate RawBodies and Blocking need holds only
-// with DevMode (Start's WARN says "otel.NoEnv reads no WEFT_ENV"
-// otherwise); NoDiscovery is the isolation that keeps WEFT_ENV. It is otel's alone: the runtime link's own
-// discovery read (runtime.Install under WEFT_ENV=dev, when the pipeline
-// has no Studio) is governed by runtime's options and
-// WEFT_DISCOVERY=off.
-func NoEnv() Option {
-	return optionFunc(func(c *config) { c.noEnv = true })
-}
+// NoEnv ignores the OTEL_* destination variables (envDestinations).
+// Explicit options are unaffected. It reads nothing, WEFT_ENV included:
+// under NoEnv the development gate RawBodies and Blocking need holds
+// only with DevMode (Start's WARN says "otel.NoEnv reads no WEFT_ENV"
+// otherwise). The resource still reads OTEL_SERVICE_NAME and
+// OTEL_RESOURCE_ATTRIBUTES (the SDK's own detector). The value is
+// comparable (opt == otel.NoEnv()), for a wrapper that reads variables
+// of its own.
+func NoEnv() Option { return flagNoEnv }
 
 // DevMode attests in code that this pipeline runs in development: it
 // satisfies the dev gate (ADR 0028 §12) that RawBodies, DevDetail and a
@@ -107,8 +154,7 @@ func NoEnv() Option {
 // the code-side twin of WEFT_ENV=dev, for tests and harnesses that
 // control their own process — typically beside NoEnv, which reads no
 // WEFT_ENV and so refuses all three on its own. It unlocks those three
-// and nothing else: no destination, discovery read or runtime link follows
-// from it (runtime.Install keeps its own WEFT_ENV / Enabled rule). The
+// and nothing else: no destination follows from it. The
 // gate still applies — a production binary never sets DevMode; the
 // attestation has only moved from the process environment into code.
 // The operator's environment wins: when the pipeline reads it (no
@@ -124,27 +170,14 @@ func DevMode() Option {
 	return optionFunc(func(c *config) { c.devMode = true })
 }
 
-// NoDiscovery skips the discovery file a running `weft studio` / `weft
-// dev` wrote, and nothing else: WEFT_STUDIO_URL, the OTEL_* variables
-// and the WEFT_ENV development gate are read as usual (NoEnv drops them
-// all). It is the per-pipeline form of WEFT_DISCOVERY=off — for a
-// harness or test that keeps the operator's destinations but must not
-// write into a Studio found on disk. A pipeline that names a Studio or
-// a Local destination in code needs no NoDiscovery: either turns the
-// read off on its own. Like NoEnv it is otel's alone: runtime.Install's
-// discovery read (under WEFT_ENV=dev, when the pipeline has no Studio)
-// is governed by runtime's options and WEFT_DISCOVERY=off.
-func NoDiscovery() Option {
-	return optionFunc(func(c *config) { c.noDiscovery = true })
-}
-
 // RawBodies records each model call attempt's wire exchange — the
 // provider request and response the first-party adapters sent and
 // received, headers included minus the credential ones, each body
 // capped at 256 KiB — as one weft.raw record per attempt (ADR 0028
-// §12), for the Local and Studio destinations only (never Datadog,
-// Langfuse, OTLP or Exporters, whatever their content setting, and not
-// a Local or Studio destination under NoContent). Off by default, and
+// §12), for first-party destinations only (a Sink, or one marked
+// FirstParty; never Datadog, Langfuse, or an OTLP or Exporters
+// destination without FirstParty, whatever its content setting, and not
+// a first-party destination under NoContent). Off by default, and
 // refused outside development: it takes effect only when the pipeline
 // starts under the dev gate — WEFT_ENV is "dev" (read unless NoEnv), or
 // DevMode attests it in code (under NoEnv, or with WEFT_ENV unset; an
@@ -157,9 +190,9 @@ func NoDiscovery() Option {
 // is the pipeline's LoggerProvider marker (LoggerProvider.RawBodies):
 // pass Pipeline.LoggerProvider() to weft.LoggerProvider, or rely on
 // Install's global registration — a stock SDK provider never records
-// raw bodies. Under it a Studio destination's log batch is capped at 16
-// records and each export is split at 12 MiB, keeping every post under
-// Studio's 16 MiB ingest limit: a raw record is ≈ 650 KiB with two full
+// raw bodies. Under it a first-party batch destination's log batch is
+// capped at 16 records and each export is split at 12 MiB, keeping
+// every post under a 16 MiB ingest limit: a raw record is ≈ 650 KiB with two full
 // ordinary bodies and at worst ≈ 3 MiB (bodies of control bytes, each
 // six bytes in JSON; it is encoded without HTML escaping).
 func RawBodies(on bool) Option {
@@ -180,10 +213,9 @@ func RawBodies(on bool) Option {
 // development only — it takes effect only when the pipeline starts
 // under the dev gate (WEFT_ENV=dev read unless NoEnv, or DevMode);
 // otherwise Start logs one WARN ("otel: DevDetail ignored: …") and the
-// pipeline behaves as without it — and only the Local and Studio
-// destinations with content on receive the detail: an OTLP, Datadog,
-// Langfuse or Exporters destination gets the run without its layer
-// spans and without the original arguments. The gate is the pipeline's
+// pipeline behaves as without it — and only first-party destinations
+// with content on receive the detail: any other destination gets the
+// run without its layer spans and without the original arguments. The gate is the pipeline's
 // LoggerProvider marker (LoggerProvider.DevDetail), which the core asks:
 // pass Pipeline.LoggerProvider() to weft.LoggerProvider, or rely on
 // Install's global registration. With the option the agent knows the
@@ -199,44 +231,35 @@ func DevDetail() Option {
 
 // NoGlobal leaves the OTel globals alone (Start only; Install always
 // registers). For tests and dependency-injected programs. It isolates
-// the globals only: it does not stop the discovery file's read — a
-// pipeline without an explicit Studio or Local destination still joins
-// a running Studio; NoDiscovery stops that read alone, NoEnv every
-// environment destination.
-func NoGlobal() Option {
-	return optionFunc(func(c *config) { c.noGlobal = true })
-}
+// the globals only; NoEnv drops the environment destinations. The value
+// is comparable (opt == otel.NoGlobal()).
+func NoGlobal() Option { return flagNoGlobal }
 
 // The destinations — any number, all active at once. Each becomes its
 // own processor chain with its own queue, drop counters and content
 // policy; a slow or failing destination cannot block the others.
 
-// Local is the local sink: obsdb/sqlite at path ("" = $WEFT_DB or
-// ./.weft/weft.db), written synchronously — nothing emitted is lost,
-// and the DB's in-process hub is the live lane setup A shares with
-// Studio. Content on, traces + logs. Naming a Local switches the
-// discovery file off, as Studio does: the pipeline writes to the
-// stores it names (and the environment's), never into a running Studio
-// it found on disk — add Studio(url, token) to write to one as well.
-func Local(path string, opts ...DestOption) Option {
-	return optionFunc(func(c *config) {
-		d := newDest(destLocal, "local")
-		d.path = path
-		d.apply(opts)
-		c.dests = append(c.dests, d)
-	})
-}
+// SinkOpener opens a Sink's exporters when the pipeline starts. Either
+// may be nil (that signal is not taken); an error fails the
+// destination like any other.
+type SinkOpener func(ctx context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error)
 
-// Studio exports OTLP/HTTP protobuf to a Weft Studio with a bearer
-// token. Content on, traces + logs, short batches (logs 200 ms, spans
-// 1 s). Naming a Studio here switches the discovery file off (as
-// naming a Local does): the explicit destination is the pipeline's one
-// Studio from the file's point of view (WEFT_STUDIO_URL still adds its
-// own, de-duplicated).
-func Studio(url, token string, opts ...DestOption) Option {
+// Sink is a destination written synchronously: open runs at Start and
+// its exporters are driven through simple processors — each record is
+// exported before Emit returns, with no queue (a crash loses nothing
+// emitted; the export cost rides the run's goroutine). Blocking and
+// QueueSize do not apply. A Sink is first-party (FirstParty): content
+// on, raw bodies, the dev detail and app logs eligible. An export error
+// is counted as the destination's drop and named by its throttled WARN,
+// never handed to OTel's global error handler. The exporters' Shutdown
+// runs at the pipeline's Shutdown (after the flush), or at once when
+// the pipeline fails to build. name labels the destination's WARN
+// lines and drop counter.
+func Sink(name string, open SinkOpener, opts ...DestOption) Option {
 	return optionFunc(func(c *config) {
-		d := newDest(destStudio, "studio")
-		d.url, d.token = url, token
+		d := newDest(destSink, name)
+		d.open = open
+		d.firstParty = true
 		d.apply(opts)
 		c.dests = append(c.dests, d)
 	})
@@ -272,7 +295,9 @@ func Langfuse(host, publicKey, secretKey string, opts ...DestOption) Option {
 
 // OTLP exports to any OTLP/HTTP endpoint (http(s)://host:port). Content
 // off, traces + logs, SDK default batching; Headers adds request
-// headers.
+// headers. FirstParty marks an endpoint you operate yourself (your own
+// collector, a local viewer): content on, raw bodies and app logs
+// eligible.
 func OTLP(endpoint string, opts ...DestOption) Option {
 	return optionFunc(func(c *config) {
 		d := newDest(destOTLP, "otlp")
@@ -283,7 +308,9 @@ func OTLP(endpoint string, opts ...DestOption) Option {
 }
 
 // Exporters wires your own exporters (vendor-specific, stdout, tests):
-// whichever is non-nil gets a chain. Content off, SDK default batching.
+// whichever is non-nil gets a chain. Content off, SDK default batching;
+// FirstParty marks them as yours (content on, raw bodies and app logs
+// eligible). Sink is the synchronous form.
 func Exporters(spans sdktrace.SpanExporter, logs sdklog.Exporter, opts ...DestOption) Option {
 	return optionFunc(func(c *config) {
 		d := newDest(destExporters, "exporters")
@@ -344,10 +371,35 @@ func NoDeltas() DestOption {
 	return destOptionFunc(func(d *dest) { d.noDeltas = true })
 }
 
-// BatchDelay sets the destination's batch flush interval (Studio
-// defaults logs 200 ms / spans 1 s; the others the SDK's defaults).
-func BatchDelay(d time.Duration) DestOption {
-	return destOptionFunc(func(dd *dest) { dd.batchDelay = d })
+// BatchDelay sets the destination's batch flush interval, for logs and
+// spans both (default: the SDK's).
+func BatchDelay(d time.Duration) DestOption { return BatchDelays(d, d) }
+
+// BatchDelays sets the destination's log and span batch flush
+// intervals apart (0 keeps the SDK's default for that signal) — a
+// live viewer wants records sooner than spans.
+func BatchDelays(logs, spans time.Duration) DestOption {
+	return destOptionFunc(func(dd *dest) { dd.logDelay, dd.spanDelay = logs, spans })
+}
+
+// FirstParty marks a destination as one the program's operator runs
+// (a local store, an in-house viewer): content on by default (NoContent
+// still turns it off), and eligible for RawBodies' raw records,
+// DevDetail's layer spans and the slog bridge's app logs (AppLogs) —
+// what never goes to a third party by default. Every Sink is
+// first-party; on OTLP and Exporters it is the opt-in.
+func FirstParty() DestOption {
+	return destOptionFunc(func(d *dest) { d.firstParty = true })
+}
+
+// Name sets the destination's label in its WARN lines and drop counter
+// (default: the kind's name — "otlp", "datadog", …).
+func Name(name string) DestOption {
+	return destOptionFunc(func(d *dest) {
+		if name != "" {
+			d.name = name
+		}
+	})
 }
 
 // Headers adds HTTP headers to the destination's requests (OTLP-family
@@ -371,7 +423,7 @@ func Timeout(d time.Duration) DestOption {
 // Insecure allows http:// to a non-loopback host (OTLP-family
 // destinations). Loopback http is always allowed, and so is the
 // environment's OTEL_EXPORTER_OTLP_ENDPOINT written with http:// (the
-// operator's opt-in; see envDestinations) — never WEFT_STUDIO_URL.
+// operator's opt-in; see envDestinations).
 func Insecure() DestOption {
 	return destOptionFunc(func(d *dest) { d.insecure = true })
 }
@@ -384,15 +436,13 @@ func DatadogEndpoint(url string) DestOption {
 
 // QueueSize sets how many records (and, separately, spans) the
 // destination holds between emission and export — its batch queue
-// (default 16,384 for Studio, the SDK's 2,048 for the rest; n <= 0
-// keeps the default). A full queue never blocks the app: it refuses the
+// (default the SDK's 2,048; n <= 0 keeps the default). A full queue never blocks the app: it refuses the
 // record, deltas first (at half full), then ordinary records (at seven
 // eighths), a run's run_start and run_finish last. Every refusal is
 // counted: one WARN per destination ("weft/otel: destination queue
 // full"), the count on the heartbeat and every run's run_start and
-// run_finish (weft.records.dropped, which Studio's ingest health
-// shows), and the run's gap badge, which counts
-// the events lost against weft.run.events. Local has no queue (it writes
+// run_finish (weft.records.dropped), and the run's gap, which a viewer
+// counts against weft.run.events. A Sink has no queue (it writes
 // synchronously) and ignores it. The OTEL_BLRP_MAX_QUEUE_SIZE and
 // OTEL_BSP_MAX_QUEUE_SIZE variables do not apply to weft's
 // destinations.
@@ -413,15 +463,15 @@ func QueueSize(n int) DestOption {
 // Start logs one WARN naming the cause ("otel: Blocking ignored:
 // WEFT_ENV is not dev", or "… otel.NoEnv reads no WEFT_ENV") and the
 // destination refuses as without it — observability never slows a
-// production app. Local ignores it (no queue).
+// production app. A Sink ignores it (no queue).
 func Blocking() DestOption {
 	return destOptionFunc(func(d *dest) { d.blocking = true })
 }
 
 // AppLogs says whether this destination takes the slog bridge's app
-// log records (Slog, SlogHandler): on by default for Local and Studio
-// with content on, off for Datadog, Langfuse, OTLP and Exporters — and
-// for a Local or Studio destination under NoContent — because an app's
+// log records (Slog, SlogHandler): on by default for a first-party
+// destination (FirstParty, Sink) with content on, off for the rest —
+// and for a first-party destination under NoContent — because an app's
 // log lines may carry anything it logged, prompts included. AppLogs(true)
 // is the opt-in: it admits the lines, never bypasses the destination's
 // content policy — an app log line is content like a transcript record,
@@ -429,7 +479,7 @@ func Blocking() DestOption {
 // (ContentLog) and MaxBytes to its message and string attributes, and a
 // content-off one receives it stripped (message and string values
 // emptied, weft.content=stripped; severity, span and the other
-// attributes kept). AppLogs(false) keeps them from a Local or Studio
+// attributes kept). AppLogs(false) keeps them from a first-party
 // destination. Only a destination that takes the lines carries the
 // bridge mark (weft.logs.bridged on its heartbeats and root spans).
 // Records the app emits through the OTel Logs API itself are not the

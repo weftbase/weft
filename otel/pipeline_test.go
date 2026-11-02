@@ -28,33 +28,48 @@ func mustDest(t *testing.T, opts ...Option) dest {
 	return ds[0]
 }
 
-// Local: in-process obsdb write, traces + logs, content ON, simple
-// (synchronous) processors — the last is pinned behaviourally in the S7
-// tests (a record is stored before Emit returns).
-func TestDefaultLocal(t *testing.T) {
-	d := mustDest(t, Local("x.db"))
-	if d.kind != destLocal || !d.traces || !d.logs || !d.contentOn() {
-		t.Errorf("local defaults = %+v", d)
+// Sink: traces + logs, first-party (content ON), simple (synchronous)
+// processors — the last is pinned behaviourally in sink_test.go (a
+// record is exported before Emit returns).
+func TestDefaultSink(t *testing.T) {
+	d := mustDest(t, Sink("mine", nil))
+	if d.kind != destSink || d.name != "mine" || !d.traces || !d.logs || !d.contentOn() || !d.firstParty {
+		t.Errorf("sink defaults = %+v", d)
 	}
 }
 
-// Studio: OTLP/HTTP protobuf with a bearer token, traces + logs,
-// content ON, batch logs 200 ms / spans 1 s.
-func TestDefaultStudio(t *testing.T) {
-	d := mustDest(t, Studio("https://studio.example", "tok"))
-	if !d.traces || !d.logs || !d.contentOn() {
-		t.Errorf("studio defaults = %+v", d)
+// FirstParty on OTLP: content ON, raw and app logs eligible; BatchDelays
+// sets the pair apart; Name relabels; the transport is OTLP's.
+func TestFirstPartyOTLP(t *testing.T) {
+	d := mustDest(t, OTLP("https://viewer.example", FirstParty(), Name("viewer"),
+		BatchDelays(200*time.Millisecond, time.Second), QueueSize(16384),
+		Headers(map[string]string{"Authorization": "Bearer tok"})))
+	if !d.traces || !d.logs || !d.contentOn() || !d.rawOn() || !d.appLogsOn() || d.name != "viewer" {
+		t.Errorf("first-party otlp = %+v", d)
 	}
 	logs, spans := d.batchDelays()
 	if logs != 200*time.Millisecond || spans != time.Second {
-		t.Errorf("studio batch delays = %v/%v, want 200ms/1s", logs, spans)
+		t.Errorf("batch delays = %v/%v, want 200ms/1s", logs, spans)
+	}
+	if q := d.queueSizeOf(); q != 16384 {
+		t.Errorf("queue = %d, want 16384", q)
 	}
 	endpoint, path, headers, insecure, err := transportOf(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint != "studio.example" || path != "" || headers["Authorization"] != "Bearer tok" || insecure {
-		t.Errorf("studio transport = %q %q %v %v", endpoint, path, headers, insecure)
+	if endpoint != "viewer.example" || path != "" || headers["Authorization"] != "Bearer tok" || insecure {
+		t.Errorf("transport = %q %q %v %v", endpoint, path, headers, insecure)
+	}
+	// Without FirstParty nothing of it holds.
+	plain := mustDest(t, OTLP("https://viewer.example"))
+	if plain.contentOn() || plain.rawOn() || plain.appLogsOn() || plain.queueSizeOf() != defaultQueueSize {
+		t.Errorf("plain otlp = %+v", plain)
+	}
+	// NoContent on a first-party destination: no content, no raw, no app logs.
+	off := mustDest(t, OTLP("https://viewer.example", FirstParty(), NoContent()))
+	if off.contentOn() || off.rawOn() || off.appLogsOn() {
+		t.Errorf("first-party NoContent = %+v", off)
 	}
 }
 
@@ -141,13 +156,13 @@ func TestDefaultExporters(t *testing.T) {
 // the kind default; Signals; NoDeltas; BatchDelay; Headers; Timeout.
 func TestDestOptions(t *testing.T) {
 	d := mustDest(t, OTLP("https://c:4318", WithContent(), NoDeltas(), BatchDelay(time.Second), Headers(map[string]string{"x": "y"}), Timeout(2*time.Second)))
-	if !d.contentOn() || !d.noDeltas || d.batchDelay != time.Second ||
+	if !d.contentOn() || !d.noDeltas || d.logDelay != time.Second || d.spanDelay != time.Second ||
 		d.headers["x"] != "y" || d.timeout != 2*time.Second {
 		t.Errorf("shaped otlp = %+v", d)
 	}
-	l := mustDest(t, Local("p", NoContent(), Signals(false, true)))
+	l := mustDest(t, Sink("p", nil, NoContent(), Signals(false, true)))
 	if l.contentOn() || l.traces || !l.logs {
-		t.Errorf("shaped local = %+v", l)
+		t.Errorf("shaped sink = %+v", l)
 	}
 	// WithContent can carry its own ContentConfig.
 	c := ContentConfig{MaxBytes: 7}
@@ -159,60 +174,49 @@ func TestDestOptions(t *testing.T) {
 
 // Environment destinations (S2.3): the standard variables configure an
 // extra destination; NoEnv turns them off; two destinations on one URL
-// de-duplicate with the explicit one winning.
+// de-duplicate with the explicit one winning. weft reads no variable of
+// a viewer's (WEFT_STUDIO_URL is the platform's).
 func TestEnvDestinations(t *testing.T) {
 	t.Setenv("WEFT_STUDIO_URL", "https://studio.example")
 	t.Setenv("WEFT_STUDIO_TOKEN", "tok")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "k=v,a=b")
 	env := envDestinations(envGetenv)
-	if len(env) != 2 {
-		t.Fatalf("env built %d destinations, want 2", len(env))
+	if len(env) != 1 {
+		t.Fatalf("env built %d destinations, want 1 (OTLP only)", len(env))
 	}
-	var studio, otlpD dest
-	for _, d := range env {
-		switch d.kind {
-		case destStudio:
-			studio = d
-		case destOTLP:
-			otlpD = d
-		}
-	}
-	if studio.url != "https://studio.example" || studio.token != "tok" || !studio.contentOn() {
-		t.Errorf("env studio = %+v (content on)", studio)
-	}
-	if otlpD.url != "https://collector:4318" || otlpD.contentOn() ||
+	otlpD := env[0]
+	if otlpD.kind != destOTLP || otlpD.url != "https://collector:4318" || otlpD.contentOn() ||
 		otlpD.headers["k"] != "v" || otlpD.headers["a"] != "b" {
 		t.Errorf("env otlp = %+v (content off, headers parsed)", otlpD)
 	}
 
 	// The GenAI capture variable turns content on for the env OTLP.
 	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
-	if d := envDestinations(envGetenv); !d[1].contentOn() {
-		t.Errorf("capture variable: %+v", d[1])
+	if d := envDestinations(envGetenv); !d[0].contentOn() {
+		t.Errorf("capture variable: %+v", d[0])
 	}
 
 	// A schemeless endpoint reads as https (the OTLP convention).
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4318")
 	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "")
-	if d := envDestinations(envGetenv); d[1].url != "https://collector:4318" {
-		t.Errorf("schemeless endpoint = %q", d[1].url)
+	if d := envDestinations(envGetenv); d[0].url != "https://collector:4318" {
+		t.Errorf("schemeless endpoint = %q", d[0].url)
 	}
 }
 
 // The de-duplication rule: an explicit destination wins over an
 // environment one on the same URL.
 func TestEnvDedup(t *testing.T) {
-	t.Setenv("WEFT_STUDIO_URL", "https://studio.example")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4318")
-	explicit := destsOf(Studio("https://studio.example", "real"), OTLP("https://collector:4318", WithContent()))
+	explicit := destsOf(OTLP("https://collector:4318", WithContent()))
 	env := envDestinations(envGetenv)
 	kept := dedupe(explicit, env)
 	if len(kept) != 0 {
 		t.Errorf("dedupe kept %+v; explicit destinations win", kept)
 	}
 	other := destsOf(OTLP("https://elsewhere:4318"))
-	if kept := dedupe(other, env); len(kept) != 2 {
+	if kept := dedupe(other, env); len(kept) != 1 {
 		t.Errorf("dedupe dropped unrelated env destinations: %+v", kept)
 	}
 }

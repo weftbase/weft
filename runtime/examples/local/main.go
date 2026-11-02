@@ -25,6 +25,7 @@ import (
 	"syscall"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/runtime"
 	"github.com/weftgo/weft/studio"
@@ -54,7 +55,7 @@ func main() {
 	// the API the moment they flush.
 	srv := studio.New(studio.Open(filepath.Join(dir, "studio.db")), studio.Playground(true))
 
-	p, err := otel.Start(ctx, otel.Studio(url, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, ""), otel.NoGlobal())
 	if err != nil {
 		fail(err)
 	}

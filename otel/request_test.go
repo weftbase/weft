@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,14 +43,14 @@ func intAttrOf(r sdklog.Record, key string) (int64, bool) {
 // entries, and the request with each stop sequence redacted
 // (core.ContentStop); a content-off destination gets neither text nor
 // schema — no prompt, no tools, the request kept with params.stop
-// emptied and weft.content=stripped, its hashes intact. The Local sink
-// takes the new kinds beside the transcript, which still reads back.
+// emptied and weft.content=stripped, its hashes intact. A Sink takes
+// the new kinds beside the transcript.
 func TestRequestRecordsContentPolicyPerDestination(t *testing.T) {
-	dir := t.TempDir()
+	sink := newMemSink()
 	on, off := newMemExporter(), newMemExporter()
 	seen := map[core.ContentKind]bool{}
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0),
-		Local(filepath.Join(dir, "weft.db")),
+		sink.option(),
 		Exporters(nil, on, WithContent(ContentConfig{Redact: maskCard(seen), MaxBytes: 300})),
 		Exporters(nil, off),
 	)
@@ -176,14 +175,17 @@ func TestRequestRecordsContentPolicyPerDestination(t *testing.T) {
 		t.Error("content-off request lost its hash attributes")
 	}
 
-	// The Local sink took the new kinds beside the transcript.
-	db, err := sqliteOpen(filepath.Join(dir, "weft.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	if got, err := db.Transcript(context.Background(), res.ID); err != nil || len(got) == 0 {
-		t.Errorf("local transcript = %d batches, %v", len(got), err)
+	// The Sink took the new kinds beside the transcript.
+	for _, kind := range []string{"messages", "prompt", "tools", "request"} {
+		n := 0
+		for _, r := range sink.ofRecord(kind) {
+			if attrOf(r, "weft.run.id") == res.ID {
+				n++
+			}
+		}
+		if n == 0 {
+			t.Errorf("the Sink received no %s record of the run", kind)
+		}
 	}
 }
 

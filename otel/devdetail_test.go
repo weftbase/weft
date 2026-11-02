@@ -2,13 +2,11 @@ package otel
 
 // otel.DevDetail (U23.1; ADR 0016's 2026-10-26 amendment): dev only,
 // one WARN and off elsewhere; when on, the core records one span per
-// middleware layer and a repair's original arguments, and only the
-// Local and Studio destinations with content on receive them.
+// middleware layer and a repair's original arguments, and only
+// first-party destinations with content on receive them.
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,7 +52,8 @@ func TestDevDetailDevOnly(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			devEnv(t, c.env)
 			logs := captureSlog(t)
-			opts := []Option{NoGlobal(), Heartbeat(0), Local(filepath.Join(t.TempDir(), "weft.db")), DevDetail()}
+			sink := newMemSink()
+			opts := []Option{NoGlobal(), Heartbeat(0), sink.option(), DevDetail()}
 			if c.noEnv {
 				opts = append(opts, NoEnv())
 			}
@@ -75,19 +74,14 @@ func TestDevDetailDevOnly(t *testing.T) {
 			if p.LoggerProvider().DevDetail() != c.on {
 				t.Errorf("LoggerProvider.DevDetail = %v, want %v", !c.on, c.on)
 			}
-			res, err := detailAgent(p).Generate(context.Background(), core.Prompt("go"))
-			if err != nil {
+			if _, err := detailAgent(p).Generate(context.Background(), core.Prompt("go")); err != nil {
 				t.Fatal(err)
 			}
 			if err := p.ForceFlush(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			spans, err := p.LocalDB().RunSpans(context.Background(), res.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
 			layers := 0
-			for _, s := range spans {
+			for _, s := range sink.spanStubs() {
 				if strings.HasPrefix(s.Name, "layer ") {
 					layers++
 				}
@@ -101,21 +95,20 @@ func TestDevDetailDevOnly(t *testing.T) {
 	}
 }
 
-// The detail reaches the Local and Studio destinations with content on
-// alone: an Exporters destination (the OTLP presets' shape) gets the run
+// The detail reaches first-party destinations with content on alone: an Exporters destination (the OTLP presets' shape) gets the run
 // without its layer spans and without the repair's original arguments,
 // the event itself kept.
 func TestDevDetailNeverToThirdParty(t *testing.T) {
 	devEnv(t, nil)
 	mem := tracetest.NewInMemoryExporter()
+	sink := newMemSink()
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), DevMode(), Heartbeat(0), DevDetail(),
-		Local(filepath.Join(t.TempDir(), "weft.db")), Exporters(mem, nil, WithContent()))
+		sink.option(), Exporters(mem, nil, WithContent()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
-	res, err := detailAgent(p).Generate(context.Background(), core.Prompt("go"))
-	if err != nil {
+	if _, err := detailAgent(p).Generate(context.Background(), core.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.ForceFlush(context.Background()); err != nil {
@@ -153,10 +146,7 @@ func TestDevDetailNeverToThirdParty(t *testing.T) {
 	if repairs != 1 {
 		t.Errorf("weft.repair events at the exporters destination = %d, want 1 (the event stays, the original goes)", repairs)
 	}
-	local, err := p.LocalDB().RunSpans(context.Background(), res.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	local := sink.spanStubs()
 	layers := 0
 	for _, s := range local {
 		if strings.HasPrefix(s.Name, "layer ") {
@@ -164,17 +154,22 @@ func TestDevDetailNeverToThirdParty(t *testing.T) {
 		}
 	}
 	if layers != 4 {
-		t.Errorf("Local stored %d layer spans, want 4", layers)
+		t.Errorf("the Sink received %d layer spans, want 4", layers)
 	}
 	panics := 0
 	for _, s := range local {
 		for _, ev := range s.Events {
-			if ev.Name == "weft.panic" && strings.Contains(fmt.Sprint(ev.Attrs["weft.panic.stack"]), "goroutine") {
-				panics++
+			if ev.Name != "weft.panic" {
+				continue
+			}
+			for _, kv := range ev.Attributes {
+				if string(kv.Key) == "weft.panic.stack" && strings.Contains(kv.Value.Emit(), "goroutine") {
+					panics++
+				}
 			}
 		}
 	}
 	if panics != 1 {
-		t.Errorf("Local stored %d weft.panic stacks, want 1", panics)
+		t.Errorf("the Sink received %d weft.panic stacks, want 1", panics)
 	}
 }

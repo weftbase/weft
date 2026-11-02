@@ -23,6 +23,7 @@ import (
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/mw"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/internal/discovery"
 	"github.com/weftgo/weft/otel"
 )
@@ -289,7 +290,7 @@ func apiStudio(t *testing.T, child bool) (string, []core.Message) {
 	t.Cleanup(func() { ts.Close(); _ = srv.Close() })
 
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +531,7 @@ func TestRunsCommand(t *testing.T) {
 	// table's STOPPED BY cell names it, --json carries stopped_by and
 	// cancel_cause.
 	runsPageSize = 50
-	p, err := otel.Start(context.Background(), otel.Studio(url, ""), otel.NoGlobal())
+	p, err := exporter.Start(context.Background(), exporter.Studio(url, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1016,7 @@ func TestRunsJSONCarriesProblems(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() { ts.Close(); _ = srv.Close() })
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

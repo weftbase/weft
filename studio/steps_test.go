@@ -23,6 +23,7 @@ import (
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/mw"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -50,7 +51,7 @@ func (m namedModel) Info() core.ModelInfo { return core.ModelInfo{Provider: "wef
 func recordStepsRun(t *testing.T, url, runID string, meta map[string]string, dest ...otel.DestOption) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(url, "", dest...), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, "", dest...), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +564,7 @@ func TestStepPanelTokens(t *testing.T) {
 func withPipeline(t *testing.T, url string, traced bool, fn func(prov []core.Option), dest ...otel.DestOption) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(url, "", dest...), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, "", dest...), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,12 +11,12 @@ import (
 
 	"github.com/weftgo/weft/studio"
 
-	// The sqlite backend — the same one otel.Local writes.
+	// The sqlite backend — the same one exporter.Local writes.
 	"github.com/weftgo/weft/obsdb/sqlite"
 )
 
 // ExampleHandler is setup A's shape on one screen: a Studio over an
-// obsdb handle, mounted under a prefix. otel.Install's local sink
+// obsdb handle, mounted under a prefix. exporter.Install's local sink
 // writes the handle in a real app; here a batch stands in for it.
 func ExampleHandler() {
 	dir, err := os.MkdirTemp("", "weft-studio-example-")

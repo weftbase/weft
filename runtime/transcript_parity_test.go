@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/weftgo/weft/core"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 	"github.com/weftgo/weft/thread"
@@ -60,7 +61,7 @@ func TestTranscriptPathsAgree(t *testing.T) {
 func transcriptParity(t *testing.T, backend string) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(dir, "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(dir, "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +134,7 @@ func transcriptParity(t *testing.T, backend string) {
 		t.Fatal(err)
 	}
 
-	srv := studio.New(studio.DB(p.LocalDB()))
+	srv := studio.New(studio.DB(exporter.LocalDBOf(p)))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	cfg := &config{agents: []*core.Agent{agent}, threads: store}
@@ -142,7 +143,7 @@ func transcriptParity(t *testing.T, backend string) {
 
 	js := func(v any) string { b, _ := json.Marshal(v); return string(b) }
 	if got, err := transcriptFromThread(ctx, store, agent, compacted); err == nil {
-		fromDB, _ := transcriptFromObsdb(ctx, p.LocalDB(), compacted)
+		fromDB, _ := transcriptFromObsdb(ctx, exporter.LocalDBOf(p), compacted)
 		if fromDB == nil || js(got.input) != js(fromDB.input) {
 			t.Errorf("after compaction the thread path resolved a context the run was not fed:\nthread: %s\nrecord: %s", js(got.input), js(fromDB))
 		}
@@ -153,7 +154,7 @@ func transcriptParity(t *testing.T, backend string) {
 			t.Errorf("%s: thread: %v", name, err)
 			continue
 		}
-		fromDB, err := transcriptFromObsdb(ctx, p.LocalDB(), runID)
+		fromDB, err := transcriptFromObsdb(ctx, exporter.LocalDBOf(p), runID)
 		if err != nil {
 			t.Errorf("%s: obsdb: %v", name, err)
 			continue

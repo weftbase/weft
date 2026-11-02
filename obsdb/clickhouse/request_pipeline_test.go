@@ -12,6 +12,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -48,7 +49,7 @@ func (c *capture) ForceFlush(context.Context) error { return nil }
 func (c *capture) batch() obsdb.Batch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return obsdb.Batch{Spans: otel.FromSDKSpans(c.spans), Records: otel.FromSDKRecords(c.logs)}
+	return obsdb.Batch{Spans: exporter.FromSDKSpans(c.spans), Records: exporter.FromSDKRecords(c.logs)}
 }
 
 // ADR 0028 through the real pipeline, on both backends: one 50-step
@@ -63,7 +64,7 @@ func TestRequestRecordsBackendsAgree(t *testing.T) {
 	}
 	ctx := context.Background()
 	on, off := &capture{}, &capture{}
-	p, err := otel.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
+	p, err := exporter.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
 		otel.Exporters(on, on, otel.WithContent()), otel.Exporters(off, off))
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 	"github.com/weftgo/weft/thread"
@@ -27,12 +28,12 @@ import (
 func TestDecidedUndecidedCallFromARealResume(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Local(filepath.Join(dir, "weft.db")), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Local(filepath.Join(dir, "weft.db")), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Shutdown(ctx) })
-	srv := studio.New(studio.DB(p.LocalDB()))
+	srv := studio.New(studio.DB(exporter.LocalDBOf(p)))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

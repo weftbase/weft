@@ -1,49 +1,30 @@
 package otel
 
 import (
-	"log/slog"
 	"net/url"
 	"strings"
-
-	"github.com/weftgo/weft/internal/discovery"
 )
 
-// The environment destinations (S2.3). The core reads no environment
-// variable; this module does, here only, and NoEnv() turns all of them
-// off. Explicit options and environment destinations combine; two
-// destinations pointing at the same URL are de-duplicated (the explicit
-// one wins).
+// The environment destinations (S2.3): the standard OpenTelemetry
+// variables only. The core reads no environment variable; this module
+// does, here only, and NoEnv() turns all of them off. Explicit options
+// and environment destinations combine; two destinations pointing at
+// the same URL are de-duplicated (the explicit one wins).
 //
-//	WEFT_STUDIO_URL, WEFT_STUDIO_TOKEN                     → Studio (content on)
 //	OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS → OTLP
 //	OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT      → content for the env OTLP destination
 //	OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES            → resource (buildResource)
-//	WEFT_DB                                                  → the default Local path
-//	(neither WEFT_STUDIO_URL nor WEFT_DISCOVERY=off)          → the discovery file's Studio (discoverStudio)
-//
-// The discovery file is read only when the pipeline names no Studio and
-// no Local destination in code and NoDiscovery is not set (see
-// discoverStudio).
+//	WEFT_ENV=dev                                             → the development gate (devGate)
 //
 // An http:// scheme the operator wrote in OTEL_EXPORTER_OTLP_ENDPOINT is
 // the opt-in for a plaintext export to that host — the variable's
 // OpenTelemetry-standard meaning, and the docker-compose/sidecar
 // collector's usual form (http://otel-collector:4318). It holds for that
 // environment destination only: a code-configured OTLP("http://…") to a
-// non-loopback host still needs Insecure(), an https:// destination is
-// never downgraded by it, and WEFT_STUDIO_URL gets no such reading — the
-// Studio destination carries a bearer token, so plaintext to a
-// non-loopback Studio takes Studio(url, token, Insecure()) in code.
+// non-loopback host still needs Insecure(), and an https:// destination
+// is never downgraded by it.
 func envDestinations(getenv func(string) string) []dest {
 	var out []dest
-	if u := getenv("WEFT_STUDIO_URL"); u != "" {
-		d := newDest(destStudio, "studio(env)")
-		d.url = normalizeEnvEndpoint(u)
-		d.token = getenv("WEFT_STUDIO_TOKEN")
-		on := true
-		d.content = &on
-		out = append(out, d)
-	}
 	if u := getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); u != "" {
 		d := newDest(destOTLP, "otlp(env)")
 		d.url = normalizeEnvEndpoint(u)
@@ -114,10 +95,10 @@ func dedupURL(raw string) string {
 }
 
 // exportURL is the URL a destination exports to — what de-duplication
-// compares; "" for the kinds with none (Local, Exporters).
+// compares; "" for the kinds with none (Sink, Exporters).
 func exportURL(d dest) string {
 	switch d.kind {
-	case destStudio, destOTLP:
+	case destOTLP:
 		return d.url
 	case destDatadog:
 		if d.url == "" {
@@ -147,52 +128,4 @@ func dedupe(explicit, env []dest) []dest {
 		out = append(out, d)
 	}
 	return out
-}
-
-// discovered is the running Studio the discovery file named.
-type discovered struct {
-	info discovery.Info
-	path string
-}
-
-// discoverStudio is the discovery rung (plan B3): when WEFT_STUDIO_URL
-// is unset and WEFT_DISCOVERY is not "off", the discovery file `weft
-// studio` / `weft dev` writes (internal/discovery: ./.weft, then
-// $XDG_RUNTIME_DIR/weft, then the user cache directory) stands in for
-// WEFT_STUDIO_URL and WEFT_STUDIO_TOKEN — its url and token, together.
-// A stale file (its pid gone, or 24 hours old) is never trusted; a
-// missing, stale or malformed one changes nothing and logs Debug at
-// most. NoEnv turns this off with the rest of the environment,
-// NoDiscovery turns it off alone, and an explicit Studio or Local
-// destination (otel.Studio, otel.Local) turns it off on its own: a
-// pipeline that names where it writes writes only there.
-func discoverStudio(getenv func(string) string) (func(string) string, *discovered) {
-	info, path, ok := discovery.Lookup(getenv, slog.Default())
-	if !ok {
-		return getenv, nil
-	}
-	return func(k string) string {
-		switch k {
-		case "WEFT_STUDIO_URL":
-			return info.URL
-		case "WEFT_STUDIO_TOKEN":
-			return info.Token
-		}
-		return getenv(k)
-	}, &discovered{info: info, path: path}
-}
-
-// hasStudio reports whether dests name a Studio destination.
-func hasStudio(dests []dest) bool { return hasKind(dests, destStudio) }
-
-// hasLocal reports whether dests name a Local destination.
-func hasLocal(dests []dest) bool { return hasKind(dests, destLocal) }
-
-func hasKind(dests []dest, k destKind) bool {
-	for _, d := range dests {
-		if d.kind == k {
-			return true
-		}
-	}
-	return false
 }

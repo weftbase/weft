@@ -15,6 +15,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -184,7 +185,7 @@ func TestPlaygroundEditInsideCompactionRefused(t *testing.T) {
 func recordAnsweredRun(t *testing.T, url, runID, shape string) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(url, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

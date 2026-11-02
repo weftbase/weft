@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -76,21 +75,15 @@ func ExampleBlocking() {
 
 // DevMode is the code-side twin of WEFT_ENV=dev, for a test or harness
 // that controls its own process: beside NoEnv — which reads no
-// WEFT_STUDIO_URL, OTEL_* variable or discovery file, and no WEFT_ENV
+// OTEL_* variable, and no WEFT_ENV
 // either — it is what lets an isolated pipeline record provider wire
 // bodies (RawBodies) or make a destination wait for queue room
 // (Blocking). Without it, Start would WARN "otel: RawBodies ignored:
 // otel.NoEnv reads no WEFT_ENV" and record no weft.raw.
 func ExampleDevMode() {
-	dir, err := os.MkdirTemp("", "weft-otel-devmode-")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
-
 	p, err := otel.Start(context.Background(),
 		otel.NoEnv(), otel.DevMode(), otel.NoGlobal(),
-		otel.Local(filepath.Join(dir, "weft.db")),
+		otel.Exporters(nil, &eventNames{}, otel.FirstParty()),
 		otel.RawBodies(true),
 	)
 	if err != nil {

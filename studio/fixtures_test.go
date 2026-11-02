@@ -20,6 +20,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/studio"
 )
@@ -35,7 +36,7 @@ func TestFixtureRoundTripThroughReplay(t *testing.T) {
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { _ = srv.Close() })
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

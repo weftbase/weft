@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -19,7 +18,7 @@ import (
 // test sees only the ones it sets.
 func clearEnvDestinations(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"WEFT_STUDIO_URL", "WEFT_STUDIO_TOKEN", "OTEL_EXPORTER_OTLP_ENDPOINT",
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"} {
 		t.Setenv(k, "")
 	}
@@ -67,27 +66,17 @@ func TestEnvHTTPEndpointIsPlaintextOptIn(t *testing.T) {
 }
 
 // The opt-in is the environment variable's alone: a code-configured
-// OTLP("http://non-loopback") without Insecure() is still refused, and so
-// is an http:// WEFT_STUDIO_URL to a non-loopback host (the Studio
-// destination carries a bearer token; plaintext takes Insecure() in
-// code).
-func TestPlaintextGuardStaysForCodeAndStudio(t *testing.T) {
+// OTLP("http://non-loopback") without Insecure() is still refused.
+// (WEFT_STUDIO_URL's own guard is weft/exporter's.)
+func TestPlaintextGuardStaysForCode(t *testing.T) {
 	clearEnvDestinations(t)
 	_, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0), OTLP("http://otel-collector:4318"))
 	if err == nil || !strings.Contains(err.Error(), "needs Insecure()") {
 		t.Errorf("code OTLP(http://non-loopback) without Insecure: err = %v, want the refusal", err)
 	}
 
-	t.Setenv("WEFT_STUDIO_URL", "http://studio.internal:7331")
-	t.Setenv("WEFT_STUDIO_TOKEN", "tok")
-	_, err = Start(testCtx(t), NoGlobal(), Heartbeat(0))
-	if err == nil || !strings.Contains(err.Error(), "needs Insecure()") {
-		t.Errorf("env WEFT_STUDIO_URL=http://non-loopback: err = %v, want the refusal", err)
-	}
-
 	// An env OTLP endpoint without a scheme stays https (the OTLP
 	// convention): no plaintext without the operator writing http://.
-	t.Setenv("WEFT_STUDIO_URL", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4318")
 	if d := envDestinations(envGetenv); len(d) != 1 || d[0].insecure {
 		t.Errorf("schemeless env endpoint = %+v, want https (not insecure)", d)
@@ -99,15 +88,13 @@ func TestPlaintextGuardStaysForCodeAndStudio(t *testing.T) {
 }
 
 // Install with only environment destinations, none of which builds,
-// falls back to the local sink with one WARN — the run is recorded.
-// Pre-fix nothing was installed (errAllFailed) and LocalDB() was nil.
+// uses the Fallback destination with one WARN — the run is recorded.
 // Start keeps returning the error; a program that named a destination
-// gets no fallback (TestInstallSkipsBrokenDestinations).
-func TestInstallFallsBackToLocalWhenEnvDestinationsFail(t *testing.T) {
+// gets no fallback (TestInstallSkipsBrokenDestinations), and without a
+// Fallback nothing is installed.
+func TestInstallFallsBackWhenEnvDestinationsFail(t *testing.T) {
 	clearEnvDestinations(t)
-	t.Setenv("WEFT_DB", filepath.Join(t.TempDir(), "fallback.db"))
-	t.Setenv("WEFT_STUDIO_URL", "http://studio.internal:7331") // plaintext + token: refused
-	t.Setenv("WEFT_STUDIO_TOKEN", "tok")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "ftp://collector.internal:4318") // not OTLP/HTTP: refused
 
 	if _, err := Start(testCtx(t), NoGlobal(), Heartbeat(0)); err == nil {
 		t.Fatal("Start with only a broken env destination succeeded; want the error")
@@ -118,29 +105,40 @@ func TestInstallFallsBackToLocalWhenEnvDestinationsFail(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	defer slog.SetDefault(prev)
 
-	shutdown := Install(Heartbeat(0))
+	fb := newMemSink()
+	shutdown := Install(Heartbeat(0), Fallback(fb.option()))
 	defer shutdown()
-	db := LocalDB()
-	if db == nil {
-		t.Fatalf("Install recorded nothing: no local fallback after every env destination failed; log: %s", buf.String())
+	if Installed() == nil {
+		t.Fatalf("Install recorded nothing: no fallback after every env destination failed; log: %s", buf.String())
 	}
 	res, err := core.New(wefttest.Script(wefttest.Say("kept"))).Generate(context.Background(), core.Prompt("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Run(context.Background(), res.ID); err != nil {
-		t.Fatalf("the run did not reach the fallback local sink: %v", err)
+	shutdown()
+	reached := false
+	for _, r := range fb.ofRecord("event") {
+		reached = reached || attrOf(r, "weft.run.id") == res.ID
 	}
-	if out := buf.String(); strings.Count(out, "falling back to the local sink") != 1 {
+	if !reached {
+		t.Fatal("the run did not reach the fallback destination")
+	}
+	if out := buf.String(); strings.Count(out, "using the fallback destination") != 1 {
 		t.Errorf("want one fallback WARN, got: %s", out)
 	}
 
 	// A named destination that fails gets no fallback.
-	shutdown()
-	shutdown2 := Install(NoEnv(), Heartbeat(0), OTLP("http://otel-collector:4318"))
+	fb2 := newMemSink()
+	shutdown2 := Install(NoEnv(), Heartbeat(0), OTLP("http://otel-collector:4318"), Fallback(fb2.option()))
 	defer shutdown2()
-	if LocalDB() != nil {
-		t.Error("Install handed a program that named its destinations an unrequested local sink")
+	if Installed() != nil || fb2.opened != 0 {
+		t.Error("Install handed a program that named its destinations an unrequested fallback")
+	}
+	// Without a Fallback, a failed env destination installs nothing.
+	shutdown3 := Install(Heartbeat(0))
+	defer shutdown3()
+	if Installed() != nil {
+		t.Error("Install installed a pipeline with every destination failed and no fallback")
 	}
 }
 
@@ -152,7 +150,7 @@ func TestEnvPlaintextOptInStaysOnTheEnvDestination(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-env=1")
 	var cfg config
-	for _, o := range []Option{Studio("https://studio.example", "tok"), OTLP("https://other.example")} {
+	for _, o := range []Option{OTLP("https://studio.example", FirstParty(), bearer("tok")), OTLP("https://other.example")} {
 		o.apply(&cfg)
 	}
 	for _, d := range cfg.dests {

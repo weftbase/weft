@@ -13,6 +13,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/thread"
 )
@@ -44,7 +45,7 @@ func (hangModel) Stream(ctx context.Context, _ core.ModelRequest) iter.Seq2[core
 // waits until each run reads settled there.
 func seedInvestigations(t *testing.T, ctx context.Context, base, token string) {
 	t.Helper()
-	p, err := otel.Start(ctx, otel.Studio(base, token), otel.NoGlobal(), otel.NoEnv())
+	p, err := exporter.Start(ctx, exporter.Studio(base, token), otel.NoGlobal(), otel.NoEnv())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -356,7 +356,7 @@ func (p *printer) ingest(m meta) {
 			at = " at " + in.LastAt.Format(time.RFC3339)
 		}
 		p.sub("last refused%s: %s", at, in.LastError)
-		p.sub("fix: studio's log names each refused batch with its request id (WARN \"studio: ingest batch refused\"); a 401 is the app's ingest token (otel.Studio(url, token), studio.IngestToken)")
+		p.sub("fix: studio's log names each refused batch with its request id (WARN \"studio: ingest batch refused\"); a 401 is the app's ingest token (exporter.Studio(url, token), studio.IngestToken)")
 	}
 	if len(in.Dropped) > 0 {
 		for _, d := range in.Dropped {
@@ -561,7 +561,7 @@ func (p *printer) otlp(m meta, url string) {
 	case m.IngestOpen:
 		p.line(ok, "otlp", "open: OTLP at %s/v1/traces and /v1/logs takes a loopback app's spans with no ingest token", url)
 	default:
-		p.line(ok, "otlp", "walled: OTLP at %s/v1/traces and /v1/logs needs the ingest token (otel.Studio(url, token))", url)
+		p.line(ok, "otlp", "walled: OTLP at %s/v1/traces and /v1/logs needs the ingest token (exporter.Studio(url, token))", url)
 	}
 }
 

@@ -3,7 +3,6 @@ package thread_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	logembedded "go.opentelemetry.io/otel/log/embedded"
 	lognoop "go.opentelemetry.io/otel/log/noop"
@@ -369,15 +369,36 @@ func TestReopenedCompactSummarizerIsDropped(t *testing.T) {
 		t.Errorf("no Debug line %q; logs:\n%s", line, logs.String())
 	}
 	rp.shutdown(t)
-	db, err := sql.Open("sqlite", "file:"+rp.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 	var in int64
 	var run string
-	if err := db.QueryRow(`SELECT run_id, COALESCE(json_extract(body, '$.summarizer_usage.input_tokens'), 0) FROM session_events WHERE kind = 'compaction'`).Scan(&run, &in); err != nil {
-		t.Fatalf("the compaction marker: %v", err)
+	markers := 0
+	for _, r := range rp.local.logs {
+		var kind, id string
+		r.WalkAttributes(func(kv attribute.KeyValue) bool {
+			switch kv.Key {
+			case "weft.record":
+				kind = kv.Value.AsString()
+			case "weft.run.id":
+				id = kv.Value.AsString()
+			}
+			return true
+		})
+		if kind != "compaction" {
+			continue
+		}
+		markers++
+		var body struct {
+			SummarizerUsage struct {
+				InputTokens int64 `json:"input_tokens"`
+			} `json:"summarizer_usage"`
+		}
+		if err := json.Unmarshal([]byte(r.Body().AsString()), &body); err != nil {
+			t.Fatalf("the compaction marker: %v", err)
+		}
+		run, in = id, body.SummarizerUsage.InputTokens
+	}
+	if markers != 1 {
+		t.Fatalf("the Sink received %d compaction markers, want 1", markers)
 	}
 	if in != 900 || run != s.ID()+"-t1" {
 		t.Errorf("the marker = run %q summarizer input %d, want under %s-t1 with 900", run, in, s.ID())
@@ -525,12 +546,9 @@ func TestTurnsNameTheirBranch(t *testing.T) {
 	for _, c := range []struct {
 		id, parent, branch string
 	}{{r1.ID, "", ""}, {r2.ID, "", ""}, {r3.ID, "1", "via-spain"}, {r4.ID, "", "via-spain"}} {
-		run, err := rp.p.LocalDB().Run(ctx, c.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if run.Meta["weft.turn.parent"] != c.parent || run.Meta["weft.session.branch"] != c.branch {
-			t.Errorf("run %s meta %v; want weft.turn.parent %q weft.session.branch %q", c.id, run.Meta, c.parent, c.branch)
+		meta, _ := rp.runMeta(t, c.id)
+		if meta["weft.turn.parent"] != c.parent || meta["weft.session.branch"] != c.branch {
+			t.Errorf("run %s meta %v; want weft.turn.parent %q weft.session.branch %q", c.id, meta, c.parent, c.branch)
 		}
 	}
 	rp.shutdown(t)
@@ -619,12 +637,9 @@ func TestAbandonedSendNamesNoBranch(t *testing.T) {
 	for _, c := range []struct {
 		id, parent, branch string
 	}{{r1.ID, "", ""}, {r2.ID, "", ""}, {r3.ID, "1", "via-spain"}, {r4.ID, "", "via-spain"}} {
-		run, err := rp.p.LocalDB().Run(ctx, c.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if run.Meta["weft.turn.parent"] != c.parent || run.Meta["weft.session.branch"] != c.branch {
-			t.Errorf("run %s meta %v; want weft.turn.parent %q weft.session.branch %q", c.id, run.Meta, c.parent, c.branch)
+		meta, _ := rp.runMeta(t, c.id)
+		if meta["weft.turn.parent"] != c.parent || meta["weft.session.branch"] != c.branch {
+			t.Errorf("run %s meta %v; want weft.turn.parent %q weft.session.branch %q", c.id, meta, c.parent, c.branch)
 		}
 	}
 	rp.shutdown(t)

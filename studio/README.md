@@ -15,9 +15,9 @@ fully offline.
 with a thread session whose turns stream in live):
 
 ```go
-defer otel.Install()() // local sink ./.weft/weft.db, content on, no network
+defer exporter.Install()() // local sink ./.weft/weft.db, content on, no network
 mux.Handle("/studio/", http.StripPrefix("/studio",
-    studio.Handler(studio.DB(otel.LocalDB())))) // same DB, same live hub
+    studio.Handler(studio.DB(exporter.LocalDB())))) // same DB, same live hub
 ```
 
 Passing the pipeline's handle is what makes it live: writes publish to
@@ -63,7 +63,7 @@ link (`weft/runtime`: Go only today; non-Go clients are backlog I2):
 ```sh
 go install github.com/weftgo/weft/cmd/weft@latest
 weft studio                            # UI + OTLP + SQLite + playground + dev token on 127.0.0.1:7331
-./my-go-app                            # otel.Install() finds it through the discovery file
+./my-go-app                            # exporter.Install() finds it through the discovery file
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:7331 OTEL_METRICS_EXPORTER=none OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true opentelemetry-instrument python app.py
 ```
 
@@ -82,12 +82,12 @@ session document's `turn`, 1..n; the run's own row keeps 0; UX-H-35).
 The dev token is stable per database — `<db>.token` beside the SQLite
 file, 0600, never printed (`--rotate-token` renews it;
 `WEFT_STUDIO_TOKEN` or `--token` overrides it); a Go app with
-`otel.Install()` / `runtime.Install()` finds the running Studio through
+`exporter.Install()` / `runtime.Install()` finds the running Studio through
 the discovery file `studio.json` (`./.weft`, `$XDG_RUNTIME_DIR/weft`,
 the user cache directory; `WEFT_STUDIO_URL` always wins,
-`WEFT_DISCOVERY=off` ignores it, an explicit `otel.Local` or
-`otel.Studio` never reads it — the root README's "When weft/otel reads
-the file"); ingest is open on loopback;
+`WEFT_DISCOVERY=off` ignores it, an explicit `exporter.Local` or
+`exporter.Studio` never reads it — the root README's "When weft/exporter
+reads the file"); ingest is open on loopback;
 `127.0.0.1:7331` is the one default port: started again on the same
 SQLite file, the binary is refused: one Studio per database file,
 held by `<db>.lock` beside a SQLite file — an exclusive OS lock (flock; LockFileEx on Windows) held while it serves, taken before any port is probed or bound, and released by the kernel when the process ends, a crash or `kill -9` included. Two starts at the same moment, or from

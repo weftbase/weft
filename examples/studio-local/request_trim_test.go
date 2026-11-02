@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -22,7 +23,7 @@ import (
 
 func TestPrepareStepTrimsThePrompt(t *testing.T) {
 	path := t.TempDir() + "/weft.db"
-	shutdown := otel.Install(otel.NoEnv(), otel.Local(path))
+	shutdown := exporter.Install(otel.NoEnv(), exporter.Local(path))
 	// One steered follow-up at the final step: the echo model answers
 	// it with another lookup, so the run has steps after step 1 to show
 	// that the trimmed text is stable.

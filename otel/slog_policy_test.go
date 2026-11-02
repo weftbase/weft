@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -381,26 +380,28 @@ func TestSlogNonLIFOShutdown(t *testing.T) {
 	}
 }
 
-// TestBridgeMarkLocalContentOff: a content-off Local sink beside a
-// bridged handler (the line goes nowhere it is stored) stores the run's
-// root unmarked — its logs page then carries the hint.
-func TestBridgeMarkLocalContentOff(t *testing.T) {
-	p := startBridgeTest(t, Local(filepath.Join(t.TempDir(), "off.db"), NoContent()))
+// TestBridgeMarkSinkContentOff: a content-off Sink beside a bridged
+// handler (the line goes nowhere it is stored) receives the run's root
+// unmarked — a viewer's logs page then carries the hint.
+func TestBridgeMarkSinkContentOff(t *testing.T) {
+	sink := newMemSink()
+	p := startBridgeTest(t, sink.option(NoContent()))
 	_ = p.SlogHandler(nil)
 	agt := core.New(wefttest.Script(wefttest.Say("done")), core.Name("m"),
 		core.TracerProvider(p.TracerProvider()), core.LoggerProvider(p.LoggerProvider()))
-	res, err := agt.Generate(context.Background(), core.Prompt("go"))
-	if err != nil {
+	if _, err := agt.Generate(context.Background(), core.Prompt("go")); err != nil {
 		t.Fatal(err)
 	}
 	_ = p.ForceFlush(context.Background())
-	spans, err := p.dests[0].localDB.RunSpans(context.Background(), res.ID)
-	if err != nil || len(spans) == 0 {
-		t.Fatalf("spans %d, err %v", len(spans), err)
+	spans := sink.spanStubs()
+	if len(spans) == 0 {
+		t.Fatal("the Sink received no spans")
 	}
 	for _, s := range spans {
-		if _, ok := s.Attrs[attrLogsBridged]; ok {
-			t.Errorf("span %s stored with %s on a content-off Local sink that takes no app logs", s.Name, attrLogsBridged)
+		for _, kv := range s.Attributes {
+			if string(kv.Key) == attrLogsBridged {
+				t.Errorf("span %s exported with %s to a content-off Sink that takes no app logs", s.Name, attrLogsBridged)
+			}
 		}
 	}
 }

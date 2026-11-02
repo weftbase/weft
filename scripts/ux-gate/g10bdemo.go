@@ -38,6 +38,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/weftgo/weft"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/mcp"
 	"github.com/weftgo/weft/mw"
 	"github.com/weftgo/weft/otel"
@@ -65,7 +66,7 @@ func main() {
 		die("usage: g10bdemo flow|mcp|onion|live <studio> <token> [batch|secs]")
 	}
 	mode, url, tok := os.Args[1], os.Args[2], os.Args[3]
-	stop := otel.Install(otel.Studio(url, tok), otel.NoEnv())
+	stop := exporter.Install(exporter.Studio(url, tok), otel.NoEnv())
 	ctx := context.Background()
 	switch mode {
 	case "flow":

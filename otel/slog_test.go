@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -136,18 +135,17 @@ func TestSlogHandlerTeesUnderASpan(t *testing.T) {
 }
 
 // TestAppLogsDefaults pins AppLogs' table: an Exporters (or OTLP)
-// destination takes no bridged line unless it opts in, a Local one does
-// unless it is content-off; with no destination taking them the handler
+// destination takes no bridged line unless it opts in, a first-party
+// one (a Sink) does unless it is content-off; with no destination taking them the handler
 // is not even enabled (slog builds no record).
 func TestAppLogsDefaults(t *testing.T) {
-	dir := t.TempDir()
 	third := &recLogs{}
-	p := startBridgeTest(t, Exporters(nil, third), Local(filepath.Join(dir, "on.db")),
-		Local(filepath.Join(dir, "off.db"), NoContent()))
+	p := startBridgeTest(t, Exporters(nil, third), newMemSink().option(),
+		newMemSink().option(NoContent()))
 	h := p.SlogHandler(nil)
 	ctx, span := p.TracerProvider().Tracer("t").Start(context.Background(), "invoke_agent probe")
 	if !h.Enabled(ctx, slog.LevelDebug) {
-		t.Fatal("the content-on Local destination takes app logs: the handler should be enabled")
+		t.Fatal("the content-on Sink takes app logs: the handler should be enabled")
 	}
 	slog.New(h).InfoContext(ctx, "hello")
 	span.End()
@@ -162,7 +160,7 @@ func TestAppLogsDefaults(t *testing.T) {
 		flags = append(flags, fmt.Sprint(rt.logProc.(*destProc).appLogs))
 	}
 	if strings.Join(flags, " ") != "false true false" {
-		t.Errorf("appLogs per destination (exporters, local, local content-off) = %v, want false true false", flags)
+		t.Errorf("appLogs per destination (exporters, sink, sink content-off) = %v, want false true false", flags)
 	}
 	// A pipeline whose only destination takes none: not enabled.
 	q := startBridgeTest(t, Exporters(nil, &recLogs{}))

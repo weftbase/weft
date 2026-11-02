@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,19 +31,17 @@ func maskCard(seen map[core.ContentKind]bool) func(core.ContentKind, string) str
 // document and the model's non-JSON bytes) and tool results come out
 // masked; the batch still decodes as []core.Message with the same
 // messages, roles and part types; the record attributes (index, count)
-// are untouched; the Local sink stores the redacted batch and
-// obsdb.Transcript — Studio's transcript route — reads it back. Pre-fix
-// the transcript left unredacted: the card number was in the stored
-// batches.
+// are untouched; a Sink receives the redacted batch (what a store's
+// transcript reads back). Pre-fix the transcript left unredacted: the
+// card number was in the stored batches.
 func TestRedactAppliesToMessagesRecords(t *testing.T) {
-	dir := t.TempDir()
-	redacted, raw := filepath.Join(dir, "redacted.db"), filepath.Join(dir, "raw.db")
+	redacted, raw := newMemSink(), newMemSink()
 	mem, off := newMemExporter(), newMemExporter()
 	seen := map[core.ContentKind]bool{}
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0),
 		Content(ContentConfig{Redact: maskCard(seen)}),
-		Local(redacted),
-		Local(raw, WithContent(ContentConfig{})), // the unredacted reference
+		redacted.option(),
+		raw.option(WithContent(ContentConfig{})), // the unredacted reference
 		Exporters(nil, mem, WithContent()),
 		Exporters(nil, off), // content off: messages records dropped, as before
 	)
@@ -72,16 +69,16 @@ func TestRedactAppliesToMessagesRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	read := func(path string) []json.RawMessage {
+	read := func(sink *memSink) []json.RawMessage {
 		t.Helper()
-		db, err := sqliteOpen(path)
-		if err != nil {
-			t.Fatal(err)
+		var tr []json.RawMessage
+		for _, r := range sink.ofRecord("messages") {
+			if attrOf(r, "weft.run.id") == res.ID {
+				tr = append(tr, json.RawMessage(r.Body().AsString()))
+			}
 		}
-		defer func() { _ = db.Close() }()
-		tr, err := db.Transcript(context.Background(), res.ID)
-		if err != nil || len(tr) == 0 {
-			t.Fatalf("%s transcript = %d bodies, %v", path, len(tr), err)
+		if len(tr) == 0 {
+			t.Fatal("the Sink received no transcript")
 		}
 		return tr
 	}

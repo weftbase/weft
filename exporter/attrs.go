@@ -1,4 +1,4 @@
-package otel
+package exporter
 
 import (
 	"encoding/base64"

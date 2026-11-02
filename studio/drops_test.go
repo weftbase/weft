@@ -17,6 +17,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -68,11 +69,11 @@ func TestEventStormGapNamesTheQueue(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	const queue = 64
-	p, err := otel.Start(context.Background(), otel.NoGlobal(), otel.NoEnv(), otel.Service("storm-app"),
+	p, err := exporter.Start(context.Background(), otel.NoGlobal(), otel.NoEnv(), otel.Service("storm-app"),
 		otel.Heartbeat(0), // the count rides the run's own run_finish
 		// Nothing drains before the flush: the storm meets a full queue
 		// deterministically.
-		otel.Studio(ts.URL, "", otel.QueueSize(queue), otel.BatchDelay(time.Hour)))
+		exporter.Studio(ts.URL, "", otel.QueueSize(queue), otel.BatchDelay(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}

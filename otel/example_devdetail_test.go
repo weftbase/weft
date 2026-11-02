@@ -4,28 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/weftgo/weft"
 	"github.com/weftgo/weft/mw"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/wefttest"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // DevDetail records the whole middleware onion in development: one
 // "layer <name>" span per WrapModel / WrapTools layer per call, nested
-// under the call's own span, for the Local and Studio destinations.
+// under the call's own span, for the first-party destinations (here the
+// app's own exporter, marked FirstParty).
 func ExampleDevDetail() {
-	dir, err := os.MkdirTemp("", "weft-otel-devdetail-")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	spans := tracetest.NewInMemoryExporter()
 	p, err := otel.Start(context.Background(),
 		otel.NoEnv(), otel.DevMode(), otel.NoGlobal(),
-		otel.Local(filepath.Join(dir, "weft.db")),
+		otel.Exporters(spans, nil, otel.FirstParty()),
 		otel.DevDetail(),
 	)
 	if err != nil {
@@ -39,18 +35,18 @@ func ExampleDevDetail() {
 		wefttest.Say("done")),
 		lookup, weft.WrapTools(mw.Audit(nil), mw.Allow(nil)),
 		weft.TracerProvider(p.TracerProvider()), weft.LoggerProvider(p.LoggerProvider()))
-	res, err := agt.Generate(context.Background(), weft.Prompt("look it up"))
-	if err != nil {
+	if _, err := agt.Generate(context.Background(), weft.Prompt("look it up")); err != nil {
 		log.Fatal(err)
 	}
 	_ = p.ForceFlush(context.Background())
-	spans, err := p.LocalDB().RunSpans(context.Background(), res.ID)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, s := range spans {
-		if strings.HasPrefix(s.Name, "layer ") {
-			fmt.Println(s.Name, s.Attrs["weft.layer.index"])
+	for _, s := range spans.GetSpans() {
+		if !strings.HasPrefix(s.Name, "layer ") {
+			continue
+		}
+		for _, kv := range s.Attributes {
+			if kv.Key == "weft.layer.index" {
+				fmt.Println(s.Name, kv.Value.Emit())
+			}
 		}
 	}
 	// Unordered output:

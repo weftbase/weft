@@ -2,10 +2,8 @@ package thread_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -16,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	_ "modernc.org/sqlite"
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
@@ -26,8 +23,9 @@ import (
 
 // The thread record family (record contract §4, kind thread; U12.1):
 // these tests mirror the arena's thread scenarios over a real pipeline
-// — a Local sink (replay-grade, content on), a content-on exporter and
-// a content-off one — and read what each destination received.
+// — a Sink standing in for a local store (synchronous, first-party,
+// content on), a content-on exporter and a content-off one — and read
+// what each destination received.
 
 type recCapture struct {
 	mu    sync.Mutex
@@ -131,19 +129,21 @@ func spanAttr(s sdktrace.ReadOnlySpan, k string) attribute.Value {
 	return attribute.Value{}
 }
 
-// recPipe is one pipeline: Local at path, a content-on and a
+// recPipe is one pipeline: a Sink (local), a content-on and a
 // content-off exporter.
 type recPipe struct {
-	p       *otel.Pipeline
-	on, off *recCapture
-	path    string
+	p              *otel.Pipeline
+	on, off, local *recCapture
 }
 
 func newRecPipe(t *testing.T) *recPipe {
 	t.Helper()
-	rp := &recPipe{on: &recCapture{}, off: &recCapture{}, path: filepath.Join(t.TempDir(), "weft.db")}
+	rp := &recPipe{on: &recCapture{}, off: &recCapture{}, local: &recCapture{}}
 	p, err := otel.Start(context.Background(), otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
-		otel.Local(rp.path), otel.Exporters(rp.on, rp.on, otel.WithContent()), otel.Exporters(rp.off, rp.off, otel.NoContent()))
+		otel.Sink("local", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+			return rp.local, rp.local, nil
+		}),
+		otel.Exporters(rp.on, rp.on, otel.WithContent()), otel.Exporters(rp.off, rp.off, otel.NoContent()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,35 +157,71 @@ func (rp *recPipe) agent(name string, m core.Model, opts ...core.Option) *core.A
 	return core.New(m, append(all, opts...)...)
 }
 
-// shutdown flushes everything and returns the thread records the Local
-// sink stored, by kind (read straight from its session_events index,
-// where every thread record lands — a runless one only there; the
-// reader is U12.2's).
+// shutdown flushes everything and returns the thread records the Sink
+// received, by kind — every thread record lands there, a runless one
+// included (a store keeps them in its session index).
 func (rp *recPipe) shutdown(t *testing.T) map[string]int {
 	t.Helper()
 	if err := rp.p.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+rp.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`SELECT json_extract(body, '$.kind'), COUNT(*) FROM session_events WHERE kind = 'thread' GROUP BY 1`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[string]int{}
-	for rows.Next() {
-		var k string
-		var n int
-		if err := rows.Scan(&k, &n); err != nil {
-			t.Fatal(err)
+	return countKinds(rp.local.records(t))
+}
+
+// runMeta is what the Sink received about run id beside its thread
+// records: the string attributes of its run records (weft.run.id = id)
+// and of its spans — what a store folds into the run row's metadata —
+// and its weft.turn.
+func (rp *recPipe) runMeta(t *testing.T, id string) (map[string]string, int) {
+	t.Helper()
+	c := rp.local
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	meta := map[string]string{}
+	found := false
+	add := func(kvs []attribute.KeyValue) {
+		for _, kv := range kvs {
+			if kv.Value.Type() == attribute.STRING && kv.Value.AsString() != "" {
+				meta[string(kv.Key)] = kv.Value.AsString()
+			}
 		}
-		out[k] = n
 	}
-	return out
+	for _, r := range c.logs {
+		var kvs []attribute.KeyValue
+		run, kind := "", ""
+		r.WalkAttributes(func(kv attribute.KeyValue) bool {
+			kvs = append(kvs, kv)
+			switch kv.Key {
+			case "weft.run.id":
+				run = kv.Value.AsString()
+			case "weft.record":
+				kind = kv.Value.AsString()
+			}
+			return true
+		})
+		if run == id && kind != "thread" {
+			found = true
+			add(kvs)
+		}
+	}
+	turn := 0
+	for _, s := range c.spans {
+		if spanAttr(s, "weft.run.id").AsString() != id {
+			continue
+		}
+		found = true
+		add(s.Attributes())
+		if v := spanAttr(s, "weft.turn"); v.Type() == attribute.INT64 {
+			turn = int(v.AsInt64())
+		}
+	}
+	if !found {
+		t.Fatalf("the Sink received nothing of run %s", id)
+	}
+	if v, ok := meta["weft.turn"]; ok && turn == 0 {
+		turn = recAtoi(v)
+	}
+	return meta, turn
 }
 
 func countKinds(rs []threadRecord) map[string]int {
@@ -806,16 +842,12 @@ func TestWithRunMetadataStampsEveryTurn(t *testing.T) {
 	if err := rp.p.ForceFlush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	local := rp.p.LocalDB()
 	for _, c := range []struct {
 		id, batch, tenant, turn string
 	}{{r1.ID, "b1", "", "1"}, {r2.ID, "b2", "", "2"}, {r3.ID, "b1", "acme", "3"}} {
-		run, err := local.Run(ctx, c.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if run.Meta["arena.batch"] != c.batch || run.Meta["tenant"] != c.tenant || run.Turn != recAtoi(c.turn) {
-			t.Errorf("run %s: meta %v turn %d; want arena.batch %s tenant %q turn %s", c.id, run.Meta, run.Turn, c.batch, c.tenant, c.turn)
+		meta, turn := rp.runMeta(t, c.id)
+		if meta["arena.batch"] != c.batch || meta["tenant"] != c.tenant || turn != recAtoi(c.turn) {
+			t.Errorf("run %s: meta %v turn %d; want arena.batch %s tenant %q turn %s", c.id, meta, turn, c.batch, c.tenant, c.turn)
 		}
 	}
 	rp.shutdown(t)
@@ -857,11 +889,8 @@ func TestThreadRecordsRespectContentOption(t *testing.T) {
 			t.Errorf("Content(false): record %s = %v (weft.content %s)", r.kind, r.body, r.content)
 		}
 	}
-	run, err := rp.p.LocalDB().Run(ctx, res.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for k := range run.Meta {
+	meta, _ := rp.runMeta(t, res.ID)
+	for k := range meta {
 		if strings.HasPrefix(k, "weft.thread") || k == "kind" {
 			t.Errorf("run meta holds %q", k)
 		}

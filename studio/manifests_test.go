@@ -12,6 +12,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/otel"
 )
@@ -51,7 +52,7 @@ func sameJSON(t *testing.T, got json.RawMessage, want string) bool {
 func TestRunResolvesItsRegisteredManifest(t *testing.T) {
 	ts := b4Studio(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

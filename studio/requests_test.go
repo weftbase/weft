@@ -20,6 +20,7 @@ import (
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/mw"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -45,7 +46,7 @@ func requestsServer(t *testing.T) (*httptest.Server, *Server) {
 func recordRequestsRun(t *testing.T, url, runID string, dest ...otel.DestOption) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(url, "", dest...), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(url, "", dest...), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +398,7 @@ func TestRequestsContentOff(t *testing.T) {
 func TestRequestsNoModelCall(t *testing.T) {
 	ts, _ := requestsServer(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +591,7 @@ func TestRequestsGap(t *testing.T) {
 	recordRequestsRun(t, ts.URL, "r_req")
 	// r_one: one tool, two steps — one catalog.
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +670,7 @@ func TestRequestsGap(t *testing.T) {
 func TestRequestsParams(t *testing.T) {
 	ts, c, _ := countingServer(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

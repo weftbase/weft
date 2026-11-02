@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 
@@ -17,15 +15,10 @@ import (
 
 // ContentThread is the kind Redact sees for a weft/thread session
 // record's content fields — who decided, a deny reason, a steer's text
-// (record contract §4, kind thread). Here a content-on Local sink
+// (record contract §4, kind thread). Here a content-on destination
 // redacts the decider's name; a content-off destination would receive
 // the decision without either field, its ids and enums intact.
 func ExampleContentThread() {
-	dir, err := os.MkdirTemp("", "weft-otel-thread-")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
 	var mu sync.Mutex
 	var saw []string
 	redact := func(kind weft.ContentKind, s string) string {
@@ -41,7 +34,7 @@ func ExampleContentThread() {
 	}
 	ctx := context.Background()
 	p, err := otel.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0),
-		otel.Local(filepath.Join(dir, "weft.db")), otel.Content(otel.ContentConfig{Redact: redact}))
+		otel.Exporters(nil, &memLogs{}, otel.FirstParty()), otel.Content(otel.ContentConfig{Redact: redact}))
 	if err != nil {
 		log.Fatal(err)
 	}

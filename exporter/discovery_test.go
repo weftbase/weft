@@ -1,4 +1,4 @@
-package otel
+package exporter
 
 import (
 	"bytes"
@@ -18,6 +18,7 @@ import (
 	"github.com/weftgo/weft/core/wefttest"
 	"github.com/weftgo/weft/internal/discovery"
 	"github.com/weftgo/weft/obsdb/sqlite"
+	"github.com/weftgo/weft/otel"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
@@ -100,12 +101,12 @@ func TestDiscoveryJoinsTheRunningStudio(t *testing.T) {
 	discoveryFile(t, srv.URL, "disc-token", os.Getpid(), time.Now())
 	logs := captureLog(t)
 
-	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0))
+	p, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Shutdown(testCtx(t)) }()
-	if u, tok := p.StudioEndpoint(); u != srv.URL || tok != "disc-token" {
+	if u, tok := StudioEndpointOf(p); u != srv.URL || tok != "disc-token" {
 		t.Errorf("StudioEndpoint = %q, %q; want the discovery file's %q, disc-token", u, tok, srv.URL)
 	}
 	info := lines(logs.String(), "INFO")
@@ -116,7 +117,7 @@ func TestDiscoveryJoinsTheRunningStudio(t *testing.T) {
 
 // TestDiscoveryInstallJoins: the Done line's app — Install with no
 // options and no environment — exports to the running Studio, which
-// otel.StudioEndpoint (what weft/runtime dials) reports.
+// exporter.StudioEndpoint (what weft/runtime dials) reports.
 func TestDiscoveryInstallJoins(t *testing.T) {
 	t.Setenv("WEFT_STUDIO_URL", "")
 	t.Setenv("WEFT_STUDIO_TOKEN", "")
@@ -130,7 +131,7 @@ func TestDiscoveryInstallJoins(t *testing.T) {
 	u, tok := StudioEndpoint()
 	stop()
 	if u != srv.URL || tok != "disc-token" {
-		t.Errorf("otel.StudioEndpoint = %q, %q; want %q", u, tok, srv.URL)
+		t.Errorf("exporter.StudioEndpoint = %q, %q; want %q", u, tok, srv.URL)
 	}
 	if n := len(lines(logs.String(), "INFO")); n != 1 {
 		t.Errorf("%d INFO lines, want 1:\n%s", n, logs.String())
@@ -152,12 +153,12 @@ func TestDiscoveryEscapes(t *testing.T) {
 		discoveryFile(t, fileURL, "disc", os.Getpid(), time.Now())
 		t.Setenv("WEFT_STUDIO_URL", "http://127.0.0.1:2")
 		logs := captureLog(t)
-		p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0))
+		p, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = p.Shutdown(testCtx(t)) }()
-		if u, _ := p.StudioEndpoint(); u != "http://127.0.0.1:2" {
+		if u, _ := StudioEndpointOf(p); u != "http://127.0.0.1:2" {
 			t.Errorf("StudioEndpoint = %q, want the env's", u)
 		}
 		if strings.Contains(logs.String(), "joined") {
@@ -168,14 +169,14 @@ func TestDiscoveryEscapes(t *testing.T) {
 		discoveryFile(t, fileURL, "disc", os.Getpid(), time.Now())
 		t.Setenv("WEFT_STUDIO_URL", "")
 		t.Setenv("WEFT_DISCOVERY", "off")
-		if _, err := Start(testCtx(t), NoGlobal(), Heartbeat(0)); err != errNoDestinations {
+		if _, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0)); err != otel.ErrNoDestinations {
 			t.Errorf("Start = %v, want no destinations (the file ignored)", err)
 		}
 	})
 	t.Run("NoEnv", func(t *testing.T) {
 		discoveryFile(t, fileURL, "disc", os.Getpid(), time.Now())
 		t.Setenv("WEFT_STUDIO_URL", "")
-		if _, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0)); err != errNoDestinations {
+		if _, err := Start(testCtx(t), otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0)); err != otel.ErrNoDestinations {
 			t.Errorf("Start = %v, want no destinations (the file ignored)", err)
 		}
 	})
@@ -190,7 +191,7 @@ func TestDiscoveryEscapes(t *testing.T) {
 			discoveryFile(t, fileURL, "disc", f.pid, f.started)
 			t.Setenv("WEFT_STUDIO_URL", "")
 			logs := captureLog(t)
-			if _, err := Start(testCtx(t), NoGlobal(), Heartbeat(0)); err != errNoDestinations {
+			if _, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0)); err != otel.ErrNoDestinations {
 				t.Errorf("Start = %v, want no destinations (the stale file ignored)", err)
 			}
 			for _, lvl := range []string{"INFO", "WARN", "ERROR"} {
@@ -227,14 +228,14 @@ func TestDiscoveryExplicitStudioWins(t *testing.T) {
 	discoveryFile(t, discovered.URL, "disc-token", os.Getpid(), time.Now())
 	logs := captureLog(t)
 
-	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Studio(explicit.URL, "explicit-token"))
+	p, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0), Studio(explicit.URL, "explicit-token"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(p.dests); n != 1 {
+	if n := len(p.Destinations()); n != 1 {
 		t.Errorf("%d destinations, want the explicit Studio alone", n)
 	}
-	if u, tok := p.StudioEndpoint(); u != explicit.URL || tok != "explicit-token" {
+	if u, tok := StudioEndpointOf(p); u != explicit.URL || tok != "explicit-token" {
 		t.Errorf("StudioEndpoint = %q, %q; want the explicit %q", u, tok, explicit.URL)
 	}
 	_ = p.Shutdown(testCtx(t))
@@ -319,7 +320,7 @@ func clearDestinationEnv(t *testing.T) {
 
 // generateOne runs one scripted agent on the global providers (what
 // Install registered) or on p's, and returns the run id.
-func generateOne(t *testing.T, p *Pipeline) string {
+func generateOne(t *testing.T, p *otel.Pipeline) string {
 	t.Helper()
 	opts := []core.Option{core.Name("discovery-demo")}
 	if p != nil {
@@ -350,7 +351,7 @@ func localHasRun(t *testing.T, path, id string) bool {
 
 // TestDiscoveryLocalOnlyWritesOnlyLocal (issue 001, I1): an explicit
 // Local switches the discovery read off, as an explicit Studio does —
-// otel.Install(otel.Local(p)) with a fresh discovery file naming a
+// exporter.Install(exporter.Local(p)) with a fresh discovery file naming a
 // running Studio writes the run to p and sends the Studio nothing,
 // reports no Studio endpoint and claims no join.
 func TestDiscoveryLocalOnlyWritesOnlyLocal(t *testing.T) {
@@ -360,9 +361,9 @@ func TestDiscoveryLocalOnlyWritesOnlyLocal(t *testing.T) {
 	logs := captureLog(t)
 	path := filepath.Join(t.TempDir(), "local.db")
 
-	stop := Install(Local(path), Heartbeat(0))
+	stop := Install(Local(path), otel.Heartbeat(0))
 	if u, _ := StudioEndpoint(); u != "" {
-		t.Errorf("otel.StudioEndpoint = %q, want none (the file is not read)", u)
+		t.Errorf("exporter.StudioEndpoint = %q, want none (the file is not read)", u)
 	}
 	id := generateOne(t, nil)
 	stop()
@@ -388,25 +389,25 @@ func TestDiscoveryNoDiscoveryKeepsEnv(t *testing.T) {
 	runtimeDirDiscoveryFile(t, studio.URL, "disc-token")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.URL)
 
-	control, err := Start(testCtx(t), NoGlobal(), Heartbeat(0))
+	control, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(control.dests); n != 2 {
+	if n := len(control.Destinations()); n != 2 {
 		t.Errorf("without NoDiscovery: %d destinations, want 2 (env OTLP + the file's Studio)", n)
 	}
 	_ = control.Shutdown(testCtx(t))
 	before := studio.hits()
 
 	logs := captureLog(t)
-	p, err := Start(testCtx(t), NoGlobal(), NoDiscovery(), Heartbeat(0))
+	p, err := Start(testCtx(t), otel.NoGlobal(), NoDiscovery(), otel.Heartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(p.dests); n != 1 {
+	if n := len(p.Destinations()); n != 1 {
 		t.Errorf("NoDiscovery: %d destinations, want the env OTLP one alone", n)
 	}
-	if u, _ := p.StudioEndpoint(); u != "" {
+	if u, _ := StudioEndpointOf(p); u != "" {
 		t.Errorf("StudioEndpoint = %q, want none", u)
 	}
 	generateOne(t, p)
@@ -433,11 +434,11 @@ func TestDiscoveryLocalPlusStudio(t *testing.T) {
 	runtimeDirDiscoveryFile(t, discovered.URL, "disc-token")
 	path := filepath.Join(t.TempDir(), "local.db")
 
-	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Local(path), Studio(explicit.URL, "tok"))
+	p, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0), Local(path), Studio(explicit.URL, "tok"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(p.dests); n != 2 {
+	if n := len(p.Destinations()); n != 2 {
 		t.Errorf("%d destinations, want Local + Studio", n)
 	}
 	id := generateOne(t, p)
@@ -468,14 +469,14 @@ func TestDiscoveryWeftDevShape(t *testing.T) {
 	t.Setenv("WEFT_STUDIO_TOKEN", "dev-token")
 	path := filepath.Join(t.TempDir(), "local.db")
 
-	p, err := Start(testCtx(t), NoGlobal(), Heartbeat(0), Local(path))
+	p, err := Start(testCtx(t), otel.NoGlobal(), otel.Heartbeat(0), Local(path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(p.dests); n != 2 {
+	if n := len(p.Destinations()); n != 2 {
 		t.Errorf("%d destinations, want Local + the env Studio", n)
 	}
-	if u, tok := p.StudioEndpoint(); u != dev.URL || tok != "dev-token" {
+	if u, tok := StudioEndpointOf(p); u != dev.URL || tok != "dev-token" {
 		t.Errorf("StudioEndpoint = %q, %q; want the env's %q, dev-token", u, tok, dev.URL)
 	}
 	id := generateOne(t, p)
@@ -504,25 +505,25 @@ func TestDiscoveryNoDiscoveryExporters(t *testing.T) {
 
 	for _, tc := range []struct {
 		name      string
-		opts      []Option
+		opts      []otel.Option
 		dests     int
 		toStudio  bool
 		studioURL string
 	}{
 		{"without NoDiscovery", nil, 2, true, studio.URL},
-		{"NoDiscovery", []Option{NoDiscovery()}, 1, false, ""},
+		{"NoDiscovery", []otel.Option{NoDiscovery()}, 1, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spans := tracetest.NewInMemoryExporter()
 			before := studio.hits()
-			p, err := Start(testCtx(t), append([]Option{NoGlobal(), Heartbeat(0), Exporters(spans, nil)}, tc.opts...)...)
+			p, err := Start(testCtx(t), append([]otel.Option{otel.NoGlobal(), otel.Heartbeat(0), otel.Exporters(spans, nil)}, tc.opts...)...)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if n := len(p.dests); n != tc.dests {
+			if n := len(p.Destinations()); n != tc.dests {
 				t.Errorf("%d destinations, want %d", n, tc.dests)
 			}
-			if u, _ := p.StudioEndpoint(); u != tc.studioURL {
+			if u, _ := StudioEndpointOf(p); u != tc.studioURL {
 				t.Errorf("StudioEndpoint = %q, want %q", u, tc.studioURL)
 			}
 			generateOne(t, p)

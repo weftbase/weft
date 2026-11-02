@@ -13,6 +13,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/obsdb"
 	"github.com/weftgo/weft/obsdb/sqlite"
 	"github.com/weftgo/weft/otel"
@@ -32,7 +33,7 @@ import (
 func TestCompactionBackendsAgree(t *testing.T) {
 	ctx := context.Background()
 	on := &capture{}
-	p, err := otel.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0), otel.Exporters(on, on, otel.WithContent()))
+	p, err := exporter.Start(ctx, otel.NoGlobal(), otel.NoEnv(), otel.Heartbeat(0), otel.Exporters(on, on, otel.WithContent()))
 	if err != nil {
 		t.Fatal(err)
 	}

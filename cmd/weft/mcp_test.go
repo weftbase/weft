@@ -25,6 +25,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/internal/discovery"
 	"github.com/weftgo/weft/otel"
 )
@@ -62,7 +63,7 @@ func mcpSeed(t *testing.T) *seededStudio {
 	t.Cleanup(stop)
 
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1260,7 +1261,7 @@ func TestMCPTurnDefaultsMostCommon(t *testing.T) {
 func TestMCPStatsTagToken(t *testing.T) {
 	base := mcpSeedStudio(t)
 	ctx := context.Background()
-	p, err := otel.Start(ctx, otel.Studio(base, ""), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(base, ""), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}

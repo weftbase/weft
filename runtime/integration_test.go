@@ -23,6 +23,7 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftgo/weft/exporter"
 	"github.com/weftgo/weft/otel"
 	"github.com/weftgo/weft/runtime"
 	"github.com/weftgo/weft/studio"
@@ -125,7 +126,7 @@ func newE2E(t *testing.T, appTurns ...wefttest.Turn) *e2e {
 	ctx := context.Background()
 	// The app's own pipeline: the Studio destination (content on, the
 	// OTLP ingest into the embedded server) plus the recorder.
-	p, err := otel.Start(ctx, otel.Studio(ts.URL, ""), otel.Exporters(rec, nil), otel.NoGlobal())
+	p, err := exporter.Start(ctx, exporter.Studio(ts.URL, ""), otel.Exporters(rec, nil), otel.NoGlobal())
 	if err != nil {
 		t.Fatal(err)
 	}
