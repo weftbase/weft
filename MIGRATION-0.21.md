@@ -12,17 +12,35 @@ weft 0.21 does two breaking things at once, so importers move once:
    imports weft; weft never imports weftbase.
 
 An app that only builds agents (the loop, the adapters, `thread`, `otel`,
-`mcp`, `mw`, `wefttest`) needs step 1 only.
+`mcp`, `mw`, `wefttest`) needs step 1 only; one that imports a platform
+package (`studio`, `obsdb`, `runtime`, `scope`, `exporter`, `cmd/weft`)
+needs step 2 too — the rewrite in step 1 already moves its imports.
 
-## 1. The framework's import path
+## 1. The import paths
+
+One rewrite, in this order: the platform packages first (they leave the
+weft module for weftbase), then everything else under the old path. The
+general rule alone would turn `github.com/weftgo/weft/studio` into
+`github.com/weftbase/weft/studio`, which does not exist. GNU sed (on
+macOS: `sed -i ''` or `gsed`):
 
 ```sh
-# every .go file and go.mod in your module
-grep -rl 'github.com/weftgo/weft' --include='*.go' . | xargs sed -i 's#github.com/weftgo/weft#github.com/weftbase/weft#g'
+# every .go file in your module: imports, //go:generate lines, comments
+grep -rlE 'github\.com/weftgo/weft' --include='*.go' . | xargs sed -i -E \
+  -e 's#github\.com/weftgo/weft/(studio|obsdb|runtime|scope|exporter)\b#github.com/weftbase/weftbase/\1#g' \
+  -e 's#github\.com/weftgo/weft/cmd/weft\b#github.com/weftbase/weftbase/cmd/weftbase#g' \
+  -e 's#github\.com/weftgo/weft\b#github.com/weftbase/weft#g'
 go mod edit -droprequire github.com/weftgo/weft -droprequire github.com/weftgo/weft/core
 go get github.com/weftbase/weft@v0.21.0
+go get github.com/weftbase/weftbase@v0.1.0   # only when step 2 applies
 go mod tidy
 ```
+
+The three expressions run in order on each line, so a platform import
+is rewritten once, to weftbase, and the last one never sees it:
+`github.com/weftgo/weft/obsdb/sqlite` → `github.com/weftbase/weftbase/obsdb/sqlite`,
+`github.com/weftgo/weft/cmd/weft` → `github.com/weftbase/weftbase/cmd/weftbase`,
+`github.com/weftgo/weft/core/wefttest` → `github.com/weftbase/weft/core/wefttest`.
 
 | Before | After |
 |---|---|
@@ -47,9 +65,8 @@ backend query or dashboard filtering on the old scope name needs the new one.
 | `github.com/weftgo/weft/examples/studio-local`, `examples/devtools-vite` | weftbase's `examples/studio-local`, `examples/devtools-vite` |
 | `github.com/weftgo/weft/thread/examples/approvals` | weftbase's `examples/approvals` |
 
-```sh
-go get github.com/weftbase/weftbase@v0.1.0
-```
+(Step 1's rewrite already made these moves; `go get
+github.com/weftbase/weftbase@v0.1.0` adds the module.)
 
 ### `otel.Local` and the other local destinations
 
@@ -58,14 +75,37 @@ out of `otel`; they now live in weftbase:
 
 | weft 0.20 | weft 0.21 + weftbase |
 |---|---|
+| `otel.Install(…)`, `otel.Start(ctx, …)` | `exporter.Install(…)`, `exporter.Start(ctx, …)` (same `otel` options) |
 | `otel.Local(path)` | `exporter.Local(path)` |
 | `otel.Studio(url, tok)` | `exporter.Studio(url, tok)` |
-| `otel.Install(…)` relying on the zero-config local sink | `exporter.Install(…)` |
-| `otel.LocalDB()`, `p.LocalDB()` | `exporter.LocalDB()`, `exporter.LocalDBOf(p)` |
+| `otel.LocalDB()` | `exporter.LocalDB()` |
+| `p.LocalDB()` | `exporter.LocalDBOf(p)` |
 | `otel.StudioEndpoint()` | `exporter.StudioEndpoint()` |
+| `p.StudioEndpoint()` | `exporter.StudioEndpointOf(p)` |
 | `otel.NoDiscovery()` | `exporter.NoDiscovery()` |
+| `otel.FromSDKSpans(spans)`, `otel.FromSDKRecords(recs)` | `exporter.FromSDKSpans(spans)`, `exporter.FromSDKRecords(recs)` |
 
-with `import "github.com/weftbase/weftbase/exporter"`. `otel.Install`
+with `import "github.com/weftbase/weftbase/exporter"`. So
+
+```go
+defer otel.Install(otel.Local("weft.db"), otel.Studio(url, tok))()
+```
+
+becomes
+
+```go
+defer exporter.Install(exporter.Local("weft.db"), exporter.Studio(url, tok))()
+```
+
+Use `exporter.Install` (or `exporter.Start`), not `otel.Install`, for
+the developer platform: it is what reads `WEFTBASE_URL` /
+`WEFTBASE_TOKEN`, the discovery file of a running `weftbase dev`,
+`WEFTBASE_DB`, and falls back to `exporter.Local("")` when nothing is
+configured — weft 0.20's `otel.Install` behaviour. A plain `otel.Install`
+given `exporter.Local` / `exporter.Studio` options records to them too,
+and `exporter.StudioEndpoint()` / `exporter.LocalDB()` (what
+`runtime.Install` and `studio.DB(exporter.LocalDB())` read) know its
+destinations, but it reads none of that environment. `otel.Install`
 keeps every other destination (`otel.OTLP`, `otel.Datadog`,
 `otel.Langfuse`, `otel.Exporters`, `otel.Sink`) and reads the standard
 `OTEL_*` variables only.
