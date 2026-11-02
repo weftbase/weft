@@ -1,8 +1,8 @@
 # weft
 
-[![CI](https://github.com/weftgo/weft/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/weftgo/weft/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/weftgo/weft.svg)](https://pkg.go.dev/github.com/weftgo/weft)
-[![Version](https://img.shields.io/badge/version-v0.20.3-orange)](https://github.com/weftgo/weft/releases/tag/v0.20.3)
+[![CI](https://github.com/weftbase/weft/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/weftbase/weft/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/weftbase/weft.svg)](https://pkg.go.dev/github.com/weftbase/weft)
+[![Version](https://img.shields.io/badge/version-v0.20.3-orange)](https://github.com/weftbase/weft/releases/tag/v0.20.3)
 
 A modular framework for building AI agents in Go — designed the way the
 standard library is: small interfaces, `context` everywhere, functional
@@ -10,8 +10,8 @@ options, wrapped errors, and zero required configuration. One `go get`
 is the whole framework; one import path is the loop alone:
 
 ```sh
-go get github.com/weftgo/weft@v0.20.3       # the framework: every package below, one version
-go get github.com/weftgo/weft/core@v0.20.3  # the loop alone: its only dependency is the OTel API
+go get github.com/weftbase/weft@latest       # the framework: every package below, one version
+go get github.com/weftbase/weft/core@latest  # the loop alone: its only dependency is the OTel API
 ```
 
 | Package | What it gives you |
@@ -20,18 +20,23 @@ go get github.com/weftgo/weft/core@v0.20.3  # the loop alone: its only dependenc
 | `weft/core` | The same loop as a module of its own, for a service that wants nothing else: `core.New`, `core.Tool`, `core/wefttest`, `core/mw`. `weft` re-exports it name for name, so `weft.Agent` *is* `core.Agent` |
 | `weft/thread` | Durable sessions: an append-only conversation tree with branching, compaction, approvals that survive restarts, steering and a bounded pool of child agents (jsonl, SQLite or memory storage) |
 | `weft/otel` | Recording over OpenTelemetry: every event, transcript and span exported to any OTLP backend, Datadog, Langfuse, your own exporters or a synchronous `otel.Sink` — several at once, each with its own content policy and redaction. Reads the standard `OTEL_*` variables only; knows no viewer |
-| `weft/exporter` | The local platform's destinations on top of `weft/otel` (moving to the weftbase repository): `exporter.Local` (the SQLite store), `exporter.Studio` (a running Studio), and `defer exporter.Install()()` — recording in one line, joining a running `weft studio` or writing `./.weft/weft.db` |
-| `weft/obsdb` | The queryable store those records land in: SQLite locally, ClickHouse hosted (`weft/obsdb/clickhouse`) |
-| `weft/studio` | The Inspector: runs, sessions, traces and live streams in a web UI, an in-app devtools panel for your own pages, and a playground that re-runs a turn with an edited prompt, model or tools; the `weft` binary (`weft/cmd/weft`: `weft studio`, `weft dev`) serves it for apps in any language |
-| `weft/scope` | The devtools' scope header: `scope.Header(handler, …)` sets `Weft-Scope` on your own chat endpoint so the in-page panel follows the conversation and run a response belongs to |
-| `weft/runtime` | The playground's in-app side: your app executes experiment commands safely — side-effect tools are substituted or parked unless you opt them in |
+| `weft/version` | The framework's one version string (`version.Version`, `version.Runtime()`) |
+
+The platform — Studio (runs, sessions, traces and live streams in a web
+UI, the in-page devtools panel, the playground), the store the records
+land in (`obsdb`: SQLite or ClickHouse), the local exporter
+(`exporter.Local`, `exporter.Studio`), the runtime link and the
+`weftbase` CLI (`weftbase dev`) — is **weftbase**, its own repository and
+module: [github.com/weftbase/weftbase](https://github.com/weftbase/weftbase).
+weftbase imports weft; weft never imports weftbase (`make layering`).
+Coming from 0.20, see [`MIGRATION-0.21.md`](MIGRATION-0.21.md).
 
 Concurrency is the point, not a feature: a step's tools fan out over
 goroutines, parallelism is a one-line dial, and tool failures never cancel
 their siblings.
 
 > **Status:** v0.20.3 — experimental, pre-1.0, released as one module
-> (plus `core`; see [Releases](https://github.com/weftgo/weft/releases),
+> (plus `core`; see [Releases](https://github.com/weftbase/weft/releases),
 > `CHANGELOG.md` and, coming from 0.8, [`MIGRATION-0.9.md`](MIGRATION-0.9.md)). The core's three load-bearing contracts — message
 > model, error model, tool contract — are implemented and tested, and
 > every layer has been through a production-readiness review. Serving,
@@ -191,14 +196,14 @@ stances rather than importing yours. `mw` stays a reference set; the
 patterns live as tested examples:
 
 - **PII scrub** — a tool middleware that masks what results carry
-  ([`Example_piiScrubMiddleware`](https://pkg.go.dev/github.com/weftgo/weft/mw#example-package-PiiScrubMiddleware)).
+  ([`Example_piiScrubMiddleware`](https://pkg.go.dev/github.com/weftbase/weft/mw#example-package-PiiScrubMiddleware)).
 - **Allowlist** — shipped as `mw.Allow(permits)`.
 - **Token limiter** — a model middleware that refuses the call before
   the provider bills it
-  ([`Example_tokenLimitMiddleware`](https://pkg.go.dev/github.com/weftgo/weft/mw#example-package-TokenLimitMiddleware));
+  ([`Example_tokenLimitMiddleware`](https://pkg.go.dev/github.com/weftbase/weft/mw#example-package-TokenLimitMiddleware));
   `weft.UsageLimit` covers the measured side.
 - **Response cache** — a model middleware keyed on the `ModelRequest`
-  ([`Example_responseCacheMiddleware`](https://pkg.go.dev/github.com/weftgo/weft/mw#example-package-ResponseCacheMiddleware));
+  ([`Example_responseCacheMiddleware`](https://pkg.go.dev/github.com/weftbase/weft/mw#example-package-ResponseCacheMiddleware));
   invalidation policy is the caller's.
 
 A named `mw` package ships only when a pattern needs a dependency or a
@@ -307,12 +312,10 @@ enables Debug; `slog.New(slog.DiscardHandler)` turns the lines off.
 (or `slog.New(otel.SlogHandler(h))` any logger you build): every line
 logged on a span-carrying context — these, `mw.Log`'s, `mw.Audit`'s and
 your own, Debug included — reaches the first-party destinations
-(`otel.FirstParty()`, every `otel.Sink`, so `exporter.Local` and
-`exporter.Studio`; `otel.AppLogs(true)` opts a third party in) under the span it was
+(`otel.FirstParty()`, every `otel.Sink` — weftbase's local exporter
+among them; `otel.AppLogs(true)` opts a third party in) under the span it was
 logged in — redacted and capped by the destination's `ContentConfig`
-like any content, stripped where content is off — and Studio shows it
-on the run's logs (`runs/{id}/logs`);
-a run recorded without the bridge says so there.
+like any content, stripped where content is off.
 `examples/otel` runs the whole thing against the real SDK offline.
 No prompt, message, tool argument or tool result reaches a span: ids,
 names, counts, durations, reasons, and error types only. Error *text*
@@ -321,260 +324,29 @@ span's exception, and the log lines carry the error text a tool or
 model returned, because a log is the caller's
 ([ADR 0016](docs/adr/0016-observability.md)).
 
-### Recording runs
+### Recording and inspecting runs
 
-The pipeline is the recorder ([ADR 0024](docs/adr/0024-observability-data.md)):
-`defer exporter.Install()()` writes the local sink (`./.weft/weft.db`,
-content on, no network — or the running `weft studio` it finds) and every event, delta, transcript record and
-span leaves as it happens — a crash loses nothing emitted. Caller
-pairs ride `weft.Metadata`; a quiet run heartbeats, so a live run
-reads `running` and a crashed one `interrupted`. The recorder's
-database is package `weft/obsdb`: the OTLP-shaped model with the
-derived weft identity, read back through one `obsdb.DB` interface —
-runs, sessions, positioned event pages, transcripts, spans by run or
-trace, public ids — with `obsdb/sqlite` as the default backend and
-`obsdb/clickhouse` as the hosted one (column-compatible with the OTel
-Collector's ClickHouse exporter, so a stock collector can feed the
-same database).
+`weft/otel` is the recorder ([ADR 0016](docs/adr/0016-observability.md)):
+`otel.Install(…)` sends every event, delta, transcript record and span
+as it happens — a crash loses nothing emitted — to any mix of
+destinations, each with its own content policy: `otel.OTLP`,
+`otel.Datadog`, `otel.Langfuse`, your own `otel.Exporters`, or a
+synchronous `otel.Sink`. It reads the standard `OTEL_*` variables only
+and knows no viewer. The records' shape is
+[docs/record-contract.md](docs/record-contract.md).
 
-```go
-defer exporter.Install()()                      // the recorder: local sink, content on
-db := exporter.LocalDB()                        // the same handle Studio reads [D4]
-page, _ := db.Runs(ctx, obsdb.RunQuery{})       // identity chain, status derived
-rec, _ := db.Run(ctx, page.Runs[0].ID)          // the row + its subagent children
-evs, _ := db.Events(ctx, rec.ID, -1, 50)        // positioned events after the cursor; -1 = from the start
-```
-
-### Inspecting runs
-
-Module `weft/studio` is the Inspector, rewritten on obsdb (ADR 0024
-S4): the UI, a JSON API (runs with their filters, transcripts, spans,
-traces, sessions, public ids), the OTLP/HTTP ingest receiver, and the
-live SSE stream — served as one `http.Handler` with the UI embedded,
-no build step, nothing leaves the process. Setup A embeds it beside
-the app and passes the pipeline's handle for the live lane; a token
-(`studio.Token`) walls the API when it leaves loopback. Setup B is the
-`weft` binary's `weft studio` — package `weft/cmd/weft`, the one place
-that imports the ClickHouse driver — for any language's OTel app: UI +
-ingest + the playground + a dev token on `127.0.0.1:7331`,
-`--db sqlite://path` or `clickhouse://user:pass@host:9000/db`
-([studio/README.md](studio/README.md)). The in-page devtools panel
-is also packaged as `@weftgo/devtools`, for bundled apps with no
-`<script>` tag — **not published to npm yet**: build the tarball
-(`make devtools-npm`, then `npm pack` in `studio/web/npm`) and install
-that, or use the script tag (`/studio/panel.js`) or the release asset
-`panel-vX.Y.Z.js` ([its README](studio/web/npm/README.md)); then
-`import { mount } from "@weftgo/devtools"; mount({ enabled: import.meta.env.DEV })`.
-
-```go
-mux.Handle("/studio/", http.StripPrefix("/studio",
-    studio.Handler(studio.DB(exporter.LocalDB())))) // history + live [D4]
-```
+Storing, querying and showing them is the platform's:
+[weftbase](https://github.com/weftbase/weftbase). Locally:
 
 ```sh
-go install github.com/weftgo/weft/cmd/weft@latest
-weft studio --db sqlite://.weft/dev.db            # OTel app: point its exporter here, over OTLP/HTTP
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:7331 OTEL_METRICS_EXPORTER=none OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true opentelemetry-instrument python app.py
+go install github.com/weftbase/weftbase/cmd/weftbase@latest
+weftbase dev -- go run ./cmd/app     # Studio on 127.0.0.1:7331 and your app beside it
 ```
 
-Studio's receiver takes OTLP/HTTP only (`/v1/traces`, `/v1/logs`); a
-stock `invoke_agent` span makes a run and `gen_ai.conversation.id`
-groups runs into a session ([record-contract §9](docs/record-contract.md#9-deriving-a-run-from-stock-spans)).
-
-#### The `weft` command
-
-Every subcommand is a thin client of the Studio API or of `studio.New`
-— a convenience over options the app can set itself, so a team that
-skips the CLI loses nothing. Every connection flag mirrors an
-environment variable one to one (the table below).
-
-| Command | What it does |
-|---|---|
-| `weft studio [--addr] [--db] [--token] [--rotate-token] [--manifest] [--open] [--no-playground]` | Setup B: `studio.New` with the UI, OTLP ingest, the playground (inert until an app's `weft/runtime` connects; `--no-playground` turns it off) and a dev token stable per database. Takes 7331, else the next free port in 7331–7340; `--addr` pins. One Studio per SQLite file: the start takes `<db>.lock` beside a SQLite file — an exclusive OS lock (flock; LockFileEx on Windows) held while it serves, taken before any port is probed or bound, and released by the kernel when the process ends, a crash or `kill -9` included; a start that cannot (two at once, or from another directory) is refused, exit 1, naming the holder's URL and pid when its lock file or your discovery file says (`weft dev` reuses it instead). A ClickHouse database is a shared server and takes no lock. Unless `--open` handed the browser the link, the banner ends `studio: sign in with weft open --with-token`. Writes the discovery file apps find it through (below). The manifest is `--manifest`, else the nearest `weft.json` upward (one line says which). `--open` (default on a terminal) opens the UI with the token in the URL fragment. |
-| `weft dev [studio's flags] [--no-watch] [--watch dir] [-- go run ./cmd/app]` | Studio (as `weft studio`, in-process, same port policy) plus your app run beside it and restarted on a `.go` save. Prints one line per start: `studio http://127.0.0.1:7331/ · app pid 4242 · runtime rt_… registered`. See below. |
-| `weft runs [--agent] [--since 2h\|RFC3339] [--failed] [--limit] [--json]` | One row per run (id, agent, status, started with its zone, steps, duration, cost, public id when any, prompt, stopped by, and the error — its kind and why, so `--failed` is triageable) from `GET /api/runs`, the next step (`weft open`, `weft export`) on stderr; `--limit` defaults to 50 (0 lists all) and says so on stderr when it hid runs; `--json` for scripts. |
-| `weft open [id] [--open] [--with-token]` | The id is a run id, a public id, a session id or a trace id (tried in that order); prints its page — `/runs`, `/conversations`, `/sessions`, `/traces` — and with no id the Studio root (`weft open --with-token` is a terminal's signed-in link to a fresh Studio), bare — a fixed token may be the panel tokens' signing key, so it stays out of logs; `--with-token` prints the `#token=` fragment too; `--open` hands the browser the link with the token. |
-| `weft export <run id> [--format json\|jsonl\|otlp]` | `GET /api/runs/<id>/export` to stdout. |
-| `weft export <run id> --wefttest ./pkg [--force]` | The run's save-as-test tree — the files of Studio's "save as test" zip, byte for byte: `<agent>_replay_test.go` beside `testdata/TestReplay_<run>/*.json`, a test that passes under `go test` (a replay's composes its source's fixtures for the steps it kept); a test file or fixtures already there need `--force`, which replaces the `*.json` fixtures (never merges). |
-| `weft export <run id> --wefttest ./testdata --fixtures-only [--test TestName] [--force]` | The fixtures alone, unzipped into `./testdata/<TestName>/` (default: the run id), where `wefttest.Replay(t, "testdata")` reads them. |
-| `weft doctor` | One line per check of a running Studio, each read from `GET /api/meta`: reachable, token (a missing one names `<db>.token` and `weft open --with-token`), the discovery file (this Studio, another, none), db, content, the newest run's age and weft version, the OTLP door, runtimes (`--no-playground` named when it turned the link off), panel, and the manifest — labelled by its source: `weft.json` (the configured file) or `runtime registrations` (no weft.json; the manifests runtimes registered), stale agents named. Not every meta field is a line: retention, pricing, `live_all`, `debug_scope` and `interrupted_after_ms` are read with `GET /api/meta`. |
-| `weft mcp [--url] [--token]` | A read-only MCP server over stdio for a coding agent (Claude Code, Cursor) to read runs while you debug: one tool per read route — `runs`, `search` (with its `error_class` facet and filter, on `runs` too), `stats` (`/api/stats`: numbers across runs by agent, model, tool, error type or step), `run`, `step`, `request`, `events`, `tools`, `diff`, `export` (json/jsonl/otlp; not wefttest), `sessions`, `session`, `meta`, `logs`, `spans`, `trace`, `transcript`, `live`, `agents`, `experiments`, `runtimes` — plus `explain_failure <run id>` (the run, every step, its child runs and the transcript composed: status, error, the first error anywhere with the run and step it happened in, a per-step and per-child digest, a decided park as decided, this run's own last assistant text). Every tool is a GET; write verbs (approve, deny, steer, cancel, delete, …) are not offered. Outputs are the route's JSON — compact rows on the list tools and compact spans on `spans`/`trace` (`full: true` as served) — cut at `max_bytes` (default 64 KiB) with a note; a 403 is the tool's error. With no `--url`/`WEFT_STUDIO_URL` it reads the discovery file (`WEFT_DISCOVERY=off` skips it). `claude mcp add weft -- weft mcp` (the discovery file finds the running Studio); Cursor: `.cursor/mcp.json` `{"mcpServers":{"weft":{"command":"weft","args":["mcp"]}}}`. To name another Studio add `--url http://127.0.0.1:7331` (`"args":["mcp","--url","http://127.0.0.1:7331"]`). The recipe — setup, which tool answers which question with worked examples, tokens, limits, troubleshooting — is [docs/mcp-recipe.md](docs/mcp-recipe.md); `make mcp-check` runs it end to end against a real Studio. |
-| `weft version` | The weft version this binary was built from. |
-
-| Flag | Environment | Default |
-|---|---|---|
-| `--addr` | `WEFT_STUDIO_ADDR` | `127.0.0.1:7331` (unpinned) |
-| `--db` | `WEFT_DB` | `./.weft/weft.db` |
-| `--token` | `WEFT_STUDIO_TOKEN` | `weft studio`, `weft dev`: the database's stable token, `<db>.token` (never printed); a generated one, printed, for a database with no file |
-| `--manifest` | `WEFT_MANIFEST` | the nearest `weft.json` upward |
-| `--url` (runs, open, export, doctor, mcp) | `WEFT_STUDIO_URL` | the discovery file's Studio, else `http://127.0.0.1:7331` — one resolver for every client, one stderr line naming the Studio and its source when you named none |
-
-`weft dev`'s `--watch` and `--no-watch` shape the dev loop only and
-have no environment mirror; like `--open` and `--no-playground` they
-are not connection settings. `--rotate-token` has none either: it is an
-action, not a setting.
-
-##### The dev token and the discovery file
-
-The dev token is stable per database: the first start on a SQLite file
-writes 32 random bytes (base64url) beside it — `<db>.token`, so
-`./.weft/weft.db.token` by default, mode 0600 — and every later start
-on that file serves the same token, so a restart keeps the browser
-tab, the app's `WEFT_STUDIO_TOKEN` and a second start's reuse probe
-valid. `--rotate-token` writes a new one (panel tokens signed with the
-old one stop verifying); `--token` / `WEFT_STUDIO_TOKEN` override it
-and leave the file alone. The stable token is the panel tokens'
-signing key, like a fixed one, so it is never printed: the banner
-names its file, `weft open --with-token` prints the fragment, `--open`
-hands it to the browser. A database with no file (`:memory:`,
-ClickHouse) gets a token generated for that process, printed as
-before.
-
-Once its listener is bound, `weft studio` (and `weft dev`) writes
-`studio.json` — `{"url","token","db","pid","started","version"}`, mode
-0600, the real port in it — and removes it on a clean exit. It goes to
-the first of `./.weft/` (when that directory exists: the project's
-own), `$XDG_RUNTIME_DIR/weft/` (Linux), `os.UserCacheDir()/weft/`
-(macOS, Windows, bare containers). `exporter.Install()` and
-`runtime.Install()` read the same order when `WEFT_STUDIO_URL` is
-unset, so an app with `defer exporter.Install()()` exports to the running
-Studio, and `runtime.Install` dials it, with no configuration — one
-INFO line names the Studio joined. After a default start `./.weft`
-always exists, so the file lands there: run the app from the directory
-you ran `weft studio` in, or set `WEFT_STUDIO_URL`. The file is trusted
-only when its url is a loopback address (127.0.0.0/8, `::1`,
-`localhost`), it is fresh (its pid alive, under 24 hours old) and, on
-unix, it is mode 0600 and owned by you — a `studio.json` that arrived
-through a git checkout (0644) or names another host is never used.
-Anything untrusted is skipped without a word above Debug and the next
-writer removes it. The writer also drops a `.gitignore` (`*`) into
-`./.weft` when it has none, so the database, its token and the file
-stay out of commits. Two Studios never erase each other's file: the
-second one's exit puts the first's back. A second `weft studio` on a
-SQLite file a running Studio holds (`<db>.lock`) is refused before it
-binds; a reusing `weft dev` writes nothing (the
-running Studio owns the file) and says so when that file is missing; its port probe sends the stable token only to an address your
-discovery file names (anything else on the port is probed bare). `weft
-studio` stops gracefully on SIGHUP too, so a closed terminal removes
-the file.
-
-The file is a convenience, never a requirement: `WEFT_STUDIO_URL`
-always wins (the file is not read), `WEFT_DISCOVERY=off` turns the read
-off (and the write: `weft studio` and `weft dev` started under it write
-no file and say so in one line), `otel.NoEnv()` ignores it with the rest of the environment, and a
-Studio named in code — `exporter.Studio(url, tok)` or `runtime.Studio(url, tok)` —
-needs no file. `weft/otel` itself never reads it: it knows only the
-standard `OTEL_*` variables.
-
-**When weft/exporter reads the file** (the one rule; explicit >
-environment > file): `exporter.Install` and `exporter.Start` read it
-only when their options name neither an `exporter.Studio` nor an
-`exporter.Local` (an `otel.OTLP`, `otel.Datadog`, `otel.Langfuse` or
-`otel.Exporters` destination does not switch it off — add
-`exporter.NoDiscovery()`), `WEFT_STUDIO_URL` is unset, and neither
-`exporter.NoDiscovery()` (this pipeline), `WEFT_DISCOVERY=off` (the
-process) nor `otel.NoEnv()` is set; `otel.Install` / `otel.Start` never
-read it. A pipeline that names its store writes only to what it names
-plus the environment's destinations — `exporter.Install(exporter.Local(path))`
-never joins a running Studio; to write to both, name both:
-`exporter.Install(exporter.Local(path), exporter.Studio(url, tok))`.
-`exporter.NoDiscovery()` skips the file alone and keeps
-`WEFT_STUDIO_URL`, `OTEL_*` and the `WEFT_ENV` gate;
-`otel.NoGlobal()` does not stop the read. `runtime.Install` reads the
-file on its own, when it has no `runtime.Studio` / `runtime.Local` and
-the installed pipeline has neither a Studio nor a Local: beside a
-Local-only pipeline it opens no link and WARNs once (the link would
-register with a Studio its runs never reach) — `runtime.Local(srv)`
-dials the embedded Studio, `runtime.Studio(url, tok)` with
-`exporter.Studio(url, tok)` a running one. The rule sees the *installed*
-pipeline only (and its Studio endpoint when `exporter.Install` or
-`exporter.Start` built it): one started with `exporter.Start(exporter.Local(p),
-otel.NoGlobal())` is not installed, so `runtime.Install` without
-`runtime.Studio` / `runtime.Local` still joins a discovered Studio,
-whose replays' spans never arrive — name it there: `runtime.Local(srv)`
-or `runtime.Studio(url, tok)`.
-
-Setup A's handler serves `GET <base>/panel-config.json` —
-`{"endpoint", "version", "capabilities"}` — to a loopback (or
-`AllowOrigins`) Host and a same-origin, `AllowOrigins` or loopback
-Origin only (loopback by the Host's rule — `localhost`, `*.localhost`,
-127.0.0.0/8, `[::1]` — even with `AllowOrigins` set), a 404 to anyone
-else, so the devtools panel reads its endpoint instead of
-inferring it from its own `src`; `api/meta` lists the `panel-config`
-capability.
-
-##### `weft dev`
-
-```sh
-weft dev -- go run ./cmd/app      # default command: go run .
-```
-
-`weft dev` starts Studio exactly as `weft studio` does (same flags,
-same port policy, the playground on) and runs the command after `--`
-with four environment variables added to yours:
-
-| Variable | Value | What reads it |
-|---|---|---|
-| `WEFT_ENV` | `dev` (kept when you already set it non-empty) | `runtime.Install` opens its link |
-| `WEFT_STUDIO_URL` | the Studio's URL | `exporter`'s Studio destination; `runtime.Install`'s default endpoint |
-| `WEFT_STUDIO_TOKEN` | the Studio's token (the real one: stable, fixed or generated) | the same two |
-| `WEFT_DB` | the Studio's SQLite file, absolute (not set for ClickHouse) | `exporter.Local("")`'s path: the app's local sink and Studio share one file |
-
-The last three override whatever your shell had. Everything here is
-an env var or option the app can set itself — `weft studio` in one
-terminal and `WEFT_ENV=dev WEFT_STUDIO_URL=… WEFT_STUDIO_TOKEN=… go
-run ./cmd/app` in another is the same thing without the command.
-
-The app runs in its own process group; a `.go` change under the
-working directory (`--watch dir`, repeatable, replaces it; `.git`,
-`node_modules`, `vendor`, `testdata`, `.weft` and `dist` are skipped)
-restarts it after 300 ms of quiet: SIGTERM to the group, five seconds,
-then SIGKILL, then the command again. A build failure is printed and
-the next save retries; an app that exits on its own is reported with
-its exit code and the next save restarts it. `--no-watch` turns the
-watching off, and `weft dev` then exits with the app's exit code (127
-when the command cannot start at all). A directory that arrives with
-`.go` files in it (a checkout, a `mv`) restarts too; editor lock files
-(`.#name.go`) do not; a directory that cannot be watched (inotify's
-`max_user_watches` spent) is said in one line. Ctrl-C, SIGTERM and
-SIGHUP (the terminal closing) stop the app first — the same signal,
-SIGHUP sent as SIGTERM — then Studio. A SIGKILL of `weft dev` cannot be
-caught: on Linux `go run` still gets SIGTERM (Pdeathsig), but the
-binary it started — the grandchild — can be orphaned; elsewhere the
-whole group can.
-
-Each start prints one line: the UI link (bare by default — the stable
-token and a fixed `--token` / `WEFT_STUDIO_TOKEN` stay out of the log;
-`#token=` only for a token generated for a database with no file), the
-app's pid, and the first runtime that registered with
-this Studio within five seconds — else `no runtime registered yet (the
-app needs runtime.Install; WEFT_ENV=dev is set), or the app links its
-own embedded Studio` and a later line when one does. With no browser
-opened (`--open=false`, the default off a terminal) and a bare link,
-one line first says where the token is: `studio: token:
-<db>.token (weft open --with-token)` when the file holds the token in
-use, "the running Studio's, not <db>.token" for a reused Studio whose
-token differs, or the fixed token's flag and variable. A Studio bound to every interface (`--addr 0.0.0.0:7331`) is
-handed to the app, and printed, as `127.0.0.1`.
-
-Reuse follows the port policy, whose probe carries the fixed token
-(`--token` / `WEFT_STUDIO_TOKEN`), else the database's stable token —
-sent only to an address a trusted discovery file names (from another
-directory with `--db` on the same file the probe goes out bare and a
-second Studio starts on the next port): a Studio already serving the
-same database is reused (the app gets that
-URL and token; `weft dev` stops only the app), so two bare starts in a
-row reuse. A running Studio walled by another token answers the probe
-401 and is skipped — `weft dev` takes the next port with its own
-Studio.
-
-`go run ./studio/examples/basic` records demo runs (a tool call, a
-subagent, a failure) into an obsdb database and serves Studio on
-`127.0.0.1:7331`; `examples/studio-local` is setup A's five lines with
-a live thread session, and its agent's `PrepareStep` trims a first-step
-paragraph from the system prompt from step 1 on — the Request pane's
-"changed by PrepareStep" diff (`TestPrepareStepTrimsThePrompt` pins the
-record).
+and in the app, `defer exporter.Install()()` from
+`github.com/weftbase/weftbase/exporter` (the local SQLite sink, or the
+running Studio it finds). Any OTLP/HTTP exporter can feed the same
+Studio: `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:7331`.
 
 ## Sessions — `weft/thread`
 
@@ -780,8 +552,8 @@ session. Each compaction also emits one informational marker record
 (kind `compaction`, scope `session`: counts and the entry's hash, no
 messages) through the agent's `LoggerProvider` when it lands, under the
 last run of this session that produced the compacted context — held for
-the next run when none did — which `obsdb.DB.Compactions` and Studio's
-run page read back.
+the next run when none did — which weftbase's store and Studio's run
+page read back.
 
 `go run ./thread/examples/session` walks a session through turns, a
 label, a branch, a fork, a previewed compaction and a reopen from
@@ -814,12 +586,9 @@ func TestManifest(t *testing.T) {
 A tool or policy change without regenerating fails `go test`; the diff
 is the review artifact. ([ADR 0012](docs/adr/0012-manifest-format.md))
 
-Without a `weft.json`, Studio's Agents page shows the manifests your
-app's `runtime.Install` registers (`weft studio` has the playground on
-by default), each hash labelled live or remembered; Studio keeps them in
-memory, so a restart forgets them until the runtime registers again.
-With `--no-playground` the Agents page, the playground and the debugger
-say why they are off (`/api/meta`'s `capabilities_off`).
+Without a `weft.json`, weftbase's Studio shows the manifests your app's
+runtime link registers (weftbase's `runtime.Install`; `weftbase dev` has
+the playground on by default).
 
 A replay from step N may edit what it keeps before it runs: a kept
 step's user message (step 0's is the turn's prompt), a call's
@@ -841,7 +610,7 @@ tool contract is the same shape ([ADR 0015](docs/adr/0015-mcp-interop.md)):
 ```go
 import (
     sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-    "github.com/weftgo/weft/mcp"
+    "github.com/weftbase/weft/mcp"
 )
 
 // Consume: a server's tools as ordinary weft tools. The schema bytes
@@ -889,9 +658,9 @@ per vendor, one adapter for the whole OpenAI-compatible long tail:
 
 ```go
 import (
-    "github.com/weftgo/weft/anthropic"
-    "github.com/weftgo/weft/google"
-    "github.com/weftgo/weft/openai"
+    "github.com/weftbase/weft/anthropic"
+    "github.com/weftbase/weft/google"
+    "github.com/weftbase/weft/openai"
 )
 
 openai.Model("gpt-4o-mini")                          // or any compatible server via openai.BaseURL
@@ -1002,13 +771,9 @@ anthropic/            Anthropic Messages (thinking, signatures)
 google/               Gemini via genai
 thread/ (+ sqlite/)   sessions: the append-only conversation tree, durable Storage backends
 otel/                 the observability pipeline: destinations, content policies, heartbeats
-obsdb/                the observability database: model, DB interface, sqlite backend, obsdbtest
-obsdb/clickhouse/     the hosted backend (collector-compatible schema, materialized views)
-studio/               the Inspector on obsdb: UI + JSON API + OTLP ingest + live (web/ is its
-                      Bun source)
-cmd/weft/             the weft binary: `weft studio` (setup B), dev, runs, open, export, doctor
-runtime/              the playground's in-app side: the Studio link, the experiment executor
-examples/             runnable examples (getting-started, approval, otel, studio-local;
+mcp/                  MCP both ways: consume a server's tools, serve an agent
+version/              the one version string
+examples/             runnable examples (getting-started, approval, otel;
                       per-adapter: <adapter>/example)
 docs/adr/             decision records for the contracts
 ```
@@ -1019,11 +784,10 @@ alone. A release is two tags, `core/vX.Y.Z` then `vX.Y.Z`, and the
 root requires `core` at that exact version with no replace; `go.work`
 joins them for development. The root package, `mw`, `wefttest` and
 `wefttest/conformance` are generated facades over `core`
-(`make generate` after changing core's exported API). The whole
-recorder-and-inspector story is two lines: `defer exporter.Install()()`
-and `studio.Handler(studio.DB(exporter.LocalDB()))` (Recording runs and
-Inspecting runs above); `weft/runtime` adds the playground with one
-deferred `runtime.Install(...)` call.
+(`make generate` after changing core's exported API). The platform —
+the store, Studio, the runtime link, the `weftbase` CLI — is the
+weftbase repository; nothing here imports it (`make layering`, CI's
+`layering` job).
 
 ## Development
 
@@ -1049,8 +813,8 @@ a regression seed — the existing `FuzzRepair` seed got there that way.
 
 [docs/testing.md](docs/testing.md) covers every kind of test weft
 runs: unit and contract tests, the offline gate, fuzz, stress, the
-nightly soak, ClickHouse, Studio and the panel, and the release
-checklist. This section is about testing *your* agents.
+nightly soak, and the release checklist (the platform's gates are
+weftbase's). This section is about testing *your* agents.
 
 In reach order: script the dialogue with
 `wefttest.Script(wefttest.ToolCalls(...), wefttest.Say(...))` —
@@ -1080,8 +844,8 @@ fails the build. Pre-1.0, a deliberate source-compatible evolution
 variadic) can be acknowledged by adding apidiff's exact line to
 `core/.apidiff-allow` with a justification; the file is emptied at
 each tag. Renaming or removing an exported symbol always fails. The
-framework module holds the pre-freeze layers — `thread`, `obsdb`,
-`otel`, `runtime`, `studio` — so the gate reports its incompatible
+framework module holds the pre-freeze layers — `thread` and `otel` —
+so the gate reports its incompatible
 changes instead of failing, and such a change makes the next tag a
 minor bump with a breaking CHANGELOG entry.
 
@@ -1105,8 +869,9 @@ minor bump with a breaking CHANGELOG entry.
    thread v0.9.0 (thread/sqlite v0.3.0), and a field trial in real use
    comes before any API or format freeze.
    ~~`obsdb`, `otel`, `runtime`~~ — **done** (ADR 0024: the recorder,
-   its database, the playground). Next: `serve` and the
-   eval/prompt/mem/trace modules.
+   its database, the playground). Since 0.21 the platform (`studio`,
+   `obsdb`, `runtime`, the CLI) is its own repository, weftbase. Next:
+   `serve` and the eval/prompt/mem/trace modules.
 
 ## License
 

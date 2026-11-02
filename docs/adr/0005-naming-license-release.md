@@ -89,3 +89,10 @@ Two sentences above move with observability:
   `observe.go` (currently `v0.1.0-dev`) rides as the OTel
   instrumentation version on every span weft starts. Tagging a module
   release sets it, exactly as tagging sets the module version.
+
+## Amendment (2026-11-02): the weftbase split
+
+The module path changed in 0.21 to `github.com/weftbase/weft` (core:
+`github.com/weftbase/weft/core`), together with the split of the
+platform into its own module, `github.com/weftbase/weftbase`
+(`MIGRATION-0.21.md`). The decision above is kept as it was taken.

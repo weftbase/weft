@@ -9,7 +9,11 @@ TS or Python helper exists — backlog I2).
 **This page is the authority.** It restates, in one place, the contract
 that ADR 0016 (the spans), ADR 0024 (the records and the identity chain)
 and ADR 0028 (the request record, the compaction view, the badges)
-decided; the ADRs keep the *why*. Two things pin it to the code:
+decided; the ADRs keep the *why*. Since 0.21 the reader — `obsdb`,
+Studio, the playground's `runtime` — is the platform's module,
+github.com/weftbase/weftbase; every `obsdb/…`, `studio/…` and
+`runtime/…` path on this page is in that repository, and its tests read
+this page from the weft module. Two things pin it to the code:
 
 - `obsdb/model.go` — the attribute constants, `DeriveSpan`,
   `DeriveRecord` and `MetaOf` — and `TestRecordContractDocNames`
@@ -66,7 +70,7 @@ and span ids are lowercase hex (`traceId` 32 digits, `spanId` 16).
   leftovers, not part of this contract.
 - Resource: `service.name` (the run row's service) and `weft.version`
   (the framework version that built the pipeline). The instrumentation
-  scope is `github.com/weftgo/weft/core` with the core's version.
+  scope is `github.com/weftbase/weft/core` with the core's version.
 - Trace and span ids are **correlation, not identity**: they are zero
   without a tracer SDK, and a span the SDK sampled out still has both
   (the SDK mints them; it never exports the span), so a record emitted
@@ -165,17 +169,17 @@ reads them from:
 | any caller key | `thread.WithRunMetadata` | a session's run metadata: written into the header at `Create` and `Fork` (`Header.RunMeta`, a fork taking its origin's under its own), held over it at `Open`, stamped on every turn's run under the session's identity keys (which win) and under a `Send`'s own `thread.RunOptions(core.Metadata(...))` (which wins per key); a record filed under a run the Session did not see stamps it too (the `thread_approvals` fixture's `arena.batch`) | `meta` |
 | `weft.session.parent` | `thread/pool` | the parent session of a pool child | `meta` |
 | `weft.session.parent_call` | `thread/pool` | the parent's tool call that spawned it, when known | `meta` |
-| `weft.playground` | `weft/runtime` | `"true"` on a run Studio's playground started (never part of a session) | column `playground` |
-| `weft.playground.command` | `weft/runtime` | the playground command id | `meta` |
-| `weft.playground.actor` | `weft/runtime` | who issued it, when known | `meta` |
-| `weft.playground.breakpoints` | `weft/runtime` | a playground run's breakpoints: the tool names it parks at (through `ParkOn`), comma-joined and sorted — what reads a `park_on` park named there as a breakpoint, not an approval gate (the `queue_breakpoints` fixture) | `meta` |
-| `weft.experiment.id` | `weft/runtime` | the saved experiment the run belongs to | column `experiment_id` |
-| `weft.forked_from` | `weft/runtime` | `<source run>#<from step>`: the run this replay continues | column `forked_from` |
-| `weft.replay.view` | `weft/runtime` | a replay from step N > 0: `transcript`, `compacted:<index>`, `derived` or `unknown` | `meta` |
-| `weft.edits` | `weft/runtime` | the transcript edits a replay applied | `meta` |
-| `weft.page_url` | `weft/scope` | the app page the run was started from (sanitised) | `meta` |
-| `weft.flow` | `weft/scope` (`Header`, from the scope's flow or the request's own `Weft-Scope`; `WithFlow`), the app via `Metadata` | the run's flow (user decision 2, U22): a scope's `flow=` stamped as run metadata, not a module — what Studio's `flow=` filters on (`/api/runs`, `/api/sessions`, `/api/search`, `/api/traces`, `/api/live`) and the devtools panel narrows its list by (the `flow_scope` fixture). A scope's `tag.<k>=<v>` pairs are read the same way, as `meta` pairs the caller wrote (`tag.<k>=<v>` on the same routes): a tag scope is only as tight as the app's own tagging | `meta` |
-| `weft.approval.actor` | `thread` (a resume turn: each decision's signing key id, else its `Who`), `weft/runtime` (the decide command's actor: `panel:<public id>`, `server`, `local`), the app via `Metadata` | who decided the calls this run resumes — distinct actors in call order, comma-joined (a `Quorum(n > 1)` approval names every key or `Who` that counted toward the quorum — the first n distinct approvers in arrival order, a later one past it none —, sorted within its call, never the last signer alone); absent when the decisions name nobody. Metadata, so it survives content-off like every metadata pair — verbatim on every span and record, to every destination (§2's caller pairs: no content policy strips metadata); put an opaque id in `Who` / `KeyID`, not an email or a name. `thread` owns it: set on every run that applies recorded decisions (a resume turn), `""` on every other turn | `meta` |
+| `weft.playground` | `weftbase/runtime` | `"true"` on a run Studio's playground started (never part of a session) | column `playground` |
+| `weft.playground.command` | `weftbase/runtime` | the playground command id | `meta` |
+| `weft.playground.actor` | `weftbase/runtime` | who issued it, when known | `meta` |
+| `weft.playground.breakpoints` | `weftbase/runtime` | a playground run's breakpoints: the tool names it parks at (through `ParkOn`), comma-joined and sorted — what reads a `park_on` park named there as a breakpoint, not an approval gate (the `queue_breakpoints` fixture) | `meta` |
+| `weft.experiment.id` | `weftbase/runtime` | the saved experiment the run belongs to | column `experiment_id` |
+| `weft.forked_from` | `weftbase/runtime` | `<source run>#<from step>`: the run this replay continues | column `forked_from` |
+| `weft.replay.view` | `weftbase/runtime` | a replay from step N > 0: `transcript`, `compacted:<index>`, `derived` or `unknown` | `meta` |
+| `weft.edits` | `weftbase/runtime` | the transcript edits a replay applied | `meta` |
+| `weft.page_url` | `weftbase/scope` | the app page the run was started from (sanitised) | `meta` |
+| `weft.flow` | `weftbase/scope` (`Header`, from the scope's flow or the request's own `Weft-Scope`; `WithFlow`), the app via `Metadata` | the run's flow (user decision 2, U22): a scope's `flow=` stamped as run metadata, not a module — what Studio's `flow=` filters on (`/api/runs`, `/api/sessions`, `/api/search`, `/api/traces`, `/api/live`) and the devtools panel narrows its list by (the `flow_scope` fixture). A scope's `tag.<k>=<v>` pairs are read the same way, as `meta` pairs the caller wrote (`tag.<k>=<v>` on the same routes): a tag scope is only as tight as the app's own tagging | `meta` |
+| `weft.approval.actor` | `thread` (a resume turn: each decision's signing key id, else its `Who`), `weftbase/runtime` (the decide command's actor: `panel:<public id>`, `server`, `local`), the app via `Metadata` | who decided the calls this run resumes — distinct actors in call order, comma-joined (a `Quorum(n > 1)` approval names every key or `Who` that counted toward the quorum — the first n distinct approvers in arrival order, a later one past it none —, sorted within its call, never the last signer alone); absent when the decisions name nobody. Metadata, so it survives content-off like every metadata pair — verbatim on every span and record, to every destination (§2's caller pairs: no content policy strips metadata); put an opaque id in `Who` / `KeyID`, not an email or a name. `thread` owns it: set on every run that applies recorded decisions (a resume turn), `""` on every other turn | `meta` |
 | `enduser.id` | the app via `Metadata` | the end user (§2's table) | `meta` (its mirror `user.id` is not) |
 
 **A session stamps its own identity, empty = none.** Run metadata
@@ -262,8 +266,8 @@ child). It ends when the run does, however the run ends.
 | `weft.version` | string | always |
 | `weft.logs.bridged` | int | at start, while the pipeline has a live slog bridge (a `Pipeline.SlogHandler`, `otel.Slog`'s wrap while it is still `slog.Default`'s handler, or any handler that has teed a line into this pipeline; set by `weft/otel`'s span processor, not the core), and only on the copy a destination that takes app logs (`otel.AppLogs`) exports — a content-off sink, an `AppLogs(false)` one or a third party not opted in receives the span without it: the lines the bridge had emitted so far. Its presence is the mark — "this store holds the run's bridged lines"; a stored root without it ran with no bridge reaching this store, which the logs route's hint reads (§7); not caller metadata (`obsdb.MetaOf` skips it) |
 | `weft.metadata.dropped` | int | the metadata limits dropped pairs (§6 `problems`' `metadata_dropped` token: the run document's `truncated` hole, cause `metadata_cap`, §7) |
-| `weft.resumed_from` | string | the run this one resumes, as `core.ResumeOf` named it (UX-E-17): `thread` passes it on every resume turn (the parked turn's run id), `weft/runtime` on every resume it runs, an app resuming a plain `Generate` passes the parked `RunResult.ID` — the core cannot infer it, a transcript carries no run id. §6 `resumed_from` / `resumed_by` |
-| `weft.resume.calls` | string | a run fed decisions that resumes parked calls: each parked call, in call order, as `<call id>=<kind>`, comma-joined — `approved` (`Approve`), `denied` (`Deny`), `resolved` (`Resolve`, `ResolveError`), `no_decision` (left undecided: rule 12's `DENIED: no decision`). The kind is the decision, not the outcome: an `approved` call may still fail, or park again. Ids and enums only — never a reason or a resolved payload (the transcript's). Capped at 32 calls: past them the value ends `,…+k`, `k` the calls not listed. A `thread` resume (`Session.Resume` with calls undecided) reads `no_decision` for them too: since 0.18.1 thread leaves an undecided call to the core's rule 12 (before, it wrote an explicit `Deny(id, "no decision")`, read `denied` here and on the call's span); `weft/runtime` resumes a parked run only once every pending call has its decision |
+| `weft.resumed_from` | string | the run this one resumes, as `core.ResumeOf` named it (UX-E-17): `thread` passes it on every resume turn (the parked turn's run id), `weftbase/runtime` on every resume it runs, an app resuming a plain `Generate` passes the parked `RunResult.ID` — the core cannot infer it, a transcript carries no run id. §6 `resumed_from` / `resumed_by` |
+| `weft.resume.calls` | string | a run fed decisions that resumes parked calls: each parked call, in call order, as `<call id>=<kind>`, comma-joined — `approved` (`Approve`), `denied` (`Deny`), `resolved` (`Resolve`, `ResolveError`), `no_decision` (left undecided: rule 12's `DENIED: no decision`). The kind is the decision, not the outcome: an `approved` call may still fail, or park again. Ids and enums only — never a reason or a resolved payload (the transcript's). Capped at 32 calls: past them the value ends `,…+k`, `k` the calls not listed. A `thread` resume (`Session.Resume` with calls undecided) reads `no_decision` for them too: since 0.18.1 thread leaves an undecided call to the core's rule 12 (before, it wrote an explicit `Deny(id, "no decision")`, read `denied` here and on the call's span); `weftbase/runtime` resumes a parked run only once every pending call has its decision |
 | `weft.override.hash` | string, sha256 hex | a run option changed the agent's configuration (the experiment fingerprint) |
 | `weft.override.instructions` | bool `true` | the instructions were replaced (the text is never on a span) |
 | `weft.override.tools` | string, comma-joined sorted names | `OnlyTools` |
@@ -331,7 +335,7 @@ event without them). The call's `execute_tool` span carries
 `thread` compaction or a `SummarizeLeft` branch summary makes — the
 provider-native compaction included — is a `chat` span of its own, on the
 agent's `TracerProvider` under the instrumentation scope
-`github.com/weftgo/weft/thread`: name `chat <model>`, kind Client,
+`github.com/weftbase/weft/thread`: name `chat <model>`, kind Client,
 `gen_ai.operation.name` `chat`, `weft.chat.role` `summarizer` (string,
 never metadata — `obsdb.MetaOf` skips it), `weft.run.id` the run it is
 filed under, `gen_ai.provider.name` / `gen_ai.request.model` (the model
@@ -431,11 +435,11 @@ Name `execute_tool <tool>`, kind Internal, child of `invoke_agent`.
 | `gen_ai.tool.name`, `gen_ai.tool.call.id` | string | always |
 | `weft.run.id`, `weft.step.index`, `weft.tool.seq` | string, int, int | always |
 | `weft.tool.approved` | bool `true` | a call resumed by `Approve` |
-| `weft.tool.approved_by`, `weft.grant.id` | string, string | an approved call's provenance, as `core.ApproveBy` named it — absent for a plain `Approve`: who or what approved it — `thread` passes `user` (`Decide`, `DecideSigned`), `grant` (a standing grant matched; `weft.grant.id` its grant entry id), `approver` (the `WithApprover` step), `quorum` (a `Quorum(n > 1)` of approvals) or `policy` (another session path: a pool parent's or child's record) on every resume it runs (UX-B-14); `weft/runtime` passes `runtime` on a playground approval of a runtime-started run, in both thread modes — an ephemeral run's resume through `core.ApproveBy`, a fork's through its session, which reports the approval it records for the playground as `runtime` (since 0.18.1; 0.18.0 read `user` there, the session's `Decide` door; the `queue_breakpoints` fixture). Ids and enums, never who by name (that is the `thread` record's `content.who`, §4); span attributes, never `meta` (ClickHouse 0024) |
+| `weft.tool.approved_by`, `weft.grant.id` | string, string | an approved call's provenance, as `core.ApproveBy` named it — absent for a plain `Approve`: who or what approved it — `thread` passes `user` (`Decide`, `DecideSigned`), `grant` (a standing grant matched; `weft.grant.id` its grant entry id), `approver` (the `WithApprover` step), `quorum` (a `Quorum(n > 1)` of approvals) or `policy` (another session path: a pool parent's or child's record) on every resume it runs (UX-B-14); `weftbase/runtime` passes `runtime` on a playground approval of a runtime-started run, in both thread modes — an ephemeral run's resume through `core.ApproveBy`, a fork's through its session, which reports the approval it records for the playground as `runtime` (since 0.18.1; 0.18.0 read `user` there, the session's `Decide` door; the `queue_breakpoints` fixture). Ids and enums, never who by name (that is the `thread` record's `content.who`, §4); span attributes, never `meta` (ClickHouse 0024) |
 | `weft.tool.denied`, `weft.tool.denied_kind` | bool `true`, string | a parked call the resume denied: `denied` (`Deny`) or `no_decision` (left undecided). The span is zero-length (start = end, the moment the resume decided it), carries `weft.step.index` 0 and no `weft.tool.seq` (no `tool_start`: the call never ran), `error.type` `DENIED`, status `Error` — never the reason |
 | `weft.tool.result_bytes` | int | at end, a successful result only (not an error result, not a parked call): the length of the result the model sees (after the result cap) |
 | `weft.tool.pending` | bool `true` | at end: the call was parked for approval |
-| `weft.tool.pending.source` | string | beside `weft.tool.pending`: why it parked (UX-H-18) — `approval` (the tool's `RequireApproval`), `park_on` (the run's `ParkOn`; `weft/runtime` passes a playground run's breakpoints this way and names them in the run's `weft.playground.breakpoints` metadata), `park_source` (an agent `ParkSource` answered the name — `runtime.Breakpoints()` on the app's own runs), `park_all_except` (`ParkAllExcept`, the run's or inherited: the playground's side-effect rule), `middleware` (a tool middleware or the handler itself returned an error wrapping `ErrApprovalRequired`) |
+| `weft.tool.pending.source` | string | beside `weft.tool.pending`: why it parked (UX-H-18) — `approval` (the tool's `RequireApproval`), `park_on` (the run's `ParkOn`; `weftbase/runtime` passes a playground run's breakpoints this way and names them in the run's `weft.playground.breakpoints` metadata), `park_source` (an agent `ParkSource` answered the name — `runtime.Breakpoints()` on the app's own runs), `park_all_except` (`ParkAllExcept`, the run's or inherited: the playground's side-effect rule), `middleware` (a tool middleware or the handler itself returned an error wrapping `ErrApprovalRequired`) |
 | `weft.tool.timeout_ms` | int | at start, when a deadline is in force: the call's `Timeout` (the tool's own, else the agent's), the limit a `timeout` error ran out (UX-S2-06), in milliseconds rounded up (a sub-millisecond deadline reads 1, never absent) |
 | `weft.tool.queue_ms` | int | at start, a call that waited for its turn — behind a `Sequential` barrier while calls were still in flight (not the first call, nor one after another barrier: nothing to wait for), or for a `Parallelism` slot: the wait, rounded up, never 0; absent on a call that started at once |
 | `weft.subagent.pending` | string | `error.type` `SUBAGENT_PENDING`: the parked child's pending calls by tool name, comma-joined in call order (UX-S3-15) |
@@ -486,7 +490,7 @@ so a destination that drops layer spans orphans nothing.
 ## 4. Log records
 
 Every weft record is one OTel log record: logger
-`github.com/weftgo/weft`, an `EventName`, a body (a JSON string), a
+`github.com/weftbase/weft`, an `EventName`, a body (a JSON string), a
 timestamp (emission time), severity INFO (WARN for a `tool_finish` with
 `is_error`), and attributes. Every record carries `weft.record` (its kind,
 mirroring the EventName for backends that drop it), `weft.run.id`,
@@ -777,7 +781,7 @@ is a summarizer `chat` span (§3).
 `thread` reports its state log (ADR 0021's audit trail, ADR 0019's
 receipts, the tree's navigation) as one record per fact, through the
 agent's `LoggerProvider` under the instrumentation scope
-`github.com/weftgo/weft/thread`: `weft.record = thread`, EventName
+`github.com/weftbase/weft/thread`: `weft.record = thread`, EventName
 `weft.thread.<kind>`, severity INFO (WARN for `approval.refused`),
 `weft.run.id`, `weft.content` (`full` when the body carries a `content`
 object, else `none`; a content-off chain's `stripped`), `gen_ai.agent.name`
@@ -898,7 +902,7 @@ line with no span names no run and is not bridged:
 
 | Field | Value |
 |---|---|
-| instrumentation scope | `github.com/weftgo/weft/otel/slog` — what the destination chains recognise a bridged line by |
+| instrumentation scope | `github.com/weftbase/weft/otel/slog` — what the destination chains recognise a bridged line by |
 | trace id, span id | the context's: the `chat` span for `mw.Log`'s lines and anything the model chain logs, the `execute_tool` span for a tool handler's (and `mw.Audit`'s), the `invoke_agent` span for `core.Logger`'s run lines |
 | timestamp | the slog record's time (its emission when zero); observed timestamp the bridge's clock |
 | severity number | the slog level + 9, held to 1–24: DEBUG 5, INFO 9, WARN 13, ERROR 17 |
@@ -1606,7 +1610,7 @@ sorted runs list, an experiment row — a session turn's park reads
 plain `Generate`) "N calls pending · a resume, if any, is not linked
 yet": a plain `Generate` is
 linked only when the app resuming it passes `weft.ResumeOf(res.ID)`
-(`thread` and `weft/runtime` always do), and a resumer the store does
+(`thread` and `weftbase/runtime` always do), and a resumer the store does
 not hold links nothing. parked is therefore "open or not yet linked",
 never a claim that nobody decided. cancelled and
 interrupted share the warn colour (their words differ); where the
@@ -1903,7 +1907,7 @@ when a directory has no row here or a row no directory.
 | Case | What it pins |
 |---|---|
 | `plain` | one model call, no tools: the minimal succeeded run |
-| `tool_calls` | two steps, one `execute_tool`; `catalog_hash` set; run metadata through `core.Metadata`: caller keys and `enduser.id` in `meta` (`user.id` not), the playground marks `weft/runtime` stamps — `playground`, `experiment_id`, `forked_from` as columns, `weft.playground.command` and `weft.replay.view` in `meta` |
+| `tool_calls` | two steps, one `execute_tool`; `catalog_hash` set; run metadata through `core.Metadata`: caller keys and `enduser.id` in `meta` (`user.id` not), the playground marks `weftbase/runtime` stamps — `playground`, `experiment_id`, `forked_from` as columns, `weft.playground.command` and `weft.replay.view` in `meta` |
 | `subagent` | a parent and its `<id>/0/call_1` child, linked; the parent's usage includes the child's; the parent's run tree (§6) holds the child's two spans (`tree`) |
 | `session_turns` | two `thread` turns: `<session>-t<n>`, session id, public id, turn |
 | `compacted` | a run-scope view (`weft.messages.reason = compacted`), excluded from `message_count`; the `compacted` badge |
@@ -1930,7 +1934,7 @@ when a directory has no row here or a row no directory.
 | `slog_bridged` | the `tool_calls` run with the slog bridge bound (`Pipeline.SlogHandler`) and the OTLP destination opted in (`otel.AppLogs(true)`): `mw.Log`'s request and finish lines under each `chat` span (DEBUG 5) and the tool handler's WARN 13 under its `execute_tool` span (a `slog.Group` flattened to `db.table`) arrive as app log records (§4) and read back attributed to the run (`logs`); a line logged with no span is not bridged. The root carries `weft.logs.bridged` 0 — not metadata (`meta` omits it); the row is otherwise `tool_calls`' own. `mw.Log`'s measured `dur` reads `1ms` (the generator sets it) |
 | `records_dropped` | the `tool_calls` run as a destination that had lost 3 records would export it — the generator stamps `weft.records.dropped` 3 (int) on its `run_start` and `run_finish` records, where a real destination writes it (no record is actually lost) (§4; no heartbeat — never stored, and the run is shorter than 10 s). Ingest health reads it (Studio's largest per `service.name`); no row field: `meta` omits it (`obsdb.MetaOf` skips it), no hole names it — the row is `tool_calls`' own without its metadata |
 | `run_cards` | the run cards' facts (U25): an `Output` run repaired after one invalid submission (`submit_output` `INVALID_INPUT`, then a valid call — `stopped_by` `output_submitted`, the tools record's `output: true`, the root's `weft.output.submitted` `true`) and an `Output` run that answered in text (`weft.output.submitted` `false`); a call parked by the run's `ParkOn` (`pending_source` `park_on`) and one by an agent `ParkSource` (`park_source`); a tool cut by its `Timeout` (`timeout_ms` 5, `error.type` `timeout`); a `Subagent` child parked at its `RequireApproval` tool (`SUBAGENT_PENDING`, `subagent_pending` `refund_order`; the child `pending_source` `approval`); a `PrepareStep` rewriting step 0's system text, tool choice and params (the request record's `prepared` `[system, tool_choice, params]`) on a model declaring `thinking.wire` `reasoning_effort`; `mw.Retry` over a 503 then an answer (the first attempt's `http.response.status_code` 503 and `error.type` `overloaded`, the second's `weft.attempt.wait_ms`, normalised to 1); the `Output` runs' roots name their type (`weft.output.type` `obsdb_test.verdict`) and every request record its `parallelism` |
-| `queue_breakpoints` | the phase 8 facts `run_cards` does not hold: a step's two calls under `Parallelism(1)`, the first holding the one slot 30 ms — the second's `execute_tool` span carries `weft.tool.queue_ms` (int, the generator sets it to 1), the first's none; and a playground run's breakpoint park — the runtime's metadata `weft.playground` `true` and `weft.playground.breakpoints` `refund_order` on every record and span, the call parked through `ParkOn` (`pending_source` `park_on`): what Studio and the panel read as a breakpoint (lib/cards.ts `parkWord`), not an approval gate; then the playground's continue as `weft/runtime` resumes a runtime-started run — `core.ApproveBy(call, "runtime", "")`, `core.ResumeOf` the parked run — so the resumed call's `execute_tool` span carries `weft.tool.approved_by` `runtime` and no `weft.grant.id`, and the resume's row `resumed_from` the parked run. (`run_cards` holds the request record's `prepared` and `thinking.wire`.) |
+| `queue_breakpoints` | the phase 8 facts `run_cards` does not hold: a step's two calls under `Parallelism(1)`, the first holding the one slot 30 ms — the second's `execute_tool` span carries `weft.tool.queue_ms` (int, the generator sets it to 1), the first's none; and a playground run's breakpoint park — the runtime's metadata `weft.playground` `true` and `weft.playground.breakpoints` `refund_order` on every record and span, the call parked through `ParkOn` (`pending_source` `park_on`): what Studio and the panel read as a breakpoint (lib/cards.ts `parkWord`), not an approval gate; then the playground's continue as `weftbase/runtime` resumes a runtime-started run — `core.ApproveBy(call, "runtime", "")`, `core.ResumeOf` the parked run — so the resumed call's `execute_tool` span carries `weft.tool.approved_by` `runtime` and no `weft.grant.id`, and the resume's row `resumed_from` the parked run. (`run_cards` holds the request record's `prepared` and `thinking.wire`.) |
 | `bridge_overrides` | a run whose `Params` replace the agent's (`temperature` 0.2, `top_p` 0.9) with `temperature` 0.4 alone and whose `ToolChoice` forces any tool: the root's `weft.override.params` `{"temperature":0.4,"top_p":null}` (`null`: an agent knob the replacement leaves unset) and `weft.override.tool_choice` `any`, beside `weft.override.hash` (span attributes, no row field); and a bridged WARN under its `execute_tool` span (`otel.AppLogs(true)`, content on, a `Redact` over `otel.ContentLog`) with 125 attributes: the message redacted (`card [redacted]`), the first 120 kept, `weft.log.attrs_dropped` 5 (int) |
 | `bridge_stripped` | a bridged WARN on a content-off destination that opted in (`otel.NoContent()`, `otel.AppLogs(true)`): stored stripped — its message and string attribute values emptied, `weft.content` `stripped`, severity, span and the int attribute kept; the run itself content-off (`stripped`) |
 | `pool_child` | thread.analysts-pool's shape: a `thread` turn of investment-lead delegating through `pool.Wrap` (call `d1`) to market-analyst: the child session's turn `<child>-t1` carries its own `weft.session.id`, `weft.caller.run.id` (the lead's turn) and `weft.caller.call.id` `d1` as `caller_run_id` / `caller_call_id`, no `parent_run_id`, and the lineage `weft.session.parent` / `weft.session.parent_call` in `meta`; two sessions, each one turn of its own — the child's with `parent_session`, `parent_call` `d1` and `parent_run` (§6); its `thread_records` the lead session's `pool.delegate` and `pool.retire` (§4), filed under the delegating turn |
