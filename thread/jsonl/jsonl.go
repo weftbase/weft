@@ -37,9 +37,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/thread"
-	threadbackend "github.com/weftgo/weft/thread/backend"
-	"github.com/weftgo/weft/thread/internal/rules"
+	"github.com/weftbase/weft/thread"
+	threadbackend "github.com/weftbase/weft/thread/backend"
+	"github.com/weftbase/weft/thread/internal/rules"
 )
 
 // headerBound is how much of a session file List reads: the header

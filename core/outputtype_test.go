@@ -8,10 +8,12 @@ import (
 )
 
 // A generic Output type whose type arguments name non-ASCII identifiers
-// long enough to pass maxOutputTypeName.
+// long enough to pass maxOutputTypeName. The name is spelled with the
+// package path (github.com/weftbase/weft/core.…), so its length is tuned
+// to that path: a module rename moves the cut out of the "ü".
 type Rechnungsübersichtsgegenstandsbeschreibung struct{}
 
-type ÜbersichtBx[A, B any] struct {
+type ÜbersBx[A, B any] struct {
 	A A `json:"a"`
 	B B `json:"b"`
 }
@@ -20,7 +22,7 @@ type ÜbersichtBx[A, B any] struct {
 // maxOutputTypeName bytes and valid UTF-8 — a cut lands on a rune
 // boundary, never inside a multi-byte identifier.
 func TestOutputTypeNameCutsAtRune(t *testing.T) {
-	typ := reflect.TypeFor[*ÜbersichtBx[Rechnungsübersichtsgegenstandsbeschreibung, Rechnungsübersichtsgegenstandsbeschreibung]]()
+	typ := reflect.TypeFor[*ÜbersBx[Rechnungsübersichtsgegenstandsbeschreibung, Rechnungsübersichtsgegenstandsbeschreibung]]()
 	full := typ.Elem().String()
 	if len(full) <= maxOutputTypeName {
 		t.Fatalf("the type's name is %d bytes, want more than %d to cut", len(full), maxOutputTypeName)

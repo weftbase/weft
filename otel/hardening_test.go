@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
@@ -646,7 +646,7 @@ func goroutineDump() string {
 // for it with no bound: stopHeartbeat's <-p.beatDone ignored ctx, and
 // the pass ran to its end whatever stop said. With the database's write
 // lock held elsewhere (another process: a viewer's delete, a vacuum —
-// here a Sink that blocks; weft/exporter's twin holds a real SQLite
+// here a Sink that blocks; weftbase/exporter's twin holds a real SQLite
 // lock), each heartbeat write waits out SQLite's
 // 30 s busy timeout, so `defer otel.Install()()` (a 5 s context) hung
 // for 30 s per open run; under concurrent runs on a slow disk the same

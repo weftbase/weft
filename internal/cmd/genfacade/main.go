@@ -1,10 +1,10 @@
 // Command genfacade writes a facade package (internal/facadegen): the
-// framework's github.com/weftgo/weft, weft/mw, weft/wefttest and
+// framework's github.com/weftbase/weft, weft/mw, weft/wefttest and
 // weft/wefttest/conformance re-export the core module's packages of
 // the same name. Run it through go generate ./... from the repository
 // root; each facade records the exact invocation that produced it.
 //
-//	genfacade -src ./core -import github.com/weftgo/weft/core -as core -pkg weft -out facade.go
+//	genfacade -src ./core -import github.com/weftbase/weft/core -as core -pkg weft -out facade.go
 package main
 
 import (
@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/weftgo/weft/internal/facadegen"
+	"github.com/weftbase/weft/internal/facadegen"
 )
 
 type rewrites map[string]string
@@ -53,7 +53,7 @@ func main() {
 		SrcName:   *as,
 		DstPkg:    *pkg,
 		Rewrite:   rewrite,
-		Generate:  "go run github.com/weftgo/weft/internal/cmd/genfacade " + strings.Join(os.Args[1:], " "),
+		Generate:  "go run github.com/weftbase/weft/internal/cmd/genfacade " + strings.Join(os.Args[1:], " "),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

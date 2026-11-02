@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 func TestStripContent(t *testing.T) {

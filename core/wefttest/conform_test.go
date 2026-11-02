@@ -3,8 +3,8 @@ package wefttest_test
 import (
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // The conformance helper itself: a wrapper that forwards the inner

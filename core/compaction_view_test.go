@@ -14,8 +14,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // trimMiddleAt returns a PrepareStep that, at step at, keeps the first

@@ -9,7 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // ErrToolError is the cause on a remote isError result — data for the

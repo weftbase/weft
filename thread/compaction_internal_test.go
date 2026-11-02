@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // bigText returns text whose wire bytes cost about tokens estimated

@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/embedded"
 
-	"github.com/weftgo/weft"
+	"github.com/weftbase/weft"
 )
 
 // The example's output is pinned: the ids are deterministic and the

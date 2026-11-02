@@ -747,7 +747,7 @@ func New(m Model, opts ...Option) *Agent {
 	// The manifest hash is computed once, here, for the named agent,
 	// after the model chain is built: Manifest(a) reads the model's Info
 	// through the chain, so the hash is the one every later Manifest(a)
-	// hashes to — weft/runtime's registration included — even when a
+	// hashes to — weftbase/runtime's registration included — even when a
 	// middleware does not forward Info. The agent is immutable after
 	// this, so one hash serves every run (ADR 0024 moves it onto the
 	// emitter).

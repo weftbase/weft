@@ -216,7 +216,7 @@ func (o resumeOfOption) applyRun(c *runConfig) {
 // resumed_from, and resumed_by on the parked run). Reporting only: the
 // option changes nothing the model sees and nothing the loop does —
 // the decisions resume the calls, with or without it. weft/thread
-// passes it on every resume turn, weft/runtime on every resume it
+// passes it on every resume turn, weftbase/runtime on every resume it
 // runs; an app resuming a plain Generate passes res.ID. Empty values
 // are ignored; the last ResumeOf wins. A Subagent's child run does not
 // inherit it.
@@ -242,7 +242,7 @@ func (o keptStepsOption) applyRun(c *runConfig) {
 // KeptSteps says the run continues a turn whose first n steps its
 // input already holds: the run's Messages end with those steps (each
 // one assistant message and its tool results), kept from an earlier
-// run of the same turn — a replay from step n (weft/runtime's
+// run of the same turn — a replay from step n (weftbase/runtime's
 // from_step) is fed the source's steps 0..n-1 that way. The kept steps
 // count toward the turn's guards as if this run had made them:
 // MaxSteps budgets the whole turn (this run makes at most MaxSteps − n

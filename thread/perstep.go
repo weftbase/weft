@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Per-step durability (ADR 0011 §7): a turn's messages are appended to

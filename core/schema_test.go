@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/internal/jsonconflict"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/internal/jsonconflict"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 func TestSchemaDerivation(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/internal/rules"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/internal/rules"
 )
 
 // pollInterval is how often a watcher looks for new lines: a tail is a

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // AddTools registers weft tools on an MCP server. Each tool is listed

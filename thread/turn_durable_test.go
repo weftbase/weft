@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/thread"
 )
 
 // runIDsOf lists every run id the turn entries record, in order.

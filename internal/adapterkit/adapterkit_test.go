@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // SchemaMap renders through json.Marshal, so a foreign schema parsed

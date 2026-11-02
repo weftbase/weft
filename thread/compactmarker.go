@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The session compaction marker (ADR 0028 §8, session scope). The core
@@ -38,7 +38,7 @@ import (
 const (
 	markerEventName = "weft.compaction"
 	markerRecord    = "compaction"
-	markerScopeName = "github.com/weftgo/weft/thread"
+	markerScopeName = "github.com/weftbase/weft/thread"
 )
 
 // compactionMarker is the marker's body. Replaced and Entries are the

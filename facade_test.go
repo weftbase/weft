@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/weftgo/weft/internal/facadegen"
+	"github.com/weftbase/weft/internal/facadegen"
 )
 
-const module = "github.com/weftgo/weft"
+const module = "github.com/weftbase/weft"
 
 // facades lists every generated facade in this module with the exact
 // options its go:generate line records (paths relative to the facade's

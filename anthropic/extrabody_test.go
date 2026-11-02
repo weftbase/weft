@@ -10,7 +10,7 @@ import (
 
 	antsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // captureServer serves a recorded SSE fixture and captures the request

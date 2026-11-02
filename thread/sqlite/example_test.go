@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/sqlite"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/sqlite"
 )
 
 // Open a sessions database, write one turn's worth of entries, read the

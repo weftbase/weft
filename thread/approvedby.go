@@ -3,7 +3,7 @@ package thread
 import (
 	"context"
 
-	"github.com/weftgo/weft/internal/provenance"
+	"github.com/weftbase/weft/internal/provenance"
 )
 
 // WithApprovedBy returns ctx carrying the approval class a layer above
@@ -13,7 +13,7 @@ import (
 // returned context to Decide (or Resume, under AutoResume(false)):
 // every call that decision approves is reported with
 // weft.tool.approved_by set to class on its resumed execute_tool span,
-// where a plain Decide reports "user" (record contract §3). weft/runtime's
+// where a plain Decide reports "user" (record contract §3). weftbase/runtime's
 // playground passes "runtime".
 //
 // class is a short id or enum ("runtime", "inbox", "shop"), never who

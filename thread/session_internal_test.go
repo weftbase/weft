@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // kindSamples holds one fully populated value of every entry kind in

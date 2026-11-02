@@ -35,10 +35,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/jsonl"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/jsonl"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // planKind is this application's namespace inside the session's custom

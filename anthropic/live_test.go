@@ -6,9 +6,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/weftgo/weft/anthropic"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest/conformance"
+	"github.com/weftbase/weft/anthropic"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest/conformance"
 )
 
 // TestConformanceLive runs the suite against the real API. Never in CI

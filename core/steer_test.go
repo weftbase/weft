@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // echoTool is the steering tests' ordinary tool: one call, one result.

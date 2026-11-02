@@ -397,7 +397,7 @@ func SignDecision(key []byte, r Request, d Decision) SignedDecision {
 // RequiresSigned reports whether the session refuses unsigned
 // decisions (RequireSigned, or the header that carries it): Decide then
 // fails ErrSignatureRequired and only DecideSigned decides. A caller
-// that must know before it promises a decision — weft/runtime acks one
+// that must know before it promises a decision — weftbase/runtime acks one
 // only for a session that can take it — asks here.
 func (s *Session) RequiresSigned() bool {
 	s.mu.Lock()

@@ -16,7 +16,7 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // alternatingModel serves any number of runs: each run asks once with a

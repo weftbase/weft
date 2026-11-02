@@ -1,29 +1,22 @@
 GO ?= go
 
-# Where the release steps stage their artifacts (step 8's release
-# uploads from here); overridable per invocation, a relative path
-# resolving from this directory:
-#   make studio-panel-asset RELEASE_DIR=/tmp/rel
-# The default is ignored by studio/web/.gitignore.
-RELEASE_DIR ?= studio/web/dist-release
-
 # The workspace joins the framework module (the root: facade, adapters,
-# thread, otel — and, until they move to weftbase, the platform's
-# obsdb, studio, runtime and exporter; make layering keeps the two
-# apart), the core module (the loop
-# alone; its only dependency is the OTel API) and the example modules
-# (ADR 0027), so build/test/vet/lint loop over the modules `go list -m`
-# reports from go.work.
+# thread, otel, mcp, mw, wefttest), the core module (the loop alone;
+# its only dependency is the OTel API) and the example modules (ADR
+# 0027), so build/test/vet/lint loop over the modules `go list -m`
+# reports from go.work. The platform (Studio, obsdb, the runtime link,
+# the weftbase CLI) is github.com/weftbase/weftbase, its own
+# repository; make layering keeps this one from importing it.
 MODULES = $(shell $(GO) list -m -f '{{.Dir}}')
 
-.PHONY: build test vet fmt lint layering tidy generate vacuum live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress studio-build studio-bin studio-check studio-panel-asset devtools-npm devtools-vite-check mcp-check
+.PHONY: build test vet fmt lint layering tidy generate live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress
 
 build:
 	for m in $(MODULES); do (cd $$m && $(GO) build ./...) || exit 1; done
 
 # The per-package timeout `make test` passes: the one CI's test job
-# passes (.github/workflows/ci.yml). studio takes ~520 s under -race,
-# close to Go's 10-minute default. Override per invocation:
+# passes (.github/workflows/ci.yml); thread/pool's soak-style suites
+# are the slowest under -race. Override per invocation:
 #   make test TEST_TIMEOUT=30m
 TEST_TIMEOUT ?= 20m
 
@@ -44,11 +37,10 @@ fmt:
 lint:
 	for m in $(MODULES); do (cd $$m && PATH="$$PATH:$$(go env GOPATH)/bin" golangci-lint run) || exit 1; done
 
-# The layering guard (WEFTBASE-REPO-SPLIT.md §7): no framework package
-# — its tests included — imports a platform package (studio, obsdb,
-# runtime, scope, exporter, cmd/weft, the platform's internal packages
-# and examples). The platform imports the framework, never the
-# reverse. CI runs it.
+# The layering guard (WEFTBASE-REPO-SPLIT.md §7): no package of this
+# workspace — its tests included — imports the platform
+# (github.com/weftbase/weftbase). The platform imports the framework,
+# never the reverse. CI runs it.
 layering:
 	GO=$(GO) scripts/check-layering.sh
 
@@ -61,21 +53,6 @@ tidy:
 # when a committed facade is stale.
 generate:
 	$(GO) generate ./...
-
-# Studio's database, swept (with WEFT_RETAIN set, e.g. 720h) and vacuumed — studio's tables only: $WEFT_DB, else ./.weft/weft.db.
-vacuum:
-	$(GO) run ./cmd/weft vacuum --db "sqlite://$${WEFT_DB:-.weft/weft.db}"
-
-# The phase 6 gate's third clause (plan I4.2): `weft mcp` answers "why
-# did run X fail" over stdio. Builds weft, starts a real `weft studio`
-# on a free loopback port over a scratch SQLite file (WEFT_DISCOVERY=off,
-# the discovery locations in the scratch directory), seeds it with the
-# record-contract fixtures through /v1/traces and /v1/logs, drives
-# `weft mcp` with the MCP SDK's client and prints each tool's summary
-# line, ending "MCP CHECK PASS". No model calls. Not part of `make test`:
-# it listens on a port (cmd/weft/mcp_check_test.go, tag livecheck).
-mcp-check:
-	WEFT_MODEL_REQUESTS=deny $(GO) test -tags livecheck -run '^TestMCPLiveCheck$$' -count=1 -v ./cmd/weft/
 
 # Pinned tooling — the exact versions CI installs, so a local gate and
 # the remote gate can never disagree (TODO §1.2a, the §1 pre-flight of
@@ -149,7 +126,7 @@ soak-thread:
 # loops beside the race-detected suites, GOMAXPROCS=2 and -cpu 1,2
 # approximate it. STRESS_PKGS and STRESS_COUNT are overridable:
 #   make stress STRESS_PKGS=./thread/pool STRESS_COUNT=100
-STRESS_PKGS ?= ./thread/... ./obsdb/sqlite ./studio/runtime ./runtime
+STRESS_PKGS ?= ./thread/...
 STRESS_COUNT ?= 10
 stress:
 	@sh -c '(while :; do :; done) & h1=$$!; (while :; do :; done) & h2=$$!; \
@@ -160,90 +137,3 @@ stress:
 live:
 	for m in $(MODULES); do (cd $$m && $(GO) test -tags live ./...) || exit 1; done
 
-# ── Studio (TODO §12, ADR 0018) ─────────────────────────────────────
-# Needs Bun. Contributors run these only when the UI changes; users of
-# the module get the committed, embedded studio/dist.
-#
-# The panel is stamped with the one version (B6): vite.panel.config.ts
-# reads `const Version` from version/version.go (studio/web/scripts/
-# weft-version.ts). A release's version bump is three steps: (1) the
-# tag in version/version.go, (2) the same tag in core/observe.go's
-# `version` literal (the core imports nothing above it), (3) regenerate
-# studio's meta golden (`go test ./studio -run TestMetaGolden -update`)
-# and rerun this target, committing studio/dist and
-# studio/web/npm/package.json (the build writes the version into
-# @weftgo/devtools' manifest; studio-check fails on a stale one). studio's
-# TestVersionIsTheModules fails on a stale or hand-edited stamp, and
-# TestWeftVersionMatchesRoot (otel, runtime) on a missed step 2.
-
-studio-build:
-	cd studio/web && bun install --frozen-lockfile && bun run build
-
-# The weft binary (cmd/weft: `weft studio`, runs, open, export, doctor,
-# version) built into ./weft (ignored). Users install it with
-#   go install github.com/weftgo/weft/cmd/weft@latest
-studio-bin:
-	$(GO) build -o weft ./cmd/weft
-
-# The devtools panel as a release asset (WEFT-DEVTOOLS §5.1): non-Go
-# backends serve this file themselves (V2).
-studio-panel-asset: studio-build
-	cd studio/web && bun run scripts/panel-asset.ts $(abspath $(RELEASE_DIR))
-
-# The freshness gate (ADR 0018 §4): rebuild the web app and prove the
-# committed dist matches, fits the 800 KiB gzip budget (§7), and that
-# its own checks pass (scripts/vocab-audit.ts: no retired word on
-# screen, U21.3; typecheck; tests). CI runs this on every push.
-studio-check: studio-build
-	git diff --exit-code -- studio/dist || { echo "studio/dist is stale: run 'make studio-build' and commit"; exit 1; }
-	test -z "$$(git status --porcelain -- studio/dist)" || { git status --short -- studio/dist; echo "studio/dist has files the commit does not: run 'make studio-build' and commit"; exit 1; }
-	total=0; for f in $$(find studio/dist -type f); do \
-	  sz=$$(gzip -c $$f | wc -c); total=$$((total+sz)); done; \
-	kib=$$((total / 1024)); echo "studio dist: $$kib KiB gzipped (budget 800)"; \
-	test $$kib -le 800 || { echo "studio dist exceeds the 800 KiB gzip budget (ADR 0018 §7)"; exit 1; }
-	cd studio/web && bun run scripts/npm-package.ts --check
-	git diff --exit-code -- studio/web/npm/package.json || { echo "studio/web/npm/package.json is not the weft version: run 'make studio-build' and commit"; exit 1; }
-	cd studio/web && bun run scripts/vocab-audit.ts
-	cd studio/web && bun run typecheck && bun run test
-	cd studio/web && WEFT_DEVTOOLS_PKG=1 bunx vitest run src/npm
-	cd studio/web && bun run scripts/npm-consumer.ts
-
-# @weftgo/devtools (plan C1): the npm delivery of the panel, assembled
-# in studio/web/npm by the build — the served panel.js byte for byte
-# (+ panel.js.sha256), the thin ESM entry with mount/scope/open/close/
-# on, the react/vue/svelte helpers, the DOM-free scope.js and their
-# declarations. This target (and studio-check) drives the package
-# suite against the assembled files and type-checks a consumer of
-# every subpath under node16 and bundler resolution
-# (scripts/npm-consumer.ts); this one also lists the tarball. It
-# never publishes: `npm publish` from studio/web/npm is a release
-# decision, not a build step.
-devtools-npm: studio-build
-	cd studio/web && bun run scripts/npm-package.ts --check
-	cd studio/web && WEFT_DEVTOOLS_PKG=1 bunx vitest run src/npm
-	cd studio/web && bun run scripts/npm-consumer.ts
-	cd studio/web/npm && npm pack --dry-run
-
-# The phase 3 gate's first clause (plan §12), pinned: a real Vite app
-# (examples/devtools-vite) installs the packed @weftgo/devtools — the
-# tarball `npm publish` would upload — builds with `vite build`, and its
-# smoke test (check.ts, jsdom + a fake /api/meta, no browser) proves the
-# bundled package put <weft-devtools> on the page and that the installed
-# panel.js is studio/dist/panel/panel.js byte for byte. vite and jsdom
-# are exact versions with a committed package-lock.json, installed by
-# `npm ci` (the registry or a warm npm cache, nothing else); the tarball
-# is not in the lockfile (its integrity changes with every panel build)
-# and goes in after, offline and unsaved. CI runs it after studio-check.
-# Needs the assembled studio/web/npm (make studio-build or
-# devtools-npm). The install is npm's: an explicit tarball spec
-# reinstalls a changed tarball, which bun's cache does not.
-DEVTOOLS_VITE := examples/devtools-vite
-devtools-vite-check:
-	@test -f studio/web/npm/panel.js || { echo "studio/web/npm is not assembled: run 'make studio-build' first"; exit 1; }
-	rm -rf $(DEVTOOLS_VITE)/vendor && mkdir -p $(DEVTOOLS_VITE)/vendor
-	cd studio/web/npm && npm pack --silent --pack-destination $(abspath $(DEVTOOLS_VITE))/vendor >/dev/null
-	mv $(DEVTOOLS_VITE)/vendor/weftgo-devtools-*.tgz $(DEVTOOLS_VITE)/vendor/weftgo-devtools.tgz
-	cd $(DEVTOOLS_VITE) && npm ci --no-audit --no-fund --loglevel=error
-	cd $(DEVTOOLS_VITE) && npm install --offline --no-save --no-audit --no-fund --loglevel=error ./vendor/weftgo-devtools.tgz
-	! grep -q weftgo $(DEVTOOLS_VITE)/package.json $(DEVTOOLS_VITE)/package-lock.json || { echo "the tarball was saved into package.json or package-lock.json"; exit 1; }
-	cd $(DEVTOOLS_VITE) && bun run check

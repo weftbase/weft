@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // dieAfterQueuedStorage is a writer that dies right after the steer's

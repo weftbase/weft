@@ -12,7 +12,7 @@ import (
 
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // ThinkingDialect selects how weft's ThinkingConfig reaches an

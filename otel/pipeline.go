@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weftgo/weft/version"
+	"github.com/weftbase/weft/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otlploghttp "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -32,7 +32,7 @@ var envGetenv = os.Getenv
 
 // Instrumentation names, shared with the core's.
 const (
-	instrumentationName = "github.com/weftgo/weft/core"
+	instrumentationName = "github.com/weftbase/weft/core"
 	eventHeartbeat      = "weft.heartbeat"
 )
 
@@ -328,7 +328,7 @@ func Install(opts ...Option) func() {
 	switch {
 	case errors.Is(err, ErrNoDestinations):
 		slog.Info("weft/otel: no destination configured; recording nothing",
-			"hint", "set OTEL_EXPORTER_OTLP_ENDPOINT, or pass a destination to otel.Install (otel.OTLP, otel.Exporters, a local viewer's sink such as weft/exporter.Local)")
+			"hint", "set OTEL_EXPORTER_OTLP_ENDPOINT, or pass a destination to otel.Install (otel.OTLP, otel.Exporters, a local viewer's sink such as weftbase/exporter.Local)")
 		return func() {}
 	case errors.Is(err, errAllFailed) && !explicitDestinations(opts) && hasFallback(opts):
 		// Only environment destinations were configured and none built:

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Fallback tries the given models, in order, when the wrapped model's

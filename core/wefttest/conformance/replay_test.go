@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/core/wefttest/conformance"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/core/wefttest/conformance"
 )
 
 // TestSuiteGreenAgainstReplay proves the replay double obeys the Model

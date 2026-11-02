@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread"
 )
 
 // The model-visible texts the pool produces (AGENTS.md rule 5: a

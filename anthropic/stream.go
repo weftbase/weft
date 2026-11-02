@@ -10,8 +10,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/adapterkit"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/internal/adapterkit"
 )
 
 // block accumulates one streamed content block, keyed by the event's

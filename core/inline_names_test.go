@@ -19,9 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // redactor returns a closure: small, so the compiler may inline it
@@ -75,7 +75,7 @@ func TestManifestNamesIgnoreInlining(t *testing.T) {
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("tool_middleware = %v, want %v", got, want)
 	}
-	if a.ToolMiddleware[4].Source != "github.com/weftgo/weft/core_test/inline_names_test.go:39" {
+	if a.ToolMiddleware[4].Source != "github.com/weftbase/weft/core_test/inline_names_test.go:39" {
 		t.Errorf("named function's source = %q", a.ToolMiddleware[4].Source)
 	}
 	if got := layerNames(a.Hooks.Tap); strings.Join(got, " ") != "func@core/inline_names_test.go:41 func@core/inline_names_test.go:53" {

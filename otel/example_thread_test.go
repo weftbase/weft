@@ -7,10 +7,10 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/otel"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/otel"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // ContentThread is the kind Redact sees for a weft/thread session

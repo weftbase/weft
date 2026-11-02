@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/internal/jsonclose"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/internal/jsonclose"
 )
 
 // RepairJSON re-encodes a tool call's arguments once when they are not

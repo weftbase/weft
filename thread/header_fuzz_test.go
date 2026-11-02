@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // FuzzDecodeHeader: the session header's decoder over

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // slowTool returns a tool that blocks until release is closed or its

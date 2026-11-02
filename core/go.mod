@@ -1,4 +1,4 @@
-module github.com/weftgo/weft/core
+module github.com/weftbase/weft/core
 
 go 1.26
 

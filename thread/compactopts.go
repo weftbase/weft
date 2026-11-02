@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The compaction options (ADR 0020 §3). The naming rule of this file:

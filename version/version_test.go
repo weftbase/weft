@@ -26,7 +26,7 @@ func TestRuntimeReadsBuildInfo(t *testing.T) {
 		{"main module tagged", debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: "v1.2.3"}}, "v1.2.3"},
 		{"consumer dependency", debug.BuildInfo{
 			Main: debug.Module{Path: "example.com/app", Version: "(devel)"},
-			Deps: []*debug.Module{{Path: "github.com/weftgo/weft/core", Version: "v9.9.9"}, {Path: modulePath, Version: "v1.2.4"}},
+			Deps: []*debug.Module{{Path: "github.com/weftbase/weft/core", Version: "v9.9.9"}, {Path: modulePath, Version: "v1.2.4"}},
 		}, "v1.2.4"},
 		{"replaced by a version", debug.BuildInfo{
 			Main: debug.Module{Path: "example.com/app"},

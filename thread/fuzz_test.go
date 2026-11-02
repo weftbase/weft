@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // FuzzDecodeEntry: UnmarshalEntry over arbitrary bytes

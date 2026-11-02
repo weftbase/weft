@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // Raw scripts the model's events verbatim — here a signed reasoning

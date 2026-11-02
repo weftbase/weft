@@ -8,7 +8,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // pollInterval is how often a watcher looks for new rows: a tail is a

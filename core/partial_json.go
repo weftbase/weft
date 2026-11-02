@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/weftgo/weft/core/internal/jsonclose"
+	"github.com/weftbase/weft/core/internal/jsonclose"
 )
 
 // closedPrefix returns the longest prefix of s that closes into valid

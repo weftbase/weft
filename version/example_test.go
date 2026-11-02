@@ -3,7 +3,7 @@ package version_test
 import (
 	"fmt"
 
-	"github.com/weftgo/weft/version"
+	"github.com/weftbase/weft/version"
 )
 
 // Runtime is what a binary prints for its version: the tag a consumer

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // SessionOption configures a session at Create, Open or Fork — one
@@ -855,7 +855,7 @@ func (s *Session) Storage() Storage {
 // Close, as one that wrote does.
 //
 // It is for a caller that must know it can write before it promises
-// to — weft/runtime acks a debugger's decision only once the Session
+// to — weftbase/runtime acks a debugger's decision only once the Session
 // it was handed is the writer — and costs the holder nothing: the
 // backend answers from memory.
 func (s *Session) Claim(ctx context.Context) error {

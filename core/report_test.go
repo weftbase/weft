@@ -12,9 +12,9 @@ import (
 
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // An Attempt reported from inside the model chain becomes an "attempt"

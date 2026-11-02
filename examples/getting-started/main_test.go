@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/weftgo/weft"
+	"github.com/weftbase/weft"
 )
 
 // The example's agent runs end to end offline: the scripted model looks

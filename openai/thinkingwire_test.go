@@ -3,7 +3,7 @@ package openai
 import (
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // TestThinkingWire pins the request record's thinking.wire (O16) for

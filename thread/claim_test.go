@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/jsonl"
-	"github.com/weftgo/weft/thread/sqlite"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/jsonl"
+	"github.com/weftbase/weft/thread/sqlite"
 )
 
 // Claim is the first write's lease check asked ahead of it: the writer

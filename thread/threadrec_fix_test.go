@@ -21,16 +21,16 @@ import (
 	traceembedded "go.opentelemetry.io/otel/trace/embedded"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/thread"
 )
 
 // The record family's emitter (U12.1-fix): no provider call under the
 // session lock, held records out at Close, the pre-run summarizer under
 // its run, and observability that never changes the session.
 
-const threadScope = "github.com/weftgo/weft/thread"
+const threadScope = "github.com/weftbase/weft/thread"
 
 // gateLP is a LoggerProvider whose thread records block in Emit until
 // the gate opens — a slow exporter, an obsdb insert, a Blocking()
@@ -465,7 +465,7 @@ func TestResumedCallsNameTheirApproval(t *testing.T) {
 }
 
 // A decision recorded through Decide on another layer's behalf
-// (thread.WithApprovedBy — weft/runtime's playground on a fork) resumes
+// (thread.WithApprovedBy — weftbase/runtime's playground on a fork) resumes
 // its approved call reported as that layer's class; the class is the
 // arming call's alone: the next boundary of the same session, decided
 // by a plain Decide, reads user again though its parked turn ran

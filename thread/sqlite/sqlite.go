@@ -55,8 +55,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/thread"
-	threadbackend "github.com/weftgo/weft/thread/backend"
+	"github.com/weftbase/weft/thread"
+	threadbackend "github.com/weftbase/weft/thread/backend"
 
 	// CGO-free driver, the store's choice; the import registers it.
 	_ "modernc.org/sqlite"

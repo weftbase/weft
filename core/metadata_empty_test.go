@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // An empty value is "none": a run's own empty pair removes the key it

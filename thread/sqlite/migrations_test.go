@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/sqlite"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/sqlite"
 
 	// The tests reach into the file directly to fake legacy and store
 	// shapes — the same driver Open registers.

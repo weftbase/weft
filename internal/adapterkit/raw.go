@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // RawCap is the most of one wire body the adapters keep for a raw

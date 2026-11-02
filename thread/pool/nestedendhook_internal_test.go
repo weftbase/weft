@@ -3,7 +3,7 @@ package pool
 import (
 	"time"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // shortenNestedEnd sets p's endNested bound, for the tests that wait it

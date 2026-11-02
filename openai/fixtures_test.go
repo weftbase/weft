@@ -13,8 +13,8 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest/conformance"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest/conformance"
 )
 
 // testClient builds an SDK client aimed at srv. Injecting it — instead

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Steers delivers the messages registered for a step, at that step's

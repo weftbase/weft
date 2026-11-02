@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, devtools-plan]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -44,8 +44,9 @@ jobs:
             (cd "$m" && go build ./...)
           done
 
-  # The layering guard (scripts/check-layering.sh): no framework
-  # package, tests included, imports a platform package.
+  # The layering guard (scripts/check-layering.sh): no package of the
+  # workspace, tests included, imports the platform
+  # (github.com/weftbase/weftbase).
   layering:
     runs-on: ubuntu-latest
     steps:
@@ -117,55 +118,6 @@ jobs:
       - name: apidiff (every workspace module vs its last tag)
         run: scripts/apidiff.sh "" all
 
-  # The gated ClickHouse suite (obsdb/clickhouse's README "CI job
-  # (service container)" block): the conformance table and the
-  # collector-shape insert test need a server; each test creates and
-  # drops its own database. The same DSN also un-gates cmd/weft's
-  # hosted-backend test. The job waits for the server's health check
-  # (a real query on the native port), and a gated test that skips
-  # fails it — a DSN the tests cannot read must not turn the job green.
-  clickhouse:
-    runs-on: ubuntu-latest
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:25.8-alpine
-        env:
-          CLICKHOUSE_PASSWORD: weft
-        ports:
-          - 9000:9000
-        options: >-
-          --ulimit nofile=262144:262144
-          --health-cmd "clickhouse-client --password weft --query 'SELECT 1'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      WEFT_CLICKHOUSE_DSN: clickhouse://default:weft@127.0.0.1:9000/default
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: stable
-          check-latest: true
-          cache-dependency-path: |
-            **/go.sum
-            go.work.sum
-      - name: test (obsdb/clickhouse, gated suite)
-        working-directory: obsdb/clickhouse
-        run: |
-          set -o pipefail
-          go test -race -count=1 -timeout 30m -v ./... | tee "$RUNNER_TEMP/clickhouse.log"
-          if grep -E '^\s*--- SKIP' "$RUNNER_TEMP/clickhouse.log"; then
-            echo "gated tests skipped: WEFT_CLICKHOUSE_DSN did not reach them" >&2
-            exit 1
-          fi
-      - name: test (cmd/weft, gated --db clickhouse:// test)
-        working-directory: cmd/weft
-        run: |
-          set -o pipefail
-          go test -race -count=1 -v -run '^TestNewServerClickhouse$' ./... | tee "$RUNNER_TEMP/weft-cmd.log"
-          grep -q -- '--- PASS: TestNewServerClickhouse' "$RUNNER_TEMP/weft-cmd.log"
-
   # The offline gate (ADR 0013's kill-switch clause): the whole
   # workspace stays green under WEFT_MODEL_REQUESTS=deny — suites that
   # must never reach the network get loud failures, not silent egress.
@@ -216,35 +168,3 @@ jobs:
             thread/testdata/fuzz
           if-no-files-found: ignore
 
-  # The studio freshness gate (ADR 0018 §4): rebuild the web app, prove
-  # the committed studio/dist matches byte for byte and fits the 800 KiB
-  # gzip budget, then run the web typecheck and tests. Bun is pinned to
-  # the version the committed dist was built with.
-  studio:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - name: make studio-check
-        run: make studio-check
-
-  # The phase 3 gate's first clause (Makefile devtools-vite-check): the
-  # packed @weftgo/devtools in a real Vite app, built and smoke-tested
-  # in jsdom. vite and jsdom come from the example's committed
-  # package-lock.json via npm ci; the studio build assembles
-  # studio/web/npm first. Bun as in the studio job; npm is the
-  # runner's own.
-  devtools-vite:
-    runs-on: ubuntu-latest
-    needs: studio
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - name: make studio-build
-        run: make studio-build
-      - name: make devtools-vite-check
-        run: make devtools-vite-check

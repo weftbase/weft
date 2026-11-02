@@ -3,8 +3,8 @@ package openai_test
 import (
 	"context"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/openai"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/openai"
 )
 
 // Constructing a model performs no I/O; a key ($OPENAI_API_KEY) is read

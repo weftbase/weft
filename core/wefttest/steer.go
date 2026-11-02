@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Steers is a deterministic steering source: the messages registered for

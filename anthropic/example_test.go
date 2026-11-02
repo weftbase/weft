@@ -3,8 +3,8 @@ package anthropic_test
 import (
 	"context"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/anthropic"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/anthropic"
 )
 
 // Constructing a model performs no I/O; a key ($ANTHROPIC_API_KEY) is

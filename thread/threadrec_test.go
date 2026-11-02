@@ -15,10 +15,10 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/otel"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/otel"
+	"github.com/weftbase/weft/thread"
 )
 
 // The thread record family (record contract §4, kind thread; U12.1):

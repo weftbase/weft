@@ -6,7 +6,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // reasonInterrupted is the denial reason an Interrupt or Rollback send

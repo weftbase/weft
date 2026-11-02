@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // newSupportAgent builds the example's agent. manifest_test.go builds

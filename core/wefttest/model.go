@@ -12,7 +12,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // ErrScriptExhausted is the stream error a Model yields when the agent

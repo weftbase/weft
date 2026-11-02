@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // TestRoundTripIsLossless is checkable property 3, tested the only way

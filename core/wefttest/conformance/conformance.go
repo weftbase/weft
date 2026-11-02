@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core/mw"
+	"github.com/weftbase/weft/core/mw"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Caps declares what the adapter under test supports, so the suite

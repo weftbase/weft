@@ -1,7 +1,8 @@
 // Package version is weft's one version string: the framework
-// module's release tag, stamped into Studio's api/meta, the devtools
-// panel bundle, the otel resource, the runtime's registration and the
-// binaries' version output. It imports nothing but the standard
+// module's release tag, stamped into the otel resource and, by the
+// platform (weftbase, which embeds a weft version and reports it),
+// Studio's api/meta, the devtools panel bundle, the runtime's
+// registration and the weftbase binary's version output. It imports nothing but the standard
 // library, so any layer can carry it.
 package version
 
@@ -12,22 +13,22 @@ import (
 )
 
 // Version is the framework module's release tag. The release process
-// bumps it with the tag (and rebuilds studio/dist, whose panel bundle
-// is stamped from this line by studio/web/vite.panel.config.ts); it
-// moves for nothing else. studio's tests fail when studio.Version or
-// the embedded panel disagree with it. The second place to bump is
-// core/observe.go's own version literal (the weft.version every run
+// bumps it with the tag; it moves for nothing else. weftbase reads this
+// line for its panel bundle's stamp (its studio/web/scripts/
+// weft-version.ts, through `go list -m`) and its tests fail when its
+// Studio or embedded panel disagree with the weft it builds against.
+// The second place to bump is core/observe.go's own version literal (the weft.version every run
 // stamps; core imports nothing of this module), which
 // otel/hardening_test.go pins against this one.
 const Version = "v0.20.3"
 
 // modulePath is the framework module, as build info names it.
-const modulePath = "github.com/weftgo/weft"
+const modulePath = "github.com/weftbase/weft"
 
 // Runtime reports the version of the framework module this binary was
 // built from, read from [debug.ReadBuildInfo]: the main module's
 // version when the binary is weft's own, else the version of the
-// github.com/weftgo/weft dependency (its replacement's, when replaced
+// github.com/weftbase/weft dependency (its replacement's, when replaced
 // by another version). Where the build info has no version — inside
 // the workspace or a test, where it reads "(devel)", or a replacement
 // by a local directory — it returns [Version], the tag the source

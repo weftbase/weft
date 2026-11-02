@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // Page through every session with the keyset cursor: hand List the

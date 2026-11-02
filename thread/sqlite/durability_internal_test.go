@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread"
 )
 
 // synchronousLevel reads the working connection's synchronous pragma:

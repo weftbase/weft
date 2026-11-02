@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/backend"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/backend"
 )
 
 // Resolve is the one reading of the open vocabulary: the defaults,

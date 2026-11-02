@@ -20,8 +20,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // A PII scrubber sits on the tool seam and masks what the model — and

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // clearEnvDestinations blanks every variable envDestinations reads, so a
@@ -67,7 +67,7 @@ func TestEnvHTTPEndpointIsPlaintextOptIn(t *testing.T) {
 
 // The opt-in is the environment variable's alone: a code-configured
 // OTLP("http://non-loopback") without Insecure() is still refused.
-// (WEFT_STUDIO_URL's own guard is weft/exporter's.)
+// (WEFTBASE_URL's own guard is weftbase/exporter's.)
 func TestPlaintextGuardStaysForCode(t *testing.T) {
 	clearEnvDestinations(t)
 	_, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0), OTLP("http://otel-collector:4318"))

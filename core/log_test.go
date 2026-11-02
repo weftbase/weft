@@ -16,8 +16,8 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // capHandler records every Debug record a run emits, at the level it is

@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // The committed weft.json is the generated view of this agent. A change

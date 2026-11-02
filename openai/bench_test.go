@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // benchTool has a mid-sized schema (ten properties, one nested object,

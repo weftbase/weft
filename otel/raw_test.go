@@ -17,8 +17,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -69,7 +69,7 @@ func rawThrough(t *testing.T, p *Pipeline) (bool, string) {
 func devEnv(t *testing.T, env map[string]string) {
 	prev := envGetenv
 	envGetenv = func(k string) string {
-		if k == "WEFT_DISCOVERY" {
+		if k == "WEFTBASE_DISCOVERY" {
 			return "off"
 		}
 		return env[k]
@@ -345,7 +345,7 @@ func TestRawBodiesSplitWired(t *testing.T) {
 
 // End to end under dev: a Sink receives the raw record, a content-on
 // Exporters destination beside it receives none (counted as filtered),
-// and the record shows on the Sink's side only. (weft/exporter pins the
+// and the record shows on the Sink's side only. (weftbase/exporter pins the
 // store's reading of it.)
 func TestRawBodiesNeverToThirdParty(t *testing.T) {
 	devEnv(t, map[string]string{"WEFT_ENV": "dev"})

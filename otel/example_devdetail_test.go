@@ -6,10 +6,10 @@ import (
 	"log"
 	"strings"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/mw"
-	"github.com/weftgo/weft/otel"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/mw"
+	"github.com/weftbase/weft/otel"
+	"github.com/weftbase/weft/wefttest"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 

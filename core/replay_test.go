@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // ReplayPolicy pins WEFT-PLAYGROUND.md §6 rule 3's core half: the class

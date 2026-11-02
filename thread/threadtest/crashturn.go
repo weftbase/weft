@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread"
 )
 
 // The mid-turn crash harness (ADR 0011 §7): a child process

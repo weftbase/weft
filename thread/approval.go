@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Outcome is a decision's kind (ADR 0021 §1): approve (run the call
@@ -1724,7 +1724,7 @@ func decisionActors(d ApprovalDecisionEntry, ds []ApprovalDecisionEntry, quorum 
 //
 // onBehalf, when not empty, is the approval class the layer that
 // decided through this session's own door named for its approvals
-// (WithApprovedBy: weft/runtime's "runtime"): an approval the
+// (WithApprovedBy: weftbase/runtime's "runtime"): an approval the
 // door would report as user's reports as onBehalf instead — reporting
 // only. Callers hold s.mu.
 func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) []core.RunOption {

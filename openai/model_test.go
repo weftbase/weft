@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 func testTool() *core.ToolDef {

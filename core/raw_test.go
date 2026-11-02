@@ -15,9 +15,9 @@ import (
 
 	"go.opentelemetry.io/otel/log"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 type rawSide struct {

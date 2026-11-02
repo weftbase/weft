@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -251,7 +251,7 @@ func TestHeartbeatCarriesDestinationDrops(t *testing.T) {
 // emitting goroutine — no queue — so a storm costs it time, never
 // records: every event the run reports emitted (the root span's
 // weft.run.events) reaches the Sink, and nothing is counted lost. The
-// store-side form (obsdb's EventCount) is weft/exporter's.
+// store-side form (obsdb's EventCount) is weftbase/exporter's.
 func TestSinkFloodLosesNothing(t *testing.T) {
 	sink := newMemSink()
 	p, err := Start(testCtx(t), NoGlobal(), NoEnv(), Heartbeat(0), sink.option())
@@ -401,7 +401,7 @@ func TestBlockingDevGateLocalAndBoth(t *testing.T) {
 // exporter loses no durable record (deltas are still shed).
 func TestBlockingIsDevOnly(t *testing.T) {
 	logBuf := captureSlogSafe(t)
-	env := map[string]string{"WEFT_DISCOVERY": "off"}
+	env := map[string]string{"WEFTBASE_DISCOVERY": "off"}
 	prev := envGetenv
 	envGetenv = func(k string) string { return env[k] }
 	t.Cleanup(func() { envGetenv = prev })

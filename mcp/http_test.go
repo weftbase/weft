@@ -11,7 +11,7 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // U23.2-fix2: over streamable HTTP the go-sdk wraps its own transport

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core/internal/jsonconflict"
+	"github.com/weftbase/weft/core/internal/jsonconflict"
 )
 
 // clashing redeclares the JSON name "name" that jsonconflict.Base

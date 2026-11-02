@@ -1,7 +1,7 @@
 // Package facadegen writes a facade package: one that re-exports
 // another package's whole exported API under a new import path, so
-// github.com/weftgo/weft (the framework) offers the loop that
-// github.com/weftgo/weft/core (the slim module) implements, under the
+// github.com/weftbase/weft (the framework) offers the loop that
+// github.com/weftbase/weft/core (the slim module) implements, under the
 // same names. Types become aliases, constants and variables become
 // re-declarations bound to the originals, and functions become
 // one-line wrappers — a wrapper rather than a func variable so the
@@ -40,7 +40,7 @@ type Options struct {
 	DstPkg string
 	// Rewrite maps an import path the source's signatures use to the
 	// path the facade should name instead — the layers' facades name
-	// github.com/weftgo/weft where the source names its core, so the
+	// github.com/weftbase/weft where the source names its core, so the
 	// documented signatures read weft.Model, not core.Model. The local
 	// name is the rewritten path's last element.
 	Rewrite map[string]string

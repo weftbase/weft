@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/mw"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/mw"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // Retry sits above the vendor SDK's transport retries: it retries the

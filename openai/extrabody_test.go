@@ -10,7 +10,7 @@ import (
 
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // captureServer serves a recorded SSE fixture and captures the request

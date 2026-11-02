@@ -14,8 +14,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/wefttest"
 )
 
 type RefundInput struct {

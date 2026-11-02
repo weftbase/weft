@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // ErrRetryAfterTooLong is wrapped around a provider error whose

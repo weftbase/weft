@@ -24,8 +24,8 @@ package backend
 import (
 	"log/slog"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/internal/opencfg"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/internal/opencfg"
 )
 
 // Config is the resolved configuration of an open: the defaults with

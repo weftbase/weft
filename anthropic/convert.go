@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/adapterkit"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/internal/adapterkit"
 )
 
 // foldParams applies the request's sampling overrides over the

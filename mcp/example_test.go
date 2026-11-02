@@ -8,9 +8,9 @@ import (
 	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/mcp"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/mcp"
+	"github.com/weftbase/weft/wefttest"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/embedded"
 )

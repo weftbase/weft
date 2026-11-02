@@ -121,9 +121,9 @@ git -C "$tmp/tree" checkout -- thread/session.go
 echo "selftest 7/8: a root that needs an untagged core change loads through the workspace, and says so"
 # The throwaway tree must resolve core from its published requirements,
 # as a consumer would: drop any development replace first.
-(cd "$tmp/tree" && go mod edit -dropreplace=github.com/weftgo/weft/core)
+(cd "$tmp/tree" && go mod edit -dropreplace=github.com/weftbase/weft/core)
 printf 'package core\n\n// SelftestOnly exists only in the selftest tree.\nfunc SelftestOnly() {}\n' > "$tmp/tree/core/zz_selftest.go"
-printf 'package weft\n\nimport "github.com/weftgo/weft/core"\n\nvar _ = core.SelftestOnly\n' > "$tmp/tree/zz_selftest.go"
+printf 'package weft\n\nimport "github.com/weftbase/weft/core"\n\nvar _ = core.SelftestOnly\n' > "$tmp/tree/zz_selftest.go"
 out="$(run_gate "$base")" || {
   echo "FAIL: a tree that builds in the workspace failed the gate:" >&2
   echo "$out" >&2

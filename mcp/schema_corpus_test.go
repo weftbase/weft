@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The 7.1 corpus: real tool input struct shapes — one per row of the

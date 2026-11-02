@@ -7,7 +7,7 @@
 // into the root's public API — THE-END-GOAL principle 3 names
 // internal/ as the tool that keeps the guaranteed surface small, and
 // Go's path-based internal rule lets
-// github.com/weftgo/weft/{openai,anthropic,google} and weft/mw import
+// github.com/weftbase/weft/{openai,anthropic,google} and weft/mw import
 // the package while third-party adapters cannot. Helpers that mention
 // an SDK type (the stream readers) stay per-adapter by design
 // (ADR 0013).
@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
 )
 
 // SchemaMap renders a core.Schema as the plain JSON map the vendors'

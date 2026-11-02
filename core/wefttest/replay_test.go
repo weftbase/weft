@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // replayEcho is the deterministic tool the replay tests' agents use.

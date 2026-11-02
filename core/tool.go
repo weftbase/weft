@@ -795,7 +795,7 @@ func withCall(ctx context.Context, c Call) context.Context {
 
 // callerSource returns the file and line of the nearest frame above the
 // function that called it, skipping the framework facade
-// (github.com/weftgo/weft): its one-line wrappers forward here, and a
+// (github.com/weftbase/weft): its one-line wrappers forward here, and a
 // manifest that named facade.go for every tool would say nothing.
 func callerSource() (file string, line int, function string) {
 	var pcs [16]uintptr
@@ -803,7 +803,7 @@ func callerSource() (file string, line int, function string) {
 	frames := runtime.CallersFrames(pcs[:n])
 	for {
 		f, more := frames.Next()
-		if !strings.HasPrefix(f.Function, "github.com/weftgo/weft.") {
+		if !strings.HasPrefix(f.Function, "github.com/weftbase/weft.") {
 			return f.File, f.Line, f.Function
 		}
 		if !more {

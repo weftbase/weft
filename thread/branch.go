@@ -6,7 +6,7 @@ import (
 	"maps"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // BranchOption configures one Branch call — the per-call layer over

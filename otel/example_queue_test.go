@@ -11,9 +11,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/otel"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/otel"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // QueueSize sizes one destination's batch queue — here a pair of the

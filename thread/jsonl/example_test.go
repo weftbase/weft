@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/jsonl"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/jsonl"
 )
 
 // Open a session directory, write one turn's worth of entries, read

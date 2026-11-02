@@ -41,7 +41,7 @@ import (
 // CHANGELOG's unreleased heading, whichever speaks, so it cannot go
 // stale again (it sat at v0.3.6 through the v0.5.0 release once).
 const (
-	instrumentationName = "github.com/weftgo/weft/core"
+	instrumentationName = "github.com/weftbase/weft/core"
 	version             = "v0.20.3"
 )
 

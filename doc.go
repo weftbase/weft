@@ -4,24 +4,25 @@
 // configuration.
 //
 // This package is the framework's front door: it re-exports the agent
-// loop that github.com/weftgo/weft/core implements — tools from plain
+// loop that github.com/weftbase/weft/core implements — tools from plain
 // Go functions, parallel tool calls with defined failure semantics,
 // typed streaming events, structured output, approvals, steering,
 // subagents — so one import gives the loop and one module gives the
 // whole framework:
 //
-//	github.com/weftgo/weft            the loop (this package)
-//	github.com/weftgo/weft/openai     OpenAI and OpenAI-compatible servers
-//	github.com/weftgo/weft/anthropic  Anthropic
-//	github.com/weftgo/weft/google     Google Gemini
-//	github.com/weftgo/weft/mcp        MCP both ways
-//	github.com/weftgo/weft/mw         reference middleware
-//	github.com/weftgo/weft/wefttest   the scripted model for offline tests
-//	github.com/weftgo/weft/thread     durable sessions
-//	github.com/weftgo/weft/otel       recording over OpenTelemetry
-//	github.com/weftgo/weft/obsdb      the store the records land in
-//	github.com/weftgo/weft/studio     the Inspector, devtools panel, playground
-//	github.com/weftgo/weft/runtime    the playground's in-app side
+//	github.com/weftbase/weft            the loop (this package)
+//	github.com/weftbase/weft/openai     OpenAI and OpenAI-compatible servers
+//	github.com/weftbase/weft/anthropic  Anthropic
+//	github.com/weftbase/weft/google     Google Gemini
+//	github.com/weftbase/weft/mcp        MCP both ways
+//	github.com/weftbase/weft/mw         reference middleware
+//	github.com/weftbase/weft/wefttest   the scripted model for offline tests
+//	github.com/weftbase/weft/thread     durable sessions
+//	github.com/weftbase/weft/otel       recording over OpenTelemetry
+//
+// The platform the records can land in — the store, Studio, the
+// devtools panel, the playground and the weftbase CLI — is a module of
+// its own, github.com/weftbase/weftbase, which imports this one.
 //
 // A tool is a plain function; its JSON Schema is derived from the input
 // struct. An agent is a value built once with options and run many times:
@@ -40,5 +41,5 @@
 // same name in core, so values flow between the two without
 // conversion; the godoc of each is the authority. A service that wants
 // the loop alone, with the OpenTelemetry API as its only dependency,
-// imports github.com/weftgo/weft/core instead and writes core.New.
+// imports github.com/weftbase/weft/core instead and writes core.New.
 package weft

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/wefttest"
 	"go.opentelemetry.io/otel/attribute"
 	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/log"
@@ -106,7 +106,7 @@ func sdkRecordWith(t *testing.T, eventName, body string, attrs ...attribute.KeyV
 		r.SetBody(attribute.StringValue(body))
 	}
 	r.AddAttributes(attrs...)
-	provider.Logger("github.com/weftgo/weft/core").Emit(context.Background(), r)
+	provider.Logger("github.com/weftbase/weft/core").Emit(context.Background(), r)
 	if len(capture.records) == 0 {
 		t.Fatal("no record captured")
 	}

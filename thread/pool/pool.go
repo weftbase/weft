@@ -69,9 +69,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/internal/carry"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/internal/carry"
 )
 
 // ErrClosed is returned for work handed to a pool whose Close has

@@ -22,8 +22,8 @@ import (
 
 	antsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/otel"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
 

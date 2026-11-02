@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/version"
+	"github.com/weftbase/weft/version"
 	"go.opentelemetry.io/otel/attribute"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 )
@@ -175,10 +175,10 @@ func TestDestOptions(t *testing.T) {
 // Environment destinations (S2.3): the standard variables configure an
 // extra destination; NoEnv turns them off; two destinations on one URL
 // de-duplicate with the explicit one winning. weft reads no variable of
-// a viewer's (WEFT_STUDIO_URL is the platform's).
+// a viewer's (WEFTBASE_URL is the platform's).
 func TestEnvDestinations(t *testing.T) {
-	t.Setenv("WEFT_STUDIO_URL", "https://studio.example")
-	t.Setenv("WEFT_STUDIO_TOKEN", "tok")
+	t.Setenv("WEFTBASE_URL", "https://studio.example")
+	t.Setenv("WEFTBASE_TOKEN", "tok")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "k=v,a=b")
 	env := envDestinations(envGetenv)

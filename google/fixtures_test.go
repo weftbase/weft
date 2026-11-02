@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest/conformance"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest/conformance"
 	"google.golang.org/genai"
 )
 

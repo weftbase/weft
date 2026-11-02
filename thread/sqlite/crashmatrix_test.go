@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/sqlite"
-	"github.com/weftgo/weft/thread/threadtest"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/sqlite"
+	"github.com/weftbase/weft/thread/threadtest"
 )
 
 // TestCrashMatrix walks every write point: the child process dies at

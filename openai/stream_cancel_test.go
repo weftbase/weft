@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // A consumer that cancels mid-stream but keeps consuming must get the

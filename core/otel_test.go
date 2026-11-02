@@ -25,8 +25,8 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // recProvider records every span started through it: name, kind,
@@ -1058,7 +1058,7 @@ func (m infoHidingModel) Stream(ctx context.Context, req core.ModelRequest) iter
 }
 
 // TestManifestHashAfterTheModelChain: the run's weft.manifest.hash is
-// sha256 of Manifest(agent) — what weft/runtime registers — even when a
+// sha256 of Manifest(agent) — what weftbase/runtime registers — even when a
 // WrapModel middleware does not forward Info (U18.1-fix item 3): the
 // hash is computed after the chain is built, so both read one model.
 func TestManifestHashAfterTheModelChain(t *testing.T) {

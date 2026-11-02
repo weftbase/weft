@@ -34,9 +34,9 @@ import (
 	traceembedded "go.opentelemetry.io/otel/trace/embedded"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // turnModel is a bare-bones core.Model playing raw event slices, for
@@ -1640,7 +1640,7 @@ func TestManifestPinsFormat(t *testing.T) {
               "order_id"
             ]
           },
-          "source": "github.com/weftgo/weft/core_test/contract_test.go:L"
+          "source": "github.com/weftbase/weft/core_test/contract_test.go:L"
         }
       ]
     }
@@ -1714,7 +1714,7 @@ func TestManifestSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"source": "github.com/weftgo/weft/core_test/contract_test.go:`) {
+	if !strings.Contains(string(b), `"source": "github.com/weftbase/weft/core_test/contract_test.go:`) {
 		t.Errorf("source is not the import-path file:line of this test file:\n%s", b)
 	}
 }
@@ -6300,7 +6300,7 @@ func TestApproveByIsReportingOnly(t *testing.T) {
 // ---- Observability providers never change a run (ADR 0016, P9) ----
 
 // coreScope is the instrumentation scope core asks its providers for.
-const coreScope = "github.com/weftgo/weft/core"
+const coreScope = "github.com/weftbase/weft/core"
 
 // panicTP / panicLP are providers broken on core's scope alone. mode:
 // "provider" — Tracer/Logger themselves panic (at New); "calls" — Start,

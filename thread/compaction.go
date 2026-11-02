@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The compaction defaults (ADR 0020 §2): zero configuration works once

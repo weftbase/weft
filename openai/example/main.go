@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/openai"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/openai"
 )
 
 func main() {

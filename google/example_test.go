@@ -3,8 +3,8 @@ package google_test
 import (
 	"context"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/google"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/google"
 )
 
 // Constructing a model performs no I/O; credentials ($GEMINI_API_KEY /

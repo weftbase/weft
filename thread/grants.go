@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // A Grant approves — or, with Deny, refuses — future calls without

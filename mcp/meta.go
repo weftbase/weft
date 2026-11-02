@@ -8,7 +8,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The caller link over the wire (U33.1, UX-S2-08's remainder; U33.1-fix):

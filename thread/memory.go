@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/thread/internal/rules"
+	"github.com/weftbase/weft/thread/internal/rules"
 )
 
 // memStorage is the in-process Storage behind Memory: a map of

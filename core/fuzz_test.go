@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 var fuzzTool = core.Tool("fuzz", "", func(_ context.Context, in struct {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/internal/contentflag"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/internal/contentflag"
 )
 
 // Allow gates every tool call on a predicate over its core.Call. A

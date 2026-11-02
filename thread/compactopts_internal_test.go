@@ -5,7 +5,7 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // unhashableModel is a Model whose dynamic type cannot sit in a map

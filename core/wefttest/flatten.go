@@ -1,6 +1,6 @@
 package wefttest
 
-import "github.com/weftgo/weft/core"
+import "github.com/weftbase/weft/core"
 
 // Flatten returns evs with every Nested event replaced by its inner
 // event, recursively — the child's events as the child emitted them —

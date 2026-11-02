@@ -1,5 +1,5 @@
 // Package core is the agent loop: the slim module at the bottom of the
-// weft framework. It is what github.com/weftgo/weft re-exports under the
+// weft framework. It is what github.com/weftbase/weft re-exports under the
 // same names; import this path instead when a service wants the loop
 // alone — its only dependency is the OpenTelemetry API — and the
 // framework's sessions, recording and Studio are not needed.
@@ -35,7 +35,7 @@
 // The model seam (Model) is streaming-first; provider adapters translate
 // vendor wire formats into weft's events. The core/wefttest package
 // provides a scriptable Model for offline tests; core/mw the reference
-// middleware. The framework module (github.com/weftgo/weft) adds the
+// middleware. The framework module (github.com/weftbase/weft) adds the
 // provider adapters, MCP, durable sessions (thread), OpenTelemetry
 // recording (otel, obsdb) and Studio.
 package core

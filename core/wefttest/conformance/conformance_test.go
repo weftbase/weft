@@ -6,9 +6,9 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/core/wefttest/conformance"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/core/wefttest/conformance"
 )
 
 // scriptedFor maps each case to a wefttest script or inline model. The

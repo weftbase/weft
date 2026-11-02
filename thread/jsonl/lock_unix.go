@@ -8,7 +8,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // lockSupported reports that this platform has the advisory lock the

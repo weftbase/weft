@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/thread"
 )
 
 // writer is a lease holder of the table's own: a pointer nobody else

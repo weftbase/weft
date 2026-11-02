@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // Entry is the sealed set of session entry kinds (ADR 0011 §2): a

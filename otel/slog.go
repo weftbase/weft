@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
@@ -29,7 +29,7 @@ import (
 // bridged line by (the record carries no weft.record: it is an app log,
 // stored with the others — other_logs on SQLite, otel_logs on
 // ClickHouse).
-const bridgeScope = "github.com/weftgo/weft/otel/slog"
+const bridgeScope = "github.com/weftbase/weft/otel/slog"
 
 // attrLogsBridged is weft.logs.bridged: on the heartbeat, the count of
 // lines the pipeline's bridge emitted so far; on a run's invoke_agent

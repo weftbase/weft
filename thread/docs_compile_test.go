@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/jsonl"
-	"github.com/weftgo/weft/thread/pool"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/jsonl"
+	"github.com/weftbase/weft/thread/pool"
 )
 
 // The README's Sessions section and AGENTS.md block 8, copied line for

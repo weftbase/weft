@@ -20,8 +20,8 @@ import (
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/embedded"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // recLogProvider records every record emitted through it and every
@@ -170,8 +170,8 @@ func TestEventAndDeltaRecords(t *testing.T) {
 	if len(lp.loggers) == 0 {
 		t.Fatal("no logger requested from the provider")
 	}
-	if lp.loggers[0].name != "github.com/weftgo/weft/core" {
-		t.Errorf("logger name = %q, want github.com/weftgo/weft", lp.loggers[0].name)
+	if lp.loggers[0].name != "github.com/weftbase/weft/core" {
+		t.Errorf("logger name = %q, want github.com/weftbase/weft", lp.loggers[0].name)
 	}
 	if lp.loggers[0].version == "" {
 		t.Error("logger instrumentation version is empty, want the core version")

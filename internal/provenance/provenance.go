@@ -2,12 +2,12 @@
 // decision is recorded under, the class its resumed calls' approvals
 // are reported as (weft.tool.approved_by, record contract §3) when a
 // layer above thread decides through the session's own door on
-// someone's behalf — weft/runtime's playground deciding a fork's
+// someone's behalf — weftbase/runtime's playground deciding a fork's
 // parked turn reads "runtime", as its ephemeral resumes do, never the
 // Decide door's "user".
 //
 // thread.WithApprovedBy is its public door: layers outside the
-// thread package (weft/runtime, a platform) set the class through it.
+// thread package (weftbase/runtime, a platform) set the class through it.
 //
 // It is reporting only: the decision, its validation and its record
 // are the session's, unchanged. thread reads the class from the

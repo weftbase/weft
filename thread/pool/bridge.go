@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread"
 )
 
 // A delegate is one unsettled delegation's state in a live pool: its

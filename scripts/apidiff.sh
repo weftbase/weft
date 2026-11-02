@@ -10,7 +10,7 @@
 #            additive and source-compatible).
 #   report   incompatible changes are printed, never fatal: the root
 #            module (newest v* tag) holds the pre-freeze layers —
-#            thread, obsdb, otel, runtime, studio (ADR 0024's programme
+#            thread and otel (ADR 0024's programme
 #            allows breaking them) — beside the adapters and the
 #            generated facades. The report is what the release reads:
 #            an incompatible line means the next tag is a minor bump

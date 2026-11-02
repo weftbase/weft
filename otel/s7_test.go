@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
@@ -20,7 +20,7 @@ import (
 // once — the Sink (first-party) has content, the stripped one has none,
 // both have every durable record (the clone rule: no chain sees
 // another's edits). The store-side form of the gate (the transcript
-// rebuilt byte-for-byte from obsdb) is weft/exporter's.
+// rebuilt byte-for-byte from obsdb) is weftbase/exporter's.
 func TestS7SinkPlusMemoryPlusStripped(t *testing.T) {
 	sink := newMemSink()
 	stripped := newMemExporter()

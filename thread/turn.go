@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/provenance"
-	"github.com/weftgo/weft/thread/internal/carry"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/internal/provenance"
+	"github.com/weftbase/weft/thread/internal/carry"
 )
 
 // Policy is what a Send does when the session is already running a

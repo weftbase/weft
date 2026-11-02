@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // keptPoll is a poller's turn: the same poll_job call at every step.

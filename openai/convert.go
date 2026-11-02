@@ -8,8 +8,8 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/adapterkit"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/internal/adapterkit"
 )
 
 // params builds the Chat Completions request for one step. The

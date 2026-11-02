@@ -10,8 +10,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/wefttest"
 )
 
 func attrOf(s sdktrace.ReadOnlySpan, k string) string {

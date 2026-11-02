@@ -7,8 +7,8 @@ import (
 	"iter"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/adapterkit"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/internal/adapterkit"
 	"google.golang.org/genai"
 )
 

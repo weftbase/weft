@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/thread/internal/carry"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread/internal/carry"
 )
 
 // queuedSteer is one accepted steer waiting for the running turn's
@@ -141,7 +141,7 @@ func (s *Session) steerSource(_ context.Context, at core.SteerPoint) []core.Mess
 // multi-message Steer whose later append fails returns that error with
 // the earlier messages already accepted (each one durable on its own).
 // It is the verb for a caller that acts on a turn it does not own — the
-// devtools debugger through weft/runtime's Sessions.
+// devtools debugger through weftbase/runtime's Sessions.
 func (s *Session) Steer(ctx context.Context, runID string, msgs ...core.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err

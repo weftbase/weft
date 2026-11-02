@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // ErrNoFixture is the stream error Replay yields for a request no

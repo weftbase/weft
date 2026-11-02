@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/weftgo/weft/core"
+	"github.com/weftbase/weft/core"
 )
 
 // The empty-content rules of ADR 0013's 2026-09-14 amendment, ported

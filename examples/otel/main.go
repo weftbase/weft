@@ -7,6 +7,12 @@
 //
 // The agent here is scripted (wefttest), so the demo runs offline; swap
 // the model for a provider adapter and nothing else changes.
+//
+// To see the runs in a viewer instead of on stdout, swap the stdout
+// exporter for an OTLP/HTTP one (otlptracehttp) and run weftbase's
+// local Studio beside it (github.com/weftbase/weftbase):
+//
+//	weftbase dev    # then OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:7331
 package main
 
 import (
@@ -17,8 +23,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/wefttest"
 )
 
 func main() {

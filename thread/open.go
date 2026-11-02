@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/weftgo/weft/thread/internal/opencfg"
+	"github.com/weftbase/weft/thread/internal/opencfg"
 )
 
 // OpenOption configures a Storage backend at open, one value per

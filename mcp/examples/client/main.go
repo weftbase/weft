@@ -23,9 +23,9 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/mcp"
-	"github.com/weftgo/weft/wefttest"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/mcp"
+	"github.com/weftbase/weft/wefttest"
 )
 
 // remote builds one in-memory MCP server standing in for a real one.

@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // A tool is a plain function; the input schema is derived from the struct.
@@ -1217,7 +1217,7 @@ func ExampleAgent_ToolChoice() {
 
 // WithMetadata carries metadata on a context, for every run started
 // under it — what net/http middleware uses to stamp a request's facts
-// (weft/scope's weft.page_url) on the runs its handler starts, without
+// (weftbase/scope's weft.page_url) on the runs its handler starts, without
 // the handler passing a RunOption. A run's own Metadata wins.
 func ExampleWithMetadata() {
 	agt := core.New(wefttest.Script(wefttest.Say("ok")),

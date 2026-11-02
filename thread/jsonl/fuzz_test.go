@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weftgo/weft/thread"
-	"github.com/weftgo/weft/thread/jsonl"
+	"github.com/weftbase/weft/thread"
+	"github.com/weftbase/weft/thread/jsonl"
 )
 
 // FuzzLoad: Load over arbitrary bytes never panics and

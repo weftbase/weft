@@ -1,9 +1,0 @@
-{
-  "error": {
-    "code": "conflict",
-    "message": "run otel-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7 was derived from stock spans: no messages record holds step 1's"
-  },
-  "badge": "derived",
-  "reason": "derived from spans · no events",
-  "fix": "stock OTel GenAI spans carry no weft events or request records: set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true for the messages and tool arguments (Studio reads them from the span attributes) and gen_ai.conversation.id on the invoke_agent span for a session; weft's own records need a weft SDK (Go today)"
-}

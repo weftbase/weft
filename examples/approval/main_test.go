@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/weftgo/weft"
+	"github.com/weftbase/weft"
 )
 
 func TestApprovalRoundTrip(t *testing.T) {

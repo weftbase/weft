@@ -4,5 +4,13 @@ use (
 	.
 	./core
 	./examples/otel
-	./examples/studio-local
+)
+
+// The unreleased module path (github.com/weftbase/weft) has no tag yet:
+// the go.mod files require it at the placeholder pseudo-version, and
+// these lines resolve that version to the checkout. Remove them once
+// the two-phase release has tagged core and the root.
+replace (
+	github.com/weftbase/weft v0.0.0-00010101000000-000000000000 => ./
+	github.com/weftbase/weft/core v0.0.0-00010101000000-000000000000 => ./core
 )

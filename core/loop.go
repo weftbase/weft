@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weftgo/weft/core/internal/contentflag"
+	"github.com/weftbase/weft/core/internal/contentflag"
 
 	"go.opentelemetry.io/otel/attribute"
 )

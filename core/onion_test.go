@@ -28,9 +28,9 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/core/mw"
-	"github.com/weftgo/weft/core/wefttest"
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/mw"
+	"github.com/weftbase/weft/core/wefttest"
 )
 
 // detailLP is a LoggerProvider carrying the development detail marker
@@ -703,11 +703,11 @@ func TestSourceRelMachineIndependent(t *testing.T) {
 	// One form whatever the machine (U23.2-fix): the same function
 	// renders identically with its go.mod reachable (the build host)
 	// and without (a deploy host where the sources are not).
-	const fn = "github.com/weftgo/weft/core_test.TestSourceRelMachineIndependent"
+	const fn = "github.com/weftbase/weft/core_test.TestSourceRelMachineIndependent"
 	here := core.SourceRel(filepath.Join(mustWd(t), "onion_test.go"), fn)
 	there := core.SourceRel("/deploy/host/somewhere/onion_test.go", fn)
-	if here != there || here != "github.com/weftgo/weft/core_test/onion_test.go" {
-		t.Errorf("with a go.mod %q, without %q: want both github.com/weftgo/weft/core_test/onion_test.go", here, there)
+	if here != there || here != "github.com/weftbase/weft/core_test/onion_test.go" {
+		t.Errorf("with a go.mod %q, without %q: want both github.com/weftbase/weft/core_test/onion_test.go", here, there)
 	}
 	if got := core.SourceRel(filepath.Join(mustWd(t), "onion_test.go"), ""); got != "onion_test.go" {
 		t.Errorf("in-module source, function unknown = %q, want the base name", got)

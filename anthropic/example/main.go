@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/weftgo/weft"
-	"github.com/weftgo/weft/anthropic"
+	"github.com/weftbase/weft"
+	"github.com/weftbase/weft/anthropic"
 )
 
 func main() {
