@@ -1013,7 +1013,7 @@ func (s *Session) runResume(item workItem) {
 		}
 		opts = append([]core.RunOption(nil), s.await.opts...)
 		// The approval class a layer deciding on someone's behalf named
-		// is the arming call's alone (internal/provenance): one the
+		// is the arming call's alone (WithApprovedBy): one the
 		// parked turn's context carried from an earlier resume is shadowed.
 		ctx = provenance.With(s.resumeCtxLocked(ctx), provenance.From(ctx))
 	})

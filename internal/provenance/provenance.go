@@ -6,6 +6,9 @@
 // parked turn reads "runtime", as its ephemeral resumes do, never the
 // Decide door's "user".
 //
+// thread.WithApprovedBy is its public door: layers outside the
+// thread package (weft/runtime, a platform) set the class through it.
+//
 // It is reporting only: the decision, its validation and its record
 // are the session's, unchanged. thread reads the class from the
 // context that armed a resume (Session.Decide's, Resume's), never from

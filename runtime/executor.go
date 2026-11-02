@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/weftgo/weft/core"
-	"github.com/weftgo/weft/internal/provenance"
 	"github.com/weftgo/weft/thread"
 )
 
@@ -1286,7 +1285,7 @@ func (l *link) resume(ctx context.Context, pr *parkedRun, parkedRunID, runID, co
 		// as the ephemeral path's core.ApproveBy does: the resumed call's
 		// execute_tool span reads weft.tool.approved_by "runtime", not
 		// the session door's "user" (record contract §3).
-		dctx := provenance.With(ctx, approvedByRuntime)
+		dctx := thread.WithApprovedBy(ctx, approvedByRuntime)
 		turn, err := pr.sess.Decide(dctx, ds...)
 		if err == nil && turn == nil {
 			turn, err = pr.sess.Resume(dctx) // a session opened with AutoResume(false)

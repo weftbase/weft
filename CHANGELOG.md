@@ -6,6 +6,12 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+### Added
+
+- thread: `WithApprovedBy(ctx, class)` — the public way for a layer above `thread` (a platform's inbox, an integration, the devtools playground) to decide through `Session.Decide` on someone's behalf and have each approved call reported with `weft.tool.approved_by` set to that class instead of `user` (record contract §3). Reporting only; the decision, its validation and its record are unchanged. `weft/runtime` now uses it instead of the internal `provenance` package, which only `thread` imports — a step toward moving `runtime` out of the framework module.
+
 ## 0.20.3 — 2026-10-31
 
 ### Fixed

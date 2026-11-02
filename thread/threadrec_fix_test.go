@@ -23,7 +23,6 @@ import (
 
 	"github.com/weftgo/weft/core"
 	"github.com/weftgo/weft/core/wefttest"
-	"github.com/weftgo/weft/internal/provenance"
 	"github.com/weftgo/weft/thread"
 )
 
@@ -445,7 +444,7 @@ func TestResumedCallsNameTheirApproval(t *testing.T) {
 }
 
 // A decision recorded through Decide on another layer's behalf
-// (internal/provenance — weft/runtime's playground on a fork) resumes
+// (thread.WithApprovedBy — weft/runtime's playground on a fork) resumes
 // its approved call reported as that layer's class; the class is the
 // arming call's alone: the next boundary of the same session, decided
 // by a plain Decide, reads user again though its parked turn ran
@@ -469,7 +468,7 @@ func TestDecideOnBehalfNamesTheApproval(t *testing.T) {
 	}
 	recSendWait(t, s, "check the disk")
 	recWaitIdle(t, s)
-	if _, err := s.Decide(provenance.With(ctx, "runtime"), thread.Approve("c1")); err != nil {
+	if _, err := s.Decide(thread.WithApprovedBy(ctx, "runtime"), thread.Approve("c1")); err != nil {
 		t.Fatal(err)
 	}
 	recWaitIdle(t, s)

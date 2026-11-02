@@ -1724,7 +1724,7 @@ func decisionActors(d ApprovalDecisionEntry, ds []ApprovalDecisionEntry, quorum 
 //
 // onBehalf, when not empty, is the approval class the layer that
 // decided through this session's own door named for its approvals
-// (internal/provenance: weft/runtime's "runtime"): an approval the
+// (WithApprovedBy: weft/runtime's "runtime"): an approval the
 // door would report as user's reports as onBehalf instead — reporting
 // only. Callers hold s.mu.
 func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) []core.RunOption {
