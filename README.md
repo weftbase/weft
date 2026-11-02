@@ -328,10 +328,13 @@ model returned, because a log is the caller's
 
 `weft/otel` is the recorder ([ADR 0016](docs/adr/0016-observability.md)):
 `otel.Install(…)` sends every event, delta, transcript record and span
-as it happens — a crash loses nothing emitted — to any mix of
-destinations, each with its own content policy: `otel.OTLP`,
-`otel.Datadog`, `otel.Langfuse`, your own `otel.Exporters`, or a
-synchronous `otel.Sink`. It reads the standard `OTEL_*` variables only
+as it happens to any mix of destinations, each with its own content
+policy: `otel.OTLP`, `otel.Datadog`, `otel.Langfuse`, your own
+`otel.Exporters`, or a synchronous `otel.Sink`. Only a Sink is written
+before the emit returns — a crash loses nothing emitted to it; the
+others batch (a span within about 5 s, a record within 1 s by the
+SDK's defaults), so a crash can lose what is still queued, and the
+function `Install` returns flushes them on the way out. It reads the standard `OTEL_*` variables only
 and knows no viewer. The records' shape is
 [docs/record-contract.md](docs/record-contract.md).
 
