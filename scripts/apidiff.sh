@@ -118,6 +118,21 @@ if [ -z "$base" ]; then
   echo "apidiff: $mod has no $tagpat tag reachable from HEAD — the gate starts at the release after the module's first tag; skipping"
   exit 0
 fi
+
+# A base built under another module path is no base: the tags before
+# the weftbase split (≤ v0.20.3, core/v0.20.3) are
+# github.com/weftgo/weft, and against them every identifier differs by
+# its module path alone — apidiff would call all of it incompatible.
+# Until the first tag under the current path, nothing to diff against.
+modpath_of() { sed -n 's/^module[[:space:]]\{1,\}//p' | head -1 | tr -d '[:space:]"'; }
+gomod="$mod/go.mod"
+[ "$mod" = . ] && gomod=go.mod
+head_path="$(modpath_of < "$gomod")"
+base_path="$(git show "$base:$gomod" 2>/dev/null | modpath_of || true)"
+if [ "$base_path" != "$head_path" ]; then
+  echo "apidiff: $mod: the base $base is module ${base_path:-(no go.mod)}, not $head_path — no base under this module path yet; the gate starts at its first tag under $head_path; skipping"
+  exit 0
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

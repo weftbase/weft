@@ -48,12 +48,12 @@ mutate() {
   fi
 }
 
-echo "selftest 1/8: a clean core reads green"
+echo "selftest 1/9: a clean core reads green"
 out="$(run_gate "$base" core)"
 echo "$out" | tail -1
 echo "$out" | grep -q "no incompatible changes"
 
-echo "selftest 2/8: an incompatible core change fails the core gate"
+echo "selftest 2/9: an incompatible core change fails the core gate"
 mutate core/agent.go 's/func (a \*Agent) TapPanics()/func (a *Agent) TapPanicsRenamed()/'
 if out="$(run_gate "$base" core)"; then
   echo "FAIL: a renamed exported method did not fail the gate" >&2
@@ -66,7 +66,7 @@ echo "$out" | grep -q "INCOMPATIBLE" || {
 }
 git -C "$tmp/tree" checkout -- core/agent.go
 
-echo "selftest 3/8: a non-compiling core fails the core gate before apidiff"
+echo "selftest 3/9: a non-compiling core fails the core gate before apidiff"
 printf '\nfunc broken( {\n' >> "$tmp/tree/core/agent.go"
 if out="$(run_gate "$base" core)"; then
   echo "FAIL: a non-compiling tree read green" >&2
@@ -80,13 +80,13 @@ echo "$out" | grep -q "does not compile" || {
 }
 git -C "$tmp/tree" checkout -- core/agent.go
 
-echo "selftest 4/8: a clean root reads green"
+echo "selftest 4/9: a clean root reads green"
 out="$(run_gate "$base")"
 echo "$out" | tail -1
 echo "$out" | grep -q "no incompatible changes"
 
-echo "selftest 5/8: the root (reported) names an incompatible change without failing"
-mutate obsdb/hub.go 's/^func QueueSize(/func QueueSizeRenamed(/'
+echo "selftest 5/9: the root (reported) names an incompatible change without failing"
+mutate otel/options.go 's/^func QueueSize(/func QueueSizeRenamed(/'
 if ! out="$(run_gate "$base")"; then
   echo "FAIL: an incompatible change failed a report-only gate:" >&2
   echo "$out" >&2
@@ -102,9 +102,9 @@ if echo "$out" | grep -q "no incompatible changes"; then
   echo "$out" >&2
   exit 1
 fi
-git -C "$tmp/tree" checkout -- obsdb/hub.go
+git -C "$tmp/tree" checkout -- otel/options.go
 
-echo "selftest 6/8: a non-compiling root fails the root gate even though it only reports"
+echo "selftest 6/9: a non-compiling root fails the root gate even though it only reports"
 printf '\nfunc broken( {\n' >> "$tmp/tree/thread/session.go"
 if out="$(run_gate "$base")"; then
   echo "FAIL: a non-compiling root read green" >&2
@@ -118,7 +118,7 @@ echo "$out" | grep -q "does not compile" || {
 }
 git -C "$tmp/tree" checkout -- thread/session.go
 
-echo "selftest 7/8: a root that needs an untagged core change loads through the workspace, and says so"
+echo "selftest 7/9: a root that needs an untagged core change loads through the workspace, and says so"
 # The throwaway tree must resolve core from its published requirements,
 # as a consumer would: drop any development replace first.
 (cd "$tmp/tree" && go mod edit -dropreplace=github.com/weftbase/weft/core)
@@ -147,7 +147,7 @@ echo "$out" | grep -q "does not compile" || {
 rm -f "$tmp/tree/core/zz_selftest.go" "$tmp/tree/zz_selftest.go"
 git -C "$tmp/tree" checkout -- go.mod
 
-echo "selftest 8/8: a module without a policy is refused"
+echo "selftest 8/9: a module without a policy is refused"
 status=0
 out="$(run_gate "" no-such-module)" || status=$?
 if [ "$status" -ne 2 ]; then
@@ -156,4 +156,21 @@ if [ "$status" -ne 2 ]; then
   exit 1
 fi
 
-echo "apidiff selftest: all eight failure modes behave"
+echo "selftest 9/9: a base tagged under another module path is no base (skipped, not diffed)"
+# The tags before the weftbase split are github.com/weftgo/weft: a
+# base whose go.mod names another module would read every identifier
+# as incompatible.
+sed 's#^module .*#module example.com/renamed/core#' "$tmp/tree/core/go.mod" > "$tmp/gomod" && cp "$tmp/gomod" "$tmp/tree/core/go.mod"
+out="$(run_gate "$base" core)" || {
+  echo "FAIL: a base under another module path failed the gate:" >&2
+  echo "$out" >&2
+  exit 1
+}
+echo "$out" | grep -q "no base under this module path yet" || {
+  echo "FAIL: a base under another module path was diffed:" >&2
+  echo "$out" >&2
+  exit 1
+}
+git -C "$tmp/tree" checkout -- core/go.mod
+
+echo "apidiff selftest: all nine failure modes behave"
