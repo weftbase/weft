@@ -192,22 +192,27 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 // 5. Describe the fleet: weft.Manifest(agents...) → weft.json (generated,
 //    committed, golden-gated; never read back).
 
-// 6. Record runs (package weft/otel — the store is gone, ADR 0024 step 5; the
-//    pipeline is the recorder now, block 9 has the full destination menu):
-//    defer otel.Install()()  // local sink ./.weft/weft.db, content on, no network —
+// 6. Record runs (package weft/exporter, the platform's destinations over
+//    weft/otel — the store is gone, ADR 0024 step 5; the pipeline is the
+//    recorder now, block 9 has the full destination menu):
+//    defer exporter.Install()()  // local sink ./.weft/weft.db, content on, no network —
 //    // every event, delta, transcript record and span leaves as it happens
 //    // (weft.heartbeat records — otel.Heartbeat(d), default 10 s — keep a quiet
 //    // run reading running); the durable run reads back through obsdb —
-//    // otel.LocalDB() — never through the process.
-//    // With WEFT_STUDIO_URL unset (and WEFT_DISCOVERY not "off") Install also reads
+//    // exporter.LocalDB() — never through the process.
+//    // weft/otel alone (otel.Install) reads only the OTEL_* variables and, with
+//    // nothing configured, records nothing (one INFO line).
+//    // With WEFT_STUDIO_URL unset (and WEFT_DISCOVERY not "off") exporter.Install also reads
 //    // the discovery file a running `weft studio`/`weft dev` wrote (./.weft, then
 //    // $XDG_RUNTIME_DIR/weft, then the user cache dir; internal/discovery): the app
 //    // exports to that Studio with no configuration, one INFO line names it. Trusted
 //    // only when its url is loopback, fresh (pid alive, < 24 h) and, on unix, 0600 and
-//    // this user's; else ignored at Debug. Explicit otel.Studio(...) or otel.Local(...) >
+//    // this user's; else ignored at Debug. Explicit exporter.Studio(...) or exporter.Local(...) >
 //    // WEFT_STUDIO_URL > the file: any of them switches the read off, as do
-//    // otel.NoDiscovery() (the file alone), WEFT_DISCOVERY=off and NoEnv(); NoGlobal()
-//    // does not. Local + a Studio: name both (README "When weft/otel reads the file").
+//    // exporter.NoDiscovery() (the file alone), WEFT_DISCOVERY=off and otel.NoEnv();
+//    // NoGlobal() does not. Local + a Studio: name both (README "When weft/exporter
+//    // reads the file"). Layering: framework packages never import exporter, obsdb,
+//    // studio, runtime or scope — `make layering` (scripts/check-layering.sh) fails if one does.
 //    weft.Metadata(map[string]string{"cwd": wd})  // run option: caller pairs on every record/span of the run
 //    // (inherited by subagents; thread sessions stamp weft.session.id,
 //    // weft.public_id, weft.turn — block 8).
@@ -216,7 +221,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    OTLP ingest, live, the devtools panel, the playground): setup A,
 //    embedded beside the app (§10.1's five lines):
 //    mux.Handle("/studio/", http.StripPrefix("/studio",
-//        studio.Handler(studio.DB(otel.LocalDB()))))  // the pipeline's handle: history + live [D4]
+//        studio.Handler(studio.DB(exporter.LocalDB()))))  // the pipeline's handle: history + live [D4]
 //    // or studio.New(opts...) *Server with Handler()/Close()/Runtime()
 //    //    (the runtime link's server under Playground(true), else nil),
 //    //    options DB/Open/Base/Manifest/Title/Capabilities/Token/Live/NoIngest/
@@ -597,10 +602,12 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 // 9. Observability pipeline (package weft/otel; several destinations at once,
 //    each with its own content policy; defer on exit):
 //    defer otel.Install(
-//        otel.Local("weft.db"),                       // local sink: replay-grade, content on
-//        otel.Studio("https://studio.example", token,  // OTLP/HTTP, content on
-//            otel.QueueSize(16384), otel.Blocking()),   // per destination (U5): the batch queue (Studio 16,384, others 2,048;
-//                               // Local has none — synchronous); a full queue never blocks: it refuses deltas first (½ full),
+//        otel.Sink("store", open),                    // synchronous, first-party (content on): open returns the
+//                               // span/log exporters at Start, shut down after the providers (exporter.Local is one)
+//        otel.OTLP("https://viewer.example", otel.FirstParty(), // first-party: content on, raw/detail/app logs eligible
+//            otel.BatchDelays(200*time.Millisecond, time.Second), otel.Name("viewer"),
+//            otel.QueueSize(16384), otel.Blocking()),   // per destination (U5): the batch queue (default 2,048;
+//                               // a Sink has none — synchronous); a full queue never blocks: it refuses deltas first (½ full),
 //                               // records at ⅞, run_start/run_finish/the root span/heartbeats last — counted, one WARN per
 //                               // destination ("weft/otel: destination queue full"), weft.records.dropped on its heartbeats and
 //                               // every run_start/run_finish; Blocking() waits instead (≤ 5 s per stall: after one timed-out wait it
@@ -610,10 +617,11 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //        otel.Content(otel.ContentConfig{MaxBytes: 32 << 10, Redact: redact}),
 //        otel.RawBodies(true),  // dev only (WEFT_ENV=dev, or otel.DevMode() — its code-side twin, what an isolated NoEnv() test pipeline needs, one INFO when it opens the gate, overruled by an explicit WEFT_ENV≠dev; else one WARN naming the cause; the gate is the pipeline provider's RawBodies() marker —
 //                               // pass p.LoggerProvider() or rely on Install's global; a stock SDK provider never records raw bodies): each attempt's provider
-//                               // wire request/response as a weft.raw record, Local/Studio only, credentials stripped, 256 KiB per body (ADR 0028 §12)
+//                               // wire request/response as a weft.raw record, first-party destinations only, credentials stripped, 256 KiB per body (ADR 0028 §12)
 //        otel.DevDetail(),      // dev only, gated as RawBodies (LoggerProvider.DevDetail the marker): one "layer <name>" span per
-//                               // WrapModel/WrapTools layer per call (weft.layer.*) and a repair's original args, Local/Studio
-//                               // with content on only; never by default (U23.1)
+//                               // WrapModel/WrapTools layer per call (weft.layer.*) and a repair's original args, first-party
+//                               // destinations with content on only; never by default (U23.1)
+//        otel.Fallback(opt),    // destinations used only when nothing else is configured (exporter.Install's Local)
 //    )()
 //    p, err := otel.Start(ctx, opts...)               // Install with errors; otel.NoGlobal() for tests
 //    // + otel.Slog() (an Install option, U11.1): slog.Default bridged — every line logged on a
@@ -621,16 +629,19 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    //   app log record under that span (scope github.com/weftgo/weft/otel/slog, severity level+9,
 //    //   groups flattened "a.b"), restored at shutdown; otel.SlogHandler(next) bridges any handler
 //    //   (follows the installed pipeline), p.SlogHandler(next) one pipeline; per destination
-//    //   otel.AppLogs(on) — default Local/Studio with content on, a third party only opted in;
+//    //   otel.AppLogs(on) — default first-party with content on, a third party only opted in;
 //    //   admits, never bypasses content policy: Redact (otel.ContentLog) + MaxBytes on body and string
 //    //   attrs, content-off → stripped; app weft.* keys renamed slog.weft.*; >120 attrs counted
 //    //   (weft.log.attrs_dropped); shed with the deltas on overflow;
 //    //   weft.logs.bridged (count) on heartbeats and each invoke_agent span, only on the destinations
 //    //   that take the lines and only while a bridge is live; GET runs/{id}/logs
 //    //   of a run without it (and no line) holds the not_recorded hint naming otel.Slog()
-//    otel.LocalDB()   // the installed pipeline's obsdb.DB (nil without a Local destination)
-//    otel.StudioEndpoint()  // the Studio destination weft/runtime dials
-//    studio.Handler(studio.DB(otel.LocalDB()))  // setup A (block 7): the Inspector over the
+//    otel.Installed(), p.Destinations()  // the registered pipeline; the destinations it built
+//    // weft/exporter (platform): exporter.Local(path), exporter.Studio(url, tok), exporter.NoDiscovery(),
+//    // exporter.Install/Start (+ WEFT_STUDIO_URL/_TOKEN, WEFT_DB, the discovery file, the Local fallback),
+//    exporter.LocalDB()   // the installed pipeline's obsdb.DB (nil without a Local destination); LocalDBOf(p)
+//    exporter.StudioEndpoint()  // the Studio destination weft/runtime dials; StudioEndpointOf(p)
+//    studio.Handler(studio.DB(exporter.LocalDB()))  // setup A (block 7): the Inspector over the
 //                               // local sink's handle, history + live [D4]
 ```
 

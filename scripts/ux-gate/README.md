@@ -96,5 +96,5 @@
   retrying step from the live `attempt` frame, the parent above its child, and keeps the rows a
   minute (a reload included). Run it against a Studio holding the contract fixtures, with
   `DEMO` a command that runs such a director (a wefttest script whose first model call fails
-  retryably under `mw.Retry`, delegating to a subagent, through `otel.Install(otel.Studio(…))`):
+  retryably under `mw.Retry`, delegating to a subagent, through `exporter.Install(exporter.Studio(…))`):
   `STUDIO=… TOKEN=… DEMO="<binary> <studio url> <token>" PLAYWRIGHT_DIR=… node scripts/ux-gate/h9.js`.

@@ -23,7 +23,7 @@ lists the ones your binary has.
 listens on `127.0.0.1:7331` and writes the discovery file `studio.json`
 with its URL and dev token. `weft mcp`, started by Claude Code with no
 flags, reads that file and talks to that Studio with that token. Your
-app finds the same Studio the same way (`otel.Install()`), so its runs
+app finds the same Studio the same way (`exporter.Install()`), so its runs
 are already there.
 
 To name a Studio yourself:

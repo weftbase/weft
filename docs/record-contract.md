@@ -937,7 +937,9 @@ destinations are never bridged.
 
 Content — message text, tool arguments and results, the system prompt,
 the catalog — is off in the core by default and decided per destination:
-on for `otel.Local` and `otel.Studio`, off for `otel.OTLP`,
+on for first-party destinations (every `otel.Sink`, and `otel.OTLP` or
+`otel.Exporters` marked `otel.FirstParty()` — the platform's
+`exporter.Local` and `exporter.Studio`), off for plain `otel.OTLP`,
 `otel.Exporters` and the vendor presets. `weft.content` says what a
 record holds:
 
