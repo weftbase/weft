@@ -15,7 +15,10 @@ type config struct {
 	dests []dest
 	// fallback is Fallback's destinations: used only when the pipeline
 	// would otherwise have none (see Fallback).
-	fallback   []dest
+	fallback []dest
+	// env is Environment's destinations: environment destinations a
+	// wrapping package read, treated like envDestinations' own.
+	env        []dest
 	content    ContentConfig
 	service    string
 	resource   *sdkresource.Resource
@@ -80,6 +83,9 @@ type dest struct {
 	blocking  bool
 	// appLogs is AppLogs' ask (nil: the kind's default, appLogsOn).
 	appLogs *bool
+	// tags is what Tag wrapped this destination in (innermost first),
+	// carried to the built destination (Pipeline.Tags).
+	tags []any
 }
 
 func newDest(kind destKind, name string) dest {

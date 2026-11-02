@@ -52,7 +52,8 @@ func (o *optionSet) apply(c *config) {
 
 // Fallback names destinations used only when the pipeline would
 // otherwise have none: no destination option and no environment
-// destination (OTEL_EXPORTER_OTLP_ENDPOINT) — and, under Install, when
+// destination (OTEL_EXPORTER_OTLP_ENDPOINT, or one Environment marks)
+// — and, under Install, when
 // only environment destinations were configured and every one failed to
 // build (one WARN). A program that names its own destinations never
 // gets a fallback one. Only the destinations among opts count; any

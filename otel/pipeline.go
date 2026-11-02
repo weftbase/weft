@@ -214,7 +214,8 @@ func Start(ctx context.Context, opts ...Option) (*Pipeline, error) {
 	}
 	dests := append([]dest{}, cfg.dests...)
 	if !cfg.noEnv {
-		dests = append(dests, dedupe(cfg.dests, envDestinations(envGetenv))...)
+		env := append(append([]dest{}, cfg.env...), envDestinations(envGetenv)...)
+		dests = append(dests, dedupe(cfg.dests, env)...)
 	}
 	if len(dests) == 0 {
 		if len(cfg.fallback) == 0 {
@@ -530,6 +531,7 @@ func build(ctx context.Context, cfg config, dests []dest) (p *Pipeline, failed e
 // destRuntime is one built destination.
 type destRuntime struct {
 	name     string
+	tags     []any // the destination's Tag tags (Pipeline.Tags)
 	spanProc sdktrace.SpanProcessor
 	logProc  sdklog.Processor
 	// sinkSpan and sinkLog are a Sink's exporters, which closeSink shuts
@@ -577,7 +579,7 @@ func (rt *destRuntime) closeSink(ctx context.Context) error {
 // buildDest builds one destination's exporters and processor chains.
 // A destination that fails partway releases what it had built.
 func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err error) {
-	rt := &destRuntime{name: d.name}
+	rt := &destRuntime{name: d.name, tags: d.tags}
 	defer func() {
 		if err != nil {
 			rt.release(ctx)
