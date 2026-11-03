@@ -329,7 +329,7 @@ func Install(opts ...Option) func() {
 	switch {
 	case errors.Is(err, ErrNoDestinations):
 		slog.Info("weft/otel: no destination configured; recording nothing",
-			"hint", "set OTEL_EXPORTER_OTLP_ENDPOINT, or pass a destination to otel.Install (otel.OTLP, otel.Exporters, a local viewer's sink such as weftbase/exporter.Local)")
+			"hint", "set OTEL_EXPORTER_OTLP_ENDPOINT, or pass a destination to otel.Install (otel.OTLP, otel.Exporters, otel.Sink)")
 		return func() {}
 	case errors.Is(err, errAllFailed) && !explicitDestinations(opts) && hasFallback(opts):
 		// Only environment destinations were configured and none built:
@@ -386,7 +386,7 @@ const rawBatchSize = 16
 // destination by bytes (ADR 0028 §12): a raw record's worst case is
 // ≈ 3 MiB (two 256 KiB bodies of control bytes, each escaped to six
 // bytes in JSON), so 16 of them would be ≈ 48 MiB and Studio's ingest
-// (studio/ingest.MaxBody, 16 MiB) would refuse the whole batch — every
+// (weftbase's studio/ingest.MaxBody, 16 MiB) would refuse the whole batch — every
 // record in it lost. A batch whose records sum past this is exported in
 // several calls; 4 MiB of margin covers the OTLP envelope. Ordinary
 // batches (16 × ≈ 650 KiB) fit in one call, as before.

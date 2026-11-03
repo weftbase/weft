@@ -398,7 +398,7 @@ func TestThreadRecordsSupportApprovals(t *testing.T) {
 
 	stored := rp.shutdown(t)
 	if stored["approval.decision"] != 4 || stored["grant.mint"] != 1 || stored["approval.request"] != 4 || stored["label"] != 1 {
-		t.Errorf("the Local sink stored %v", stored)
+		t.Errorf("the Sink stored %v", stored)
 	}
 }
 
@@ -524,7 +524,7 @@ func TestThreadRecordsSREGrants(t *testing.T) {
 		t.Errorf("grant.revoke = %v", r.body)
 	}
 	if stored := rp.shutdown(t); stored["grant.use"] != 4 || stored["grant.mint"] != 4 {
-		t.Errorf("the Local sink stored %v", stored)
+		t.Errorf("the Sink stored %v", stored)
 	}
 }
 
@@ -689,7 +689,7 @@ func TestThreadRecordsWarroomBusy(t *testing.T) {
 		}
 	}
 	if stored := rp.shutdown(t); stored["interrupt"] != 2 || stored["rewind"] != 1 || stored["receipt"] < 5 {
-		t.Errorf("the Local sink stored %v", stored)
+		t.Errorf("the Sink stored %v", stored)
 	}
 }
 

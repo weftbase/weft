@@ -23,7 +23,8 @@ import (
 // of another size, so it is asked for by its own EventName: nothing is
 // built unless a destination answers Enabled for weft.raw — which
 // weft/otel's pipeline does only under otel.RawBodies(true) and
-// WEFT_ENV=dev, and only for its Local and Studio destinations.
+// WEFT_ENV=dev, and only for its first-party destinations (a Sink, or
+// one marked otel.FirstParty).
 
 const (
 	eventNameRaw = "weft.raw"

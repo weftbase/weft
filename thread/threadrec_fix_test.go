@@ -123,7 +123,7 @@ func TestThreadRecordsSlowProviderDoesNotBlockTheSession(t *testing.T) {
 
 // Create → Grant → Close: no run ever reported, and the grant.mint is
 // still exported — filed under no run (no weft.run.id), held true,
-// keyed by the session's identity — and stored by the Local sink.
+// keyed by the session's identity — and stored by the Sink.
 func TestThreadRecordsHeldAtCloseAreEmitted(t *testing.T) {
 	rp := newRecPipe(t)
 	agt := rp.agent("sre", wefttest.Script())
@@ -160,7 +160,7 @@ func TestThreadRecordsHeldAtCloseAreEmitted(t *testing.T) {
 		t.Errorf("held grant.mint = %v %v; want held, no run, the session's identity and run metadata", m.body, m.attrs)
 	}
 	if stored := rp.shutdown(t); stored["grant.mint"] != 1 {
-		t.Errorf("the Local sink stored %v", stored)
+		t.Errorf("the Sink stored %v", stored)
 	}
 }
 

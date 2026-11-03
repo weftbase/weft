@@ -432,7 +432,7 @@ func (e *failingLogExporter) ForceFlush(context.Context) error { return nil }
 
 // A failing destination's lost records and spans are counted (S2.4:
 // "drops only its own records, and counts them"); before, only the
-// Local sink's write errors were, and a dead OTLP endpoint lost
+// local sink's write errors were, and a dead OTLP endpoint lost
 // everything with a zero counter and no WARN.
 func TestExportFailuresAreCounted(t *testing.T) {
 	logs := &failingLogExporter{}
@@ -465,7 +465,7 @@ func TestExportFailuresAreCounted(t *testing.T) {
 // What a destination's own policy filters (messages records on a
 // content-off chain, deltas under NoDeltas) is counted but is not a
 // WARN: "destination dropped records" once a minute, forever, on a
-// healthy Local + Datadog pipeline reads as an outage.
+// healthy Sink + Datadog pipeline reads as an outage.
 func TestPolicyFilteringDoesNotWarn(t *testing.T) {
 	buf := &threadSafeBuffer{}
 	prev := slog.Default()
@@ -676,12 +676,12 @@ func TestShutdownBoundedWhileHeartbeatBlocked(t *testing.T) {
 	defer close(stuck)
 	sink.setBlock(stuck)
 
-	// Wait until the heartbeat goroutine is inside the Local chain's
+	// Wait until the heartbeat goroutine is inside the Sink chain's
 	// synchronous processor: blocked there until the lock goes.
 	deadline := time.Now().Add(10 * time.Second)
-	for !heartbeatInLocalWrite(goroutineDump()) {
+	for !heartbeatInSinkWrite(goroutineDump()) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the heartbeat never reached the Local write (test bug)\n%s", goroutineDump())
+			t.Fatalf("the heartbeat never reached the Sink write (test bug)\n%s", goroutineDump())
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -708,9 +708,9 @@ func TestShutdownBoundedWhileHeartbeatBlocked(t *testing.T) {
 	}
 }
 
-// heartbeatInLocalWrite reports whether a goroutine in dump is
-// emitting a heartbeat through a synchronous (Local) processor.
-func heartbeatInLocalWrite(dump string) bool {
+// heartbeatInSinkWrite reports whether a goroutine in dump is
+// emitting a heartbeat through a synchronous (Sink) processor.
+func heartbeatInSinkWrite(dump string) bool {
 	for _, g := range strings.Split(dump, "\n\n") {
 		if strings.Contains(g, "otel.heartbeats(") && strings.Contains(g, "(*SimpleProcessor).OnEmit") {
 			return true

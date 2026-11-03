@@ -342,7 +342,7 @@ func TestBlockingDevGate(t *testing.T) {
 	}
 }
 
-// A Local destination has no queue and ignores Blocking: under DevMode
+// A Sink has no queue and ignores Blocking: under DevMode
 // no "Blocking on" INFO claims a wait that never happens, and outside
 // the gate no WARN refuses what was never in force. RawBodies and
 // Blocking refused together by WEFT_ENV=prod against DevMode are one
@@ -353,7 +353,7 @@ func TestBlockingDevGateLocalAndBoth(t *testing.T) {
 		env     map[string]string
 		noEnv   bool
 		devMode bool
-		queued  bool // add a queued destination with Blocking (else Local alone)
+		queued  bool // add a queued destination with Blocking (else the Sink alone)
 		raw     bool
 		warns   int
 		warn    string
@@ -386,7 +386,7 @@ func TestBlockingDevGateLocalAndBoth(t *testing.T) {
 			_ = p.Shutdown(testCtx(t))
 			out := logBuf.String()
 			if strings.Contains(out, "Blocking on by otel.DevMode()") {
-				t.Errorf("a Local-only Blocking claimed a wait:\n%s", out)
+				t.Errorf("a Sink-only Blocking claimed a wait:\n%s", out)
 			}
 			if n := strings.Count(out, "level=WARN"); n != c.warns || (c.warn != "" && strings.Count(out, c.warn) != 1) {
 				t.Errorf("WARN lines = %d, want %d (%q):\n%s", n, c.warns, c.warn, out)
@@ -401,7 +401,7 @@ func TestBlockingDevGateLocalAndBoth(t *testing.T) {
 // exporter loses no durable record (deltas are still shed).
 func TestBlockingIsDevOnly(t *testing.T) {
 	logBuf := captureSlogSafe(t)
-	env := map[string]string{"WEFTBASE_DISCOVERY": "off"}
+	env := map[string]string{}
 	prev := envGetenv
 	envGetenv = func(k string) string { return env[k] }
 	t.Cleanup(func() { envGetenv = prev })

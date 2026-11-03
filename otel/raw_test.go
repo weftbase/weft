@@ -64,16 +64,10 @@ func rawThrough(t *testing.T, p *Pipeline) (bool, string) {
 	return wanted, res.ID
 }
 
-// devEnv swaps the pipeline's environment for one holding only env
-// (and the discovery file off).
+// devEnv swaps the pipeline's environment for one holding only env.
 func devEnv(t *testing.T, env map[string]string) {
 	prev := envGetenv
-	envGetenv = func(k string) string {
-		if k == "WEFTBASE_DISCOVERY" {
-			return "off"
-		}
-		return env[k]
-	}
+	envGetenv = func(k string) string { return env[k] }
 	t.Cleanup(func() { envGetenv = prev })
 }
 
@@ -496,7 +490,7 @@ func (m worstRawModel) Stream(ctx context.Context, req core.ModelRequest) iter.S
 // across posts, and every record still arrives.
 func TestRawBodiesBatchBoundedByBytes(t *testing.T) {
 	devEnv(t, map[string]string{"WEFT_ENV": "dev"})
-	const ingestMax = 16 << 20 // studio/ingest.MaxBody
+	const ingestMax = 16 << 20 // weftbase's studio/ingest.MaxBody
 	var (
 		mu      sync.Mutex
 		largest int
