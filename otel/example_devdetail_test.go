@@ -45,7 +45,7 @@ func ExampleDevDetail() {
 		}
 		for _, kv := range s.Attributes {
 			if kv.Key == "weft.layer.index" {
-				fmt.Println(s.Name, kv.Value.Emit())
+				fmt.Println(s.Name, kv.Value.String())
 			}
 		}
 	}

@@ -148,7 +148,7 @@ func (c *rawCapture) of(t *testing.T, kind string) (bodies []string, exported []
 		exported = append(exported, r.Body().AsString()...)
 		var k string
 		r.WalkAttributes(func(kv attribute.KeyValue) bool {
-			exported = append(exported, kv.Value.Emit()...)
+			exported = append(exported, kv.Value.String()...)
 			if kv.Key == "weft.record" {
 				k = kv.Value.AsString()
 			}

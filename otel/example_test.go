@@ -42,7 +42,7 @@ func attr(r sdklog.Record, key string) string {
 	var out string
 	r.WalkAttributes(func(kv attribute.KeyValue) bool {
 		if string(kv.Key) == key {
-			out = kv.Value.Emit()
+			out = kv.Value.String()
 			return false
 		}
 		return true

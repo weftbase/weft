@@ -163,7 +163,7 @@ func TestDevDetailNeverToThirdParty(t *testing.T) {
 				continue
 			}
 			for _, kv := range ev.Attributes {
-				if string(kv.Key) == "weft.panic.stack" && strings.Contains(kv.Value.Emit(), "goroutine") {
+				if string(kv.Key) == "weft.panic.stack" && strings.Contains(kv.Value.String(), "goroutine") {
 					panics++
 				}
 			}

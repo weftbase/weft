@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -226,23 +224,6 @@ func TestStartFailureReleasesBuiltDestinations(t *testing.T) {
 	if after := goroutinesSettle(before + rounds - 1); after >= before+rounds {
 		t.Fatalf("goroutines grew %d → %d over %d failed Starts: the built destinations leak", before, after, rounds)
 	}
-}
-
-// openFilesUnder counts this process's open descriptors on files under
-// dir (Linux's /proc; the test skips elsewhere).
-func openFilesUnder(t *testing.T, dir string) int {
-	t.Helper()
-	entries, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Skip("no /proc/self/fd on this platform")
-	}
-	var n int
-	for _, e := range entries {
-		if target, err := os.Readlink(filepath.Join("/proc/self/fd", e.Name())); err == nil && strings.HasPrefix(target, dir) {
-			n++
-		}
-	}
-	return n
 }
 
 // Every Sink's exporters shut down at Shutdown, each once, not only the
