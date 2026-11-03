@@ -371,8 +371,8 @@ type Session struct {
 	// The approval boundary's runner hand-off (ADR 0021 §1–§2): await
 	// holds the parked boundary's captured turn settings — the extra
 	// run options of the Send that parked and the persistence window
-	// the resume inherits (lost across a restart: run options are not
-	// entries) — and resumeWork is a resume run Decide or Resume
+	// the resume inherits (across a restart only what the requests
+	// recorded as data comes back: ApprovalRequestEntry.Run) — and resumeWork is a resume run Decide or Resume
 	// minted while a runner was alive, waiting for the runner to pick
 	// it up. The runner itself resumes completed boundaries whenever
 	// AutoResume is on.
@@ -2094,11 +2094,7 @@ func cloneEntry(e Entry) Entry {
 		return e
 	case ApprovalRequestEntry:
 		e.Args = slices.Clone(e.Args)
-		if e.Park != nil {
-			p := *e.Park
-			p.On, p.AllExcept = slices.Clone(p.On), slices.Clone(p.AllExcept)
-			e.Park = &p
-		}
+		e.Run = e.Run.Clone()
 		return e
 	case ApprovalDecisionEntry:
 		return e
@@ -2118,6 +2114,7 @@ func cloneEntry(e Entry) Entry {
 			m := deepCloneMessage(*e.Msg)
 			e.Msg = &m
 		}
+		e.Run = e.Run.Clone()
 		return e
 	case PoolReceiptEntry:
 		return e

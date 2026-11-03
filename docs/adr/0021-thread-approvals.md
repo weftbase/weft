@@ -230,12 +230,23 @@ decided. The resume now runs on the arming call's context for
 cancellation and deadline and takes the parked turn's context values
 for every key the arming context lacks (the parked turn's run options
 already rode along, §1). After a restart the parked turn's context is
-gone, like its options — except its park rule: the rule the parked
-run ran under (`core.RunResult.Park`: its ParkOn names and the
-ParkAllExcept in force, its own or inherited) is recorded on the
-boundary's request entries (`ApprovalRequestEntry.Park`) and put back
+gone, like its options — except what of them is data: the settings
+the parked run ran under (`core.SettingsOf` over its options and
+context — the park rule, its own or inherited; the `OnlyTools`
+narrowing; a lowered `MaxSteps` or `Parallelism`; the
+`Instructions`, `Thinking`, `ToolChoice` and `Params` overrides; the
+caller metadata, the context's included) are recorded on the
+boundary's request entries (`ApprovalRequestEntry.Run`) and put back
 on a resume that lost the parked turn, so a resume after a restart
-never runs unasked what the parked run would have parked (2026-11-03).
+never runs unasked what the parked run would have parked, never
+offers a tool it narrowed away, never spends past its budget and
+keeps its tenant's tags. A send queued behind the boundary keeps its
+own the same way (`ReceiptEntry.Run`). A restored narrowing is never
+dropped to let the run start: one the reopening agent cannot honour
+(a tool it no longer registers, a budget above its own) fails the
+resume with `ErrInvalidRunOption` before any model call, and the
+boundary stays open. `UseModel` and `OnMessages` are code, not data:
+a resume after a restart runs on the agent's own model (2026-11-03).
 
 ## Amendment (2026-10-01 — the approvals hardening)
 

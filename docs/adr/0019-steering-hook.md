@@ -260,8 +260,9 @@ context values for every key the steer's lacks — a park rule or
 metadata that rode the turn's context, as a pool child's does. A steer
 that finds no turn in flight and no boundary open (an idle session, or
 the window between a turn's end and the next) runs as the plain turn
-above, under its own options. A steer restored by `Open` has neither:
-options and contexts are not entries.
+above, under its own options. A steer restored by `Open` has its own
+options as far as they are data (`ReceiptEntry.Run`, 2026-11-03) and
+no aimed turn's.
 
 **The live steer queue is unbounded.** Each accepted steer costs one
 durable receipt entry and stays queued until a drain point, the turn's

@@ -304,11 +304,14 @@ type ApprovalRequestEntry struct {
 	// with its lineage. Both empty on an ordinary request.
 	Child   string `json:"child,omitempty"`
 	Wrapper string `json:"wrapper,omitempty"`
-	// Park is the park rule the parked run ran under (core.RunResult.Park),
-	// nil when none was in force. A resume after a restart has lost the
-	// parked send's run options and context; it puts this rule back, so
-	// a ParkOn or ParkAllExcept run keeps parking what it parked.
-	Park *core.ParkRule `json:"park,omitempty"`
+	// Run is what the parked run ran under, as data (core.SettingsOf
+	// over its run options and context): its park rule, OnlyTools
+	// narrowing, lowered budgets, overrides and metadata — nil when it
+	// ran under none. A resume after a restart has lost the parked
+	// send's run options and context; it puts these back, so the
+	// resumed run parks, narrows, budgets and tags as the parked run
+	// did (ADR 0021 §1).
+	Run *core.RunSettings `json:"run,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021
@@ -471,6 +474,13 @@ type ReceiptEntry struct {
 	// follows the steered one there — a reply whose write was lost
 	// with the batch counts as none.
 	Unanswered bool `json:"unanswered,omitempty"`
+	// Run, on a queued or accepted receipt, is what the held message
+	// is to run under, as data (core.SettingsOf over the send's run
+	// options and context): a reopened session restores the send or
+	// steer with these put back, so a queued send keeps its park rule,
+	// narrowing, budgets and metadata across a restart. nil when it
+	// was sent under none.
+	Run *core.RunSettings `json:"run,omitempty"`
 }
 
 // Receipt statuses — the wire values, pinned by the format-3 goldens.

@@ -767,6 +767,166 @@ func (p *ParkRule) Options() []RunOption {
 	return opts
 }
 
+// RunSettings is what a run is started under, as data: the run options
+// that can be written down, and the values its context carries for it
+// (metadata placed with WithMetadata or inherited from a delegating
+// run, and an inherited ParkAllExcept). A caller that persists a run
+// to start or resume later — in another process, after a restart —
+// records it (SettingsOf) and puts it back on that run (Options), so
+// the run is narrowed, budgeted and tagged as the one it stands for.
+//
+// What is not data is not in it: UseModel (a Model is code),
+// OnMessages and Steering (functions), and the options that name the
+// run itself (Messages, Prompt, RunID, ResumeOf, KeptSteps) or decide
+// its calls (Approve, Deny, Resolve). A restored run runs without them.
+type RunSettings struct {
+	// Park is the park rule (ParkOn and ParkAllExcept, own or
+	// inherited), nil when none is in force.
+	Park *ParkRule `json:"park,omitempty"`
+	// OnlyTools is the OnlyTools narrowing, sorted; nil keeps the
+	// agent's full set.
+	OnlyTools []string `json:"only_tools,omitempty"`
+	// MaxSteps and Parallelism are the run-level values of the dual
+	// options (lower only); 0 when the run set none.
+	MaxSteps    int `json:"max_steps,omitempty"`
+	Parallelism int `json:"parallelism,omitempty"`
+	// Instructions is a run-level Instructions override, nil when the
+	// run keeps the agent's prompt.
+	Instructions *string `json:"instructions,omitempty"`
+	// Thinking, ToolChoice and Params are the run-level overrides of
+	// the dual options, nil when the run set none.
+	Thinking   *ThinkingConfig   `json:"thinking,omitempty"`
+	ToolChoice *ToolChoiceConfig `json:"tool_choice,omitempty"`
+	Params     *RequestParams    `json:"params,omitempty"`
+	// Metadata is the caller pairs the run carries: the context's
+	// merged under the run's own Metadata options. An empty value is
+	// kept — it removes the key on the restored run, as it did on the
+	// original.
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// SettingsOf returns the settings a run started under ctx with opts
+// would run under, as data (RunSettings) — nil when there are none.
+// Options that are not data are skipped (RunSettings says which).
+func SettingsOf(ctx context.Context, opts ...RunOption) *RunSettings {
+	var c runConfig
+	for _, o := range opts {
+		if o != nil {
+			o.applyRun(&c)
+		}
+	}
+	_, rule := c.resolvePark(ctx)
+	s := RunSettings{Park: rule.export()}
+	if len(c.onlyTools) > 0 {
+		s.OnlyTools = nameSet(c.onlyTools)
+	}
+	if c.maxStepsSet {
+		s.MaxSteps = c.maxSteps
+	}
+	if c.parallelismSet {
+		s.Parallelism = c.parallelism
+	}
+	if c.systemSet {
+		text := c.system
+		s.Instructions = &text
+	}
+	if c.thinkingSet {
+		t := c.thinking
+		s.Thinking = &t
+	}
+	if c.toolChoiceSet {
+		tc := c.toolChoice
+		s.ToolChoice = &tc
+	}
+	if c.paramsSet {
+		p := cloneParams(c.params)
+		s.Params = &p
+	}
+	if md := metadataFromCtx(ctx); len(md) > 0 || len(c.metadata) > 0 {
+		s.Metadata = maps.Clone(md)
+		if s.Metadata == nil {
+			s.Metadata = make(map[string]string, len(c.metadata))
+		}
+		maps.Copy(s.Metadata, c.metadata)
+	}
+	if s.Park == nil && s.OnlyTools == nil && s.MaxSteps == 0 && s.Parallelism == 0 &&
+		s.Instructions == nil && s.Thinking == nil && s.ToolChoice == nil && s.Params == nil &&
+		s.Metadata == nil {
+		return nil
+	}
+	return &s
+}
+
+// Options returns the run options that put the settings back on a run.
+// A nil RunSettings returns none. The options obey their usual rules on
+// the run they are given to: an OnlyTools name the agent no longer
+// registers, or a MaxSteps or Parallelism above the agent's, fails that
+// run with ErrInvalidRunOption before any model call — a restored
+// narrowing is never dropped to let the run start.
+func (s *RunSettings) Options() []RunOption {
+	if s == nil {
+		return nil
+	}
+	opts := s.Park.Options()
+	if len(s.OnlyTools) > 0 {
+		opts = append(opts, OnlyTools(s.OnlyTools...))
+	}
+	if s.MaxSteps > 0 {
+		opts = append(opts, MaxSteps(s.MaxSteps))
+	}
+	if s.Parallelism > 0 {
+		opts = append(opts, Parallelism(s.Parallelism))
+	}
+	if s.Instructions != nil {
+		opts = append(opts, Instructions(*s.Instructions))
+	}
+	if s.Thinking != nil {
+		opts = append(opts, Thinking(*s.Thinking))
+	}
+	if s.ToolChoice != nil {
+		opts = append(opts, ToolChoice(*s.ToolChoice))
+	}
+	if s.Params != nil {
+		opts = append(opts, Params(cloneParams(*s.Params)))
+	}
+	if len(s.Metadata) > 0 {
+		opts = append(opts, Metadata(maps.Clone(s.Metadata)))
+	}
+	return opts
+}
+
+// Clone returns a deep copy of s; nil for nil.
+func (s *RunSettings) Clone() *RunSettings {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.Park != nil {
+		p := *s.Park
+		p.On, p.AllExcept = slices.Clone(p.On), slices.Clone(p.AllExcept)
+		out.Park = &p
+	}
+	out.OnlyTools = slices.Clone(s.OnlyTools)
+	if s.Instructions != nil {
+		text := *s.Instructions
+		out.Instructions = &text
+	}
+	if s.Thinking != nil {
+		t := *s.Thinking
+		out.Thinking = &t
+	}
+	if s.ToolChoice != nil {
+		tc := *s.ToolChoice
+		out.ToolChoice = &tc
+	}
+	if s.Params != nil {
+		p := cloneParams(*s.Params)
+		out.Params = &p
+	}
+	out.Metadata = maps.Clone(s.Metadata)
+	return &out
+}
+
 // NumSteps returns how many model calls the run made.
 func (r *RunResult) NumSteps() int { return len(r.Steps) }
 

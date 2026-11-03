@@ -337,8 +337,11 @@ into a second copy.
 turn becomes a follow-up turn under that turn's run options (and the
 values on its context), the steer's own options after them — a turn
 sent with `weft.ParkAllExcept` keeps its follow-ups parked. A steer to
-an idle session runs under its own options. Restored messages run with
-neither: run options are not entries.
+an idle session runs under its own options. Restored messages run
+under what their receipts recorded as data (`ReceiptEntry.Run`, a
+`core.RunSettings`: the park rule, `OnlyTools`, lowered budgets,
+overrides, metadata); `UseModel` and `OnMessages` are code and do not
+come back.
 
 **The queue is unbounded.** The session does not cap how many steers
 or sends may wait; each costs one entry. If users can pile messages

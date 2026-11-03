@@ -1601,6 +1601,27 @@ type RunResult = core.RunResult
 // call parks except one to a tool AllExcept names. Names are sorted.
 type ParkRule = core.ParkRule
 
+// RunSettings is what a run is started under, as data: the run options
+// that can be written down, and the values its context carries for it
+// (metadata placed with WithMetadata or inherited from a delegating
+// run, and an inherited ParkAllExcept). A caller that persists a run
+// to start or resume later — in another process, after a restart —
+// records it (SettingsOf) and puts it back on that run (Options), so
+// the run is narrowed, budgeted and tagged as the one it stands for.
+//
+// What is not data is not in it: UseModel (a Model is code),
+// OnMessages and Steering (functions), and the options that name the
+// run itself (Messages, Prompt, RunID, ResumeOf, KeptSteps) or decide
+// its calls (Approve, Deny, Resolve). A restored run runs without them.
+type RunSettings = core.RunSettings
+
+// SettingsOf returns the settings a run started under ctx with opts
+// would run under, as data (RunSettings) — nil when there are none.
+// Options that are not data are skipped (RunSettings says which).
+func SettingsOf(ctx context.Context, opts ...RunOption) *RunSettings {
+	return core.SettingsOf(ctx, opts...)
+}
+
 // Run is a handle to one streaming execution. Create it with Agent.Stream,
 // then either range over Events (exactly once) or call Wait, which runs the
 // agent to completion and reports the final result.

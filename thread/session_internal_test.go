@@ -33,6 +33,18 @@ func kindSamples() []Entry {
 		}}
 	}
 	steer := msg()
+	runSettings := func() *core.RunSettings {
+		text, temp, maxTok, seed := "be brief", 0.2, 64, int64(7)
+		return &core.RunSettings{
+			Park:      &core.ParkRule{On: []string{"refund"}, All: true, AllExcept: []string{"lookup"}},
+			OnlyTools: []string{"lookup", "refund"}, MaxSteps: 3, Parallelism: 1,
+			Instructions: &text,
+			Thinking:     &core.ThinkingConfig{Level: core.ThinkHigh, Budget: 1024},
+			ToolChoice:   &core.ToolChoiceConfig{Mode: core.ToolChoiceNamed, Name: "lookup"},
+			Params:       &core.RequestParams{Temperature: &temp, TopP: &temp, MaxTokens: &maxTok, Stop: []string{"END"}, Seed: &seed},
+			Metadata:     map[string]string{"tenant": "acme"},
+		}
+	}
 	return []Entry{
 		MessageEntry{ID: "e_message", ParentID: "e_p", Created: at, Message: msg()},
 		TurnEntry{ID: "e_turn", ParentID: "e_p", Created: at, RunID: "s-t1",
@@ -48,13 +60,13 @@ func kindSamples() []Entry {
 		CustomMessageEntry{ID: "e_custom_message", ParentID: "e_p", Created: at, Kind: "note", Message: msg()},
 		ApprovalRequestEntry{ID: "e_request", ParentID: "e_p", Created: at, CallID: "call_1", Tool: "refund",
 			Args: json.RawMessage(`{"order":1}`), ArgsSHA256: "abc", RunID: "s-t1",
-			Park: &core.ParkRule{On: []string{"refund"}, All: true, AllExcept: []string{"lookup"}}},
+			Run: runSettings()},
 		ApprovalDecisionEntry{ID: "e_decision", ParentID: "e_p", Created: at, CallID: "call_1", Outcome: OutcomeApprove},
 		ApprovalAuditEntry{ID: "e_audit", ParentID: "e_p", Created: at, CallID: "call_1", Step: StepResume, Decisions: []string{"e_d"}},
 		GrantEntry{ID: "e_grant", ParentID: "e_p", Created: at, Grant: Grant{Tool: "refund",
 			Args: []Arg{ArgEquals("/order", json.RawMessage(`1`)), ArgEquals("/sku", json.RawMessage(`"a"`))}}},
 		GrantRevokedEntry{ID: "e_revoked", ParentID: "e_p", Created: at, GrantID: "e_grant"},
-		ReceiptEntry{ID: "e_receipt", ParentID: "e_p", Created: at, Status: ReceiptQueued, Msg: &steer},
+		ReceiptEntry{ID: "e_receipt", ParentID: "e_p", Created: at, Status: ReceiptQueued, Msg: &steer, Run: runSettings()},
 		PoolReceiptEntry{ID: "e_pool", ParentID: "e_p", Created: at, Status: PoolAccepted, Child: "s_child",
 			Usage: core.Usage{InputTokens: 3}},
 	}

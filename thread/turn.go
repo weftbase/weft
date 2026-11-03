@@ -166,8 +166,14 @@ func (o runOptionsOption) applySend(c *sendConfig) { c.runOpts = append(c.runOpt
 // open runs as a plain turn under its own options. The same holds for
 // the values on the turn's context (a ParkAllExcept list or metadata a
 // delegating run handed down): those runs see every value their own
-// context lacks. Options and context are process state — a reopened
-// session's restored sends and boundaries run without them.
+// context lacks. Options and context are process state; what of them
+// is data (core.RunSettings: the park rule, OnlyTools, the lowered
+// MaxSteps and Parallelism, the Instructions, Thinking, ToolChoice and
+// Params overrides, the metadata) is recorded on the queued send's
+// receipt and the parked boundary's requests, so a reopened session's
+// restored sends and boundaries run under it. UseModel and OnMessages
+// are not data: a run restored after a restart runs on the agent's own
+// model, unobserved.
 func RunOptions(opts ...core.RunOption) SendOption { return runOptionsOption{opts} }
 
 // sessionOwned names the run option Send must refuse, or "" for one it
@@ -374,7 +380,7 @@ func (s *Session) enqueueLocked(ctx context.Context, msg core.Message, opts []co
 	}
 	t := s.newTurnLocked()
 	t.policy, t.hasPolicy = policy, true
-	receipt, err := s.acceptLocked(ctx, t, msg, nil)
+	receipt, err := s.acceptLocked(ctx, t, msg, core.SettingsOf(ctx, opts...), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +402,7 @@ func (s *Session) enqueueLocked(ctx context.Context, msg core.Message, opts []co
 // deferral, whose own Send already succeeded: the written entries
 // stay, and the id comes back beside the error so the caller queues
 // the follow-up under the turn the receipt names. Callers hold s.mu.
-func (s *Session) acceptLocked(ctx context.Context, t *Turn, msg core.Message, lead func(id, parent string, created time.Time) Entry) (string, error) {
+func (s *Session) acceptLocked(ctx context.Context, t *Turn, msg core.Message, run *core.RunSettings, lead func(id, parent string, created time.Time) Entry) (string, error) {
 	if !ValidID(t.id) {
 		return "", fmt.Errorf("thread: invalid entry id %q", t.id)
 	}
@@ -428,7 +434,7 @@ func (s *Session) acceptLocked(ctx context.Context, t *Turn, msg core.Message, l
 	}
 	clone := deepCloneMessage(msg)
 	entries = append(entries, ReceiptEntry{ID: id, ParentID: parent, Created: now,
-		Status: ReceiptAccepted, Msg: &clone, Turn: t.id, RunID: t.runID})
+		Status: ReceiptAccepted, Msg: &clone, Turn: t.id, RunID: t.runID, Run: run})
 	if err := s.appendEntriesLocked(ctx, entries...); err != nil {
 		if _, written := s.byID[id]; written {
 			// Appended, not flushed: the entry is in the file.
@@ -970,8 +976,9 @@ func (s *Session) runOne(item workItem) {
 // reusing the id minted when the resume was armed — and the input is
 // the boundary's dangling transcript, carried raw so the recorded
 // decisions can resolve their calls. The run options the parked send
-// captured ride along (across a restart they are gone: run options are
-// not entries), with the recorded decisions applied after them, so a
+// captured ride along (across a restart, what of them the requests
+// recorded as data: ApprovalRequestEntry.Run), with the recorded
+// decisions applied after them, so a
 // durable decision always beats a captured option. The run's context
 // is the arming call's for cancellation and the parked turn's for the
 // values the arming call's lacks (resumeCtxLocked): a decider never
@@ -1012,11 +1019,13 @@ func (s *Session) runResume(item workItem) {
 		}
 		opts = append([]core.RunOption(nil), s.await.opts...)
 		// After a restart the parked turn is gone with its run options
-		// and context; the park rule it ran under was recorded on its
-		// requests and goes back on the run, so a resume never runs
-		// unasked what the parked run would have parked.
+		// and context; what it ran under was recorded on its requests
+		// (core.SettingsOf) and goes back on the run, so a resume never
+		// runs unasked what the parked run would have parked, nor
+		// offers a tool it narrowed away, nor spends past its budget,
+		// nor loses its tenant's metadata.
 		if s.await.turn == nil {
-			opts = append(opts, s.persistedParkLocked().Options()...)
+			opts = append(opts, s.persistedRunLocked().Options()...)
 		}
 		// The approval class a layer deciding on someone's behalf named
 		// is the arming call's alone (WithApprovedBy): one the
@@ -1218,7 +1227,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// and the request is not.
 	var chain *chainResult
 	if err == nil && res != nil && len(res.Pending) > 0 {
-		chain = s.runChain(persist, t, callerOpts, res.Pending, res.Park)
+		chain = s.runChain(persist, t, callerOpts, res.Pending)
 	}
 	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp})
 	// Steers still live when the run ended defer here: the run met a

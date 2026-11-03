@@ -201,7 +201,7 @@ func (s *Session) steerSendLocked(ctx context.Context, msg core.Message, opts []
 	}
 	clone := cloneMessage(msg)
 	e := ReceiptEntry{ID: t.id, ParentID: s.leaf, Created: s.now(),
-		Status: ReceiptQueued, Msg: &clone}
+		Status: ReceiptQueued, Msg: &clone, Run: core.SettingsOf(ctx, opts...)}
 	if err := s.st.Append(ctx, s.header.ID, e); err != nil {
 		return nil, err
 	}
@@ -257,7 +257,8 @@ func (s *Session) deferSteerLocked(q queuedSteer) (*Turn, string, error) {
 	ft := s.newTurnLocked()
 	ft.policy, ft.hasPolicy = Steer, true
 	ctx := context.WithoutCancel(q.ctx)
-	receipt, err := s.acceptLocked(ctx, ft, q.msg, func(id, parent string, created time.Time) Entry {
+	ps := q.followUp(ft, "")
+	receipt, err := s.acceptLocked(ctx, ft, q.msg, core.SettingsOf(ps.ctx, ps.opts...), func(id, parent string, created time.Time) Entry {
 		return ReceiptEntry{ID: id, ParentID: parent, Created: created,
 			Receipt: q.receipt, Status: ReceiptDeferred, Turn: ft.id}
 	})
@@ -488,8 +489,11 @@ func (s *Session) endDroppedLocked() {
 // next turn the session runs drains the steers, Continue or the next
 // Send runs the sends, ClearQueue drops them. The Turns built here are
 // the receipts' handles for those paths; no caller holds them
-// (Continue returns the first). The run options a send was accepted
-// with are gone — they are not entries. ctx is detached from Open's
+// (Continue returns the first). The run options and context values a
+// send or steer was accepted with come back as the receipt recorded
+// them (ReceiptEntry.Run): what is data — the park rule, the narrowing,
+// budgets, overrides and metadata — never the rest (core.RunSettings).
+// ctx is detached from Open's
 // cancellation: a turn restored here must not die with the call that
 // loaded the session. Continue binds the restored steers and sends to
 // its own context; one that runs because of a later Send instead runs
@@ -532,6 +536,7 @@ func (s *Session) resurrectSteers(ctx context.Context) {
 		case ReceiptQueued:
 			s.steerQueue = append(s.steerQueue, queuedSteer{
 				receipt: r.ID, msg: deepCloneMessage(*r.Msg), ctx: ctx, turn: newTurn(r.ID),
+				opts: r.Run.Options(),
 			})
 		case ReceiptAccepted:
 			if _, started := s.byID[r.Turn]; started || !ValidID(r.Turn) {
@@ -551,7 +556,7 @@ func (s *Session) resurrectSteers(ctx context.Context) {
 			}
 			s.queue = append(s.queue, pendingSend{
 				ctx: ctx, msg: deepCloneMessage(*r.Msg), turn: t, receipt: r.ID,
-				restored: true,
+				opts: r.Run.Options(), restored: true,
 			})
 		}
 	}
