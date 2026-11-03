@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/weftbase/weft/core"
-	"github.com/weftbase/weft/internal/provenance"
 	"github.com/weftbase/weft/thread/internal/carry"
 )
 
@@ -1015,7 +1014,7 @@ func (s *Session) runResume(item workItem) {
 		// The approval class a layer deciding on someone's behalf named
 		// is the arming call's alone (WithApprovedBy): one the
 		// parked turn's context carried from an earlier resume is shadowed.
-		ctx = provenance.With(s.resumeCtxLocked(ctx), provenance.From(ctx))
+		ctx = WithApprovedBy(s.resumeCtxLocked(ctx), approvedByOf(ctx))
 	})
 	if startErr != nil {
 		s.land(item, nil, startErr)
@@ -1073,7 +1072,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		s.locked(func() {
 			var by string
 			if t.resume {
-				by = provenance.From(ctx)
+				by = approvedByOf(ctx)
 			}
 			decisions = s.danglingDecisionsLocked(t.resume, by)
 			// The turn the recorded decisions ride links its boundary.

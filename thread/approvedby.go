@@ -1,10 +1,6 @@
 package thread
 
-import (
-	"context"
-
-	"github.com/weftbase/weft/internal/provenance"
-)
+import "context"
 
 // WithApprovedBy returns ctx carrying the approval class a layer above
 // thread names when it decides through the session on someone's
@@ -29,5 +25,16 @@ import (
 // "approver", "quorum"); only an approval Decide would report as
 // "user" takes class.
 func WithApprovedBy(ctx context.Context, class string) context.Context {
-	return provenance.With(ctx, class)
+	return context.WithValue(ctx, approvedByKey{}, class)
+}
+
+// approvedByKey keys the class WithApprovedBy puts on a context.
+type approvedByKey struct{}
+
+// approvedByOf returns the class ctx carries (WithApprovedBy), "" when
+// none. thread reads it from the context that armed a resume
+// (Session.Decide's, Resume's), never from the parked turn's.
+func approvedByOf(ctx context.Context) string {
+	by, _ := ctx.Value(approvedByKey{}).(string)
+	return by
 }
