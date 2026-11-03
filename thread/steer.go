@@ -45,11 +45,19 @@ type queuedSteer struct {
 // narrow the aimed turn's ParkAllExcept, never widen it — on the
 // steer's context, with the aimed turn's context values for every key
 // the steer's lacks (a park rule or metadata that rode the turn's
-// context, as a pool child's does).
+// context, as a pool child's does). The aimed context's metadata and
+// park rule also ride as options ahead of all of them: each is one
+// context value, so a steer whose own context carries metadata would
+// otherwise hide the aimed turn's pairs whole.
 func (q queuedSteer) followUp(ft *Turn, receipt string) pendingSend {
 	opts := q.opts
-	if len(q.aimOpts) > 0 {
-		opts = append(append([]core.RunOption(nil), q.aimOpts...), q.opts...)
+	if len(q.aimOpts) > 0 || q.aimCtx != nil {
+		var aimed []core.RunOption
+		if q.aimCtx != nil {
+			aimed = core.SettingsOf(q.aimCtx).Options()
+		}
+		aimed = append(aimed, q.aimOpts...)
+		opts = append(aimed, q.opts...)
 	}
 	ps := pendingSend{ctx: carry.Values(q.ctx, q.aimCtx), msg: q.msg, opts: opts, turn: ft, receipt: receipt}
 	if receipt == "" {

@@ -234,3 +234,39 @@ func TestDeciderMetadataDoesNotHideTheParkedTurns(t *testing.T) {
 		t.Fatalf("resumed call's metadata = %v, want the parked turn's tenant and the decider's pair", md)
 	}
 }
+
+// A steer deferred behind an open boundary becomes a follow-up under the
+// aimed turn's settings — its context's metadata included — even when
+// the steer's own context carries metadata of its own: the pairs merge,
+// the aimed turn's are not hidden. The follow-up's accepted receipt
+// records what it will run under.
+func TestSteerFollowUpKeepsTheAimedTurnsMetadata(t *testing.T) {
+	ctx := context.Background()
+	r := newRestartRig(t)
+	s, err := thread.Create(ctx, r.st, r.agent(
+		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "call_1", Args: `{"order_id":"1"}`})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(ctx) }()
+	turn, err := s.Send(core.WithMetadata(ctx, map[string]string{"tenant": "acme"}), core.User("ship it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	chat := core.WithMetadata(ctx, map[string]string{"src": "chat"})
+	if _, err := s.Send(chat, core.User("also tidy up"), thread.As(thread.Steer)); err != nil {
+		t.Fatal(err)
+	}
+	var run *core.RunSettings
+	for _, e := range s.Entries() {
+		if rc, ok := e.(thread.ReceiptEntry); ok && rc.Status == thread.ReceiptAccepted {
+			run = rc.Run
+		}
+	}
+	if run == nil || run.Metadata["tenant"] != "acme" || run.Metadata["src"] != "chat" {
+		t.Fatalf("follow-up settings = %+v, want tenant=acme beside src=chat", run)
+	}
+}

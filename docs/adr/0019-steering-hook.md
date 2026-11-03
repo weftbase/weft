@@ -257,7 +257,10 @@ own options after them: a later option wins where options override
 narrow the turn's `ParkAllExcept`, never widen it. The follow-up runs
 on the steer's context for cancellation, and takes the aimed turn's
 context values for every key the steer's lacks — a park rule or
-metadata that rode the turn's context, as a pool child's does. A steer
+metadata that rode the turn's context, as a pool child's does. Those
+two ride as run options too, ahead of the aimed turn's own (2026-11-03):
+each is one context value, so a steer whose context carried metadata
+of its own hid the aimed turn's pairs whole. A steer
 that finds no turn in flight and no boundary open (an idle session, or
 the window between a turn's end and the next) runs as the plain turn
 above, under its own options. A steer restored by `Open` has its own
