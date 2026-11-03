@@ -581,10 +581,8 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		all := append(before, e)
 		held[d.CallID] = all
 		if eff, ok := effectiveDecision(all, s.cfg.quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
-			g := GrantEntry{
-				ID: s.mintIDLocked(), ParentID: parent, Created: now,
-				Grant: exactArgsGrant(req.Tool, req.Args),
-			}
+			g := alwaysGrant(req.Tool, req.Args, e)
+			g.ID, g.ParentID, g.Created = s.mintIDLocked(), parent, now
 			entries = append(entries, g)
 			parent = g.ID
 		}
@@ -983,7 +981,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 					// approval; the decision keeps the wish (Always)
 					// and the approval that completes the quorum mints
 					// the grant.
-					steps = append(steps, GrantEntry{Grant: exactArgsGrant(c.Name, c.Args)})
+					steps = append(steps, alwaysGrant(c.Name, c.Args, de))
 				}
 			}
 		}

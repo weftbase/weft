@@ -573,7 +573,7 @@ older reader can safely ignore is added without a version.
 | `approval_request` | 2 | 2 | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata`) | no |
 | `approval_decision` | 2 | 2 | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`* | no |
 | `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
-| `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`* | no |
+| `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`*, *`who`* (the grantor), *`via`* (the door it came through) | no |
 | `grant_revoked` | 2 | 2 | `grant_id` | no |
 | `receipt` | 3 | 3 | `status` (`queued`, `accepted`, `delivered`, `deferred`, `dropped`), *`receipt`* (the acceptance entry a later one settles), *`msg`*, *`run_id`*, *`turn`*, *`unanswered`*, *`run`* (a queued or accepted receipt's `core.RunSettings`) | no |
 | `pool_receipt` | 4 | 4 | `status` (`accepted`, `running`, `parked`, `done`, `failed`, `canceled`, `capped`), *`receipt`*, *`child`*, *`call`*, *`prompt`*, *`stop`*, *`usage`* | no |
@@ -584,7 +584,7 @@ v0.1, 2 approvals (v0.2), 3 steering receipts (v0.3), 4 the pool
 status values added without a version, because an older reader loses
 nothing by ignoring them: `message.run_id`; `turn.policy`, `rerun`,
 `late_steps`; `approval_request.child`, `wrapper`, `run`;
-`approval_decision.request_id`, `args_sha256`, `always`; `approval_audit.grant_id`,
+`approval_decision.request_id`, `args_sha256`, `always`; `grant.who`, `via`; `approval_audit.grant_id`,
 `grant_shared`, `key_id`, `decisions`; `receipt.unanswered`, `run` and the
 status `accepted`; the `pool_receipt` status `parked`; the header
 metadata key `weft.require_signed`. Three of those change what an older

@@ -44,6 +44,14 @@ type Grant struct {
 	// grant's uses are the store's own business — the session cannot
 	// see other sessions' matches.
 	MaxUses int `json:"max_uses,omitempty"`
+	// Who made the grant, for the audit trail — the person every call
+	// it approves or refuses is attributable to. Like Decision.Who it is
+	// a declaration, verified by nobody; put an opaque id here, never
+	// an email or a name: it is the Who of each decision the grant
+	// makes, and so rides weft.approval.actor metadata to every
+	// destination. A grant an ApproveAlways decision mints takes that
+	// decision's Who.
+	Who string `json:"who,omitempty"`
 }
 
 // Arg is one argument predicate (ADR 0021 §4): a JSON pointer into
@@ -153,7 +161,8 @@ type SharedGrant struct {
 
 // Grant appends a session-scoped grant (ADR 0021 §4): the decision
 // chain consults it — newest grant first — for every call about to
-// park, from the next boundary on. The tool name must not be empty:
+// park, from the next boundary on. The entry records g.Who as the
+// grantor and Via "user", the door, as Decide does. The tool name must not be empty:
 // a grant that matches every tool is a policy this shape does not
 // have.
 func (s *Session) Grant(ctx context.Context, g Grant) error {
@@ -163,7 +172,7 @@ func (s *Session) Grant(ctx context.Context, g Grant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
-		return GrantEntry{ID: id, ParentID: parent, Created: created, Grant: g}
+		return GrantEntry{ID: id, ParentID: parent, Created: created, Grant: g, Via: viaUser}
 	})
 }
 
@@ -192,6 +201,19 @@ func (s *Session) Revoke(ctx context.Context, grantID string) error {
 // next such call instead of matching nothing.
 func exactArgsGrant(tool string, args json.RawMessage) Grant {
 	return Grant{Tool: tool, Args: []Arg{ArgEquals("", normalArgs(args))}}
+}
+
+// alwaysGrant is the grant an ApproveAlways decision d mints over a
+// call to tool with args: the exact-args grant, its grantor the
+// approval that minted it — d's Who, the signing key id when a
+// signature named no one — and d's door.
+func alwaysGrant(tool string, args json.RawMessage, d ApprovalDecisionEntry) GrantEntry {
+	g := GrantEntry{Grant: exactArgsGrant(tool, args), Via: d.Via}
+	g.Who = d.Who
+	if g.Who == "" {
+		g.Who = d.KeyID
+	}
+	return g
 }
 
 // normalArgs reads absent arguments — nil, empty, or only whitespace —
@@ -251,17 +273,21 @@ func (s *Session) matchGrant(ctx context.Context, c core.ToolCallPart, chainUses
 
 // grantDecision is what a matched grant decides (ADR 0021 §4): an
 // approval via the grant, or the refusal with its reason — the
-// model-visible default pinned ("denied by grant").
+// model-visible default pinned ("denied by grant") — either way Via
+// "grant" and Who the grant's grantor, so the automatic decision is
+// attributable to whoever made the grant.
 func grantDecision(g Grant) Decision {
 	if g.Deny {
 		reason := g.Reason
 		if reason == "" {
 			reason = deniedByGrant
 		}
-		return Deny("", reason) // CallID set by the chain
+		d := Deny("", reason) // CallID set by the chain
+		d.Via, d.Who = viaGrant, g.Who
+		return d
 	}
 	d := Approve("")
-	d.Via = "grant"
+	d.Via, d.Who = viaGrant, g.Who
 	if g.Reason != "" {
 		d.Reason = g.Reason
 	}

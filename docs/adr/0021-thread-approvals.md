@@ -336,3 +336,12 @@ case; none changes a model-visible byte.
   decider saw is recorded on the decision entry
   (`ApprovalDecisionEntry.ArgsSHA256`); `DecideSigned` fills both from
   its verified challenge, which already binds them into the MAC.
+- **A grant names its grantor.** `Grant.Who` is who made the grant (a
+  declaration, like `Decision.Who`); the grant entry records it and
+  the door it came through (`GrantEntry.Via`: `user` for
+  `Session.Grant`, the minting decision's own for an `ApproveAlways`,
+  whose `Who` — or signing key id — becomes the grant's). Every
+  decision a grant makes, approval or refusal, is recorded `Via`
+  `grant` with the grantor as its `Who`, so an automatic approval is
+  attributable to the person who made the standing rule. A deny-grant's
+  decision was recorded with no `Via` before; it now reads `grant`.

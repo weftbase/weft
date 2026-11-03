@@ -420,6 +420,12 @@ type GrantEntry struct {
 	ParentID string    `json:"parent,omitempty"`
 	Created  time.Time `json:"created"`
 	Grant
+	// Via is the door the grant came through: "user" for Session.Grant,
+	// and for a grant an ApproveAlways decision minted that decision's
+	// own Via ("user", "signed", "approver", "parent"); Grant.Who is
+	// the grantor either way. Empty on a grant recorded before it was
+	// kept.
+	Via string `json:"via,omitempty"`
 }
 
 // GrantRevokedEntry ends a grant (ADR 0021 §4): revocation is an
