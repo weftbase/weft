@@ -176,6 +176,19 @@ type Decision struct {
 	// call's effective verdict is approve — never beside a denial.
 	// Build it with ApproveAlways.
 	Always bool
+	// RequestID and ArgsSHA256 bind the decision to what its decider
+	// was shown — the Request's ID (the occurrence) and ArgsSHA256 (the
+	// arguments). Both are optional; when set, the session checks them
+	// against the pending request before anything is recorded: another
+	// occurrence of the call id fails with ErrNotPending, other
+	// arguments with ErrArgsChanged. A decider that shows a request
+	// in one place and decides it in another (an inbox, a web page
+	// left open for days) copies both from the Request it showed, so a
+	// stale page can never decide a call it did not show. ArgsSHA256
+	// is recorded on the decision entry as the arguments the decider
+	// saw; DecideSigned fills both from the verified challenge.
+	RequestID  string
+	ArgsSHA256 string
 }
 
 // Approve returns a Decision that resumes the call: the run executes
@@ -379,7 +392,9 @@ func (s *Session) offeredPendingLocked() []Request {
 // The batch is validated whole before anything is recorded, and
 // recorded in one atomic append: no decisions, a decision without an
 // outcome, or two decisions for one call fail with ErrInvalidDecision;
-// a decision for a call that is not pending fails with ErrNotPending;
+// a decision for a call that is not pending — or naming a RequestID
+// that is not the pending occurrence's — fails with ErrNotPending; one
+// naming an ArgsSHA256 that is not the request's with ErrArgsChanged;
 // one for a delegating call with ErrDelegated; a decision for a
 // request past its expiry fails with ErrExpired. On
 // any of them none of the batch is recorded and no run starts on its
@@ -506,8 +521,17 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q decided twice in one batch", ErrInvalidDecision, d.CallID)
 		}
 		seen[d.CallID] = true
-		if _, ok := byCall[d.CallID]; !ok {
+		req, ok := byCall[d.CallID]
+		if !ok {
 			return fmt.Errorf("%w: call %q", ErrNotPending, d.CallID)
+		}
+		if d.RequestID != "" && d.RequestID != req.ID {
+			return fmt.Errorf("%w: call %q: the decision answers request %q, the pending one is %q",
+				ErrNotPending, d.CallID, d.RequestID, req.ID)
+		}
+		if d.ArgsSHA256 != "" && d.ArgsSHA256 != req.ArgsSHA256 {
+			return fmt.Errorf("%w: call %q: decided over arguments %s, the request holds %s",
+				ErrArgsChanged, d.CallID, d.ArgsSHA256, req.ArgsSHA256)
 		}
 	}
 	// One atomic Append carries every decision — and every grant an
@@ -530,16 +554,17 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			before = slices.Clone(before)
 		}
 		e := ApprovalDecisionEntry{
-			CallID:    d.CallID,
-			Outcome:   d.Kind,
-			Reason:    d.Reason,
-			Content:   d.Content,
-			Who:       d.Who,
-			Via:       d.Via,
-			RunID:     req.RunID,
-			Nonce:     d.nonce,
-			KeyID:     d.keyID,
-			RequestID: req.ID,
+			CallID:     d.CallID,
+			Outcome:    d.Kind,
+			Reason:     d.Reason,
+			Content:    d.Content,
+			Who:        d.Who,
+			Via:        d.Via,
+			RunID:      req.RunID,
+			Nonce:      d.nonce,
+			KeyID:      d.keyID,
+			RequestID:  req.ID,
+			ArgsSHA256: d.ArgsSHA256,
 			// Only an approval grants: a Deny or Resolve built with
 			// Always set records no wish for a standing approval.
 			Always: d.Always && d.Kind == OutcomeApprove,
@@ -984,7 +1009,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 func decisionFrom(callID string, d Decision, runID string) ApprovalDecisionEntry {
 	return ApprovalDecisionEntry{
 		CallID: callID, Outcome: d.Kind, Reason: d.Reason, Content: d.Content,
-		Who: d.Who, Via: d.Via, RunID: runID,
+		Who: d.Who, Via: d.Via, RunID: runID, ArgsSHA256: d.ArgsSHA256,
 		Always: d.Always && d.Kind == OutcomeApprove,
 	}
 }
@@ -1014,6 +1039,10 @@ func (s *Session) consultApprover(ctx context.Context, r Request) (Decision, boo
 		}()
 		d, ok := s.cfg.approver(actx, r)
 		d.CallID = r.CallID // the request names the call, whatever the approver copied
+		d.RequestID = ""    // no entry exists yet (the Request it was handed has no ID)
+		if d.ArgsSHA256 != "" && d.ArgsSHA256 != r.ArgsSHA256 {
+			ok = false // decided over other arguments: no decision for this call
+		}
 		ch <- answer{d: d, ok: ok}
 	}()
 	select {

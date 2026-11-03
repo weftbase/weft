@@ -114,9 +114,10 @@ var (
 	ErrReplay = errors.New("thread: decision signature replayed")
 
 	// ErrArgsChanged is returned by DecideSigned when the signed
-	// arguments hash is not the pending request's: the signer approved
-	// a different call.
-	ErrArgsChanged = errors.New("thread: request arguments changed under the signature")
+	// arguments hash is not the pending request's, and by Decide when a
+	// Decision's ArgsSHA256 is not: the decider decided over different
+	// arguments than the call holds.
+	ErrArgsChanged = errors.New("thread: request arguments are not the ones decided")
 
 	// ErrSignatureRequired is returned by Decide on a session opened
 	// with RequireSigned: the unsigned door is closed, and only

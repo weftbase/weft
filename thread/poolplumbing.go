@@ -283,6 +283,10 @@ func (s *Session) ReplayDecisions(ctx context.Context, ds ...ApprovalDecisionEnt
 			Decision: Decision{
 				CallID: e.CallID, Kind: e.Outcome, Reason: e.Reason, Content: e.Content,
 				Who: e.Who, Via: viaParent, Always: e.Always,
+				// The arguments the parent's decider saw are the child's
+				// request's (the mirror copies them); the occurrence is
+				// the parent's mirror, not the child's request.
+				ArgsSHA256: e.ArgsSHA256,
 			},
 			keyID: e.KeyID,
 		})

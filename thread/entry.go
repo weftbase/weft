@@ -355,6 +355,12 @@ type ApprovalDecisionEntry struct {
 	// Approver), written in the same append as the request or without
 	// one, and RunID names the occurrence either way.
 	RequestID string `json:"request_id,omitempty"`
+	// ArgsSHA256 is the hash of the arguments the decider was shown,
+	// when it stated one (Decision.ArgsSHA256; a signed decision's
+	// challenge always does): the session refused the decision unless
+	// it equalled the request's, so it records what was seen, not only
+	// what was decided. Empty when the decider stated none.
+	ArgsSHA256 string `json:"args_sha256,omitempty"`
 	// Always records that the decision was an "approve and always
 	// allow" (ApproveAlways): the grant is minted when the call's
 	// effective verdict becomes approve — at once without a quorum,

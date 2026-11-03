@@ -318,3 +318,21 @@ the wire format above or any model-visible byte.
   signing key id, else its `Who`) as metadata on the resume turn. Ids
   and enums on the span; who by name rides the `thread` record's
   content alone.
+
+## Amendment (2026-11-03 — decided days later, from elsewhere)
+
+A request may wait for days and be decided from a page another
+service renders, on a tenant's behalf. These rules hold for that
+case; none changes a model-visible byte.
+
+- **A decision can name what it was shown.** `Decision.RequestID` (the
+  occurrence, `Request.ID`) and `Decision.ArgsSHA256` (the arguments,
+  `Request.ArgsSHA256`) are optional; when set, the session refuses a
+  decision whose occurrence is not the pending one (`ErrNotPending`)
+  or whose arguments are not the request's (`ErrArgsChanged`, the
+  signed path's error), before anything is recorded. Call ids repeat
+  across turns, so a page left open on an earlier occurrence could
+  otherwise approve a later call that reuses the id. The hash the
+  decider saw is recorded on the decision entry
+  (`ApprovalDecisionEntry.ArgsSHA256`); `DecideSigned` fills both from
+  its verified challenge, which already binds them into the MAC.

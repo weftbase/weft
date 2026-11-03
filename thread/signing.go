@@ -555,6 +555,7 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 		d := Decision{
 			CallID: sd.CallID, Kind: sd.Kind, Reason: sd.Reason, Content: sd.Content,
 			Who: sd.Who, Via: viaSigned, Always: sd.Always,
+			RequestID: sd.RequestID, ArgsSHA256: sd.ArgsSHA256, // verified above
 		}
 		v.err = s.recordDecisionsLocked(ctx, []recordedDecision{{Decision: d, nonce: sd.Nonce, keyID: sd.KeyID}}, true)
 		if v.err == nil {
