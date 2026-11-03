@@ -345,3 +345,20 @@ case; none changes a model-visible byte.
   `grant` with the grantor as its `Who`, so an automatic approval is
   attributable to the person who made the standing rule. A deny-grant's
   decision was recorded with no `Via` before; it now reads `grant`.
+- **An approval is for the tool the call parked under.** The request
+  records the hash of its tool's input schema
+  (`ApprovalRequestEntry.SchemaSHA256`, for a tool of the agent's
+  static set). A resume — typically on another build, after a deploy
+  or a restart — whose agent no longer has a tool of that name, or has
+  one with another input schema, does not run the call on its
+  approval: the call is denied with a model-visible reason (`DENIED:
+  tool "refund" is no longer available; the approved call was not run`,
+  or `… changed its input since this call was approved; the call was
+  not run — call it again if it is still wanted`) and an audit entry
+  (`resume`, outcome `drift`) names it before the run starts. Before,
+  a removed or renamed tool read `NO_SUCH_TOOL` with nothing in the
+  trail, and a changed schema the old arguments still decoded into
+  ran the call. A change to the tool's approval mark alone is not
+  drift: an approved call runs once, a denied one never. A tool only a
+  `ToolSource` supplies is not checked; a static tool that moved to a
+  `ToolSource` reads as gone.

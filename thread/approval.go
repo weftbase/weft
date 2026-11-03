@@ -993,7 +993,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		cr.entries = append(cr.entries, ApprovalRequestEntry{
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
 			RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
-			Run: settings.Clone(),
+			Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),
 		})
 		cr.entries = append(cr.entries, steps...)
 		cr.entries = append(cr.entries,
@@ -1164,20 +1164,80 @@ func (s *Session) auditResumeStartLocked(ctx context.Context, t *Turn) error {
 	dangling := s.danglingCallsLocked()
 	walk := s.approvalWalkLocked()
 	var applied []string
+	var drifted []ApprovalAuditEntry
 	for _, c := range dangling {
 		_, ds := walk.occurrence(c.ID)
 		for _, d := range ds {
 			applied = append(applied, d.ID)
 		}
+		if d, ok := effectiveDecision(ds, s.cfg.quorum); ok && d.Outcome == OutcomeApprove {
+			if drift := s.driftLocked(walk.requests[c.ID]); drift != "" {
+				drifted = append(drifted, ApprovalAuditEntry{
+					CallID: c.ID, Step: StepResume, Outcome: "drift", Detail: drift, RunID: t.runID,
+				})
+			}
+		}
 	}
-	return s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
+	if err := s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
 		return ApprovalAuditEntry{
 			ID: id, ParentID: parent, Created: created,
 			Step: StepResume, Outcome: "started",
 			Detail: fmt.Sprintf("%d call(s) to resolve", len(dangling)), RunID: t.runID,
 			Decisions: applied,
 		}
-	})
+	}); err != nil {
+		return err
+	}
+	// An approved call the resume will deny because its tool changed
+	// since it parked is named in the trail before the run starts.
+	for _, a := range drifted {
+		if err := s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
+			a.ID, a.ParentID, a.Created = id, parent, created
+			return a
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// driftLocked says why a parked call's approval no longer covers the
+// call, "" when it does: the request recorded its tool's input schema
+// (SchemaSHA256), and the session's agent no longer has a tool of that
+// name, or has one with another schema — code changed between the park
+// and the resume (a deploy, a restart on another build). The reason is
+// model-visible ("DENIED: …"): the model may call the tool again, and
+// that call parks or runs under the tool as it is now. Callers hold
+// s.mu.
+func (s *Session) driftLocked(r ApprovalRequestEntry) string {
+	if r.SchemaSHA256 == "" {
+		return ""
+	}
+	switch now := toolSchemaHash(s.agent, r.Tool); now {
+	case r.SchemaSHA256:
+		return ""
+	case "":
+		return fmt.Sprintf("tool %q is no longer available; the approved call was not run", r.Tool)
+	default:
+		return fmt.Sprintf("tool %q changed its input since this call was approved; the call was not run — call it again if it is still wanted", r.Tool)
+	}
+}
+
+// toolSchemaHash is the hex SHA-256 of the input schema of a's tool
+// named name, as JSON — "" when a's static tools hold none of that
+// name (a ToolSource's tool is not checked).
+func toolSchemaHash(a *core.Agent, name string) string {
+	for _, def := range a.Tools() {
+		if def.Name != name {
+			continue
+		}
+		b, err := json.Marshal(def.InputSchema)
+		if err != nil {
+			return ""
+		}
+		return hashArgs(b)
+	}
+	return ""
 }
 
 // requestFromEntry lifts a stored request entry to its Request value.
@@ -1788,6 +1848,13 @@ func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) [
 		}
 		switch d.Outcome {
 		case OutcomeApprove:
+			// An approval is for the call as its tool was when it
+			// parked: a tool since removed, renamed or given another
+			// input schema does not run on it (driftLocked).
+			if drift := s.driftLocked(walk.requests[c.ID]); drift != "" {
+				opts = append(opts, core.Deny(c.ID, drift))
+				continue
+			}
 			// The resumed call's execute_tool span names who or what
 			// approved it (UX-B-14): reporting only, the resume is Approve's.
 			by, grant := s.approvalSourceLocked(d)

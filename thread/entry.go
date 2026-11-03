@@ -312,6 +312,15 @@ type ApprovalRequestEntry struct {
 	// resumed run parks, narrows, budgets and tags as the parked run
 	// did (ADR 0021 §1).
 	Run *core.RunSettings `json:"run,omitempty"`
+	// SchemaSHA256 is the hex SHA-256 of the input schema the parked
+	// call's tool had when it parked — the contract the arguments were
+	// written against and an approval is given for. A resume whose
+	// agent no longer has the tool with that schema (removed, renamed,
+	// its input changed) does not run the call on an approval: it is
+	// denied, saying so, and the audit trail names the drift. Empty for
+	// a tool the agent's static set did not hold (a ToolSource's), which
+	// is not checked.
+	SchemaSHA256 string `json:"schema_sha256,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021
