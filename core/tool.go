@@ -39,8 +39,11 @@ type ToolDef struct {
 	sourceFunc string
 
 	// subagent names the child agent when this tool came from Subagent,
-	// for the manifest's delegation edge. Empty for ordinary tools.
-	subagent string
+	// for the manifest's delegation edge, and subagentHash pins it: the
+	// child's own manifest hash (Agent.treeHash), which pins its own
+	// children in turn. Both empty for ordinary tools.
+	subagent     string
+	subagentHash string
 	// origin is the tools record's source chip (ADR 0028 §5): set by
 	// Origin, by Subagent ("subagent", whatever its child's name), "" =
 	// local.

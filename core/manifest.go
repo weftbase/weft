@@ -41,6 +41,12 @@ func Manifest(agents ...*Agent) ([]byte, error) {
 		names[a.name] = true
 		doc.Agents = append(doc.Agents, a.manifestEntry())
 	}
+	return manifestBytes(doc)
+}
+
+// manifestBytes renders a manifest document — the one encoding both
+// Manifest and the hash New computes use.
+func manifestBytes(doc manifestDoc) ([]byte, error) {
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, err
@@ -123,8 +129,13 @@ type manifestTool struct {
 	// Subagent names the child agent of a Subagent tool, so Studio can
 	// draw the delegation edge by name when both agents are in the
 	// fleet. The manifest does not recurse into the child: it describes
-	// the agents it was given, not the fleet (ADR 0012).
-	Subagent string `json:"subagent,omitempty"`
+	// the agents it was given, not the fleet (ADR 0012). SubagentHash
+	// pins the child instead — the sha256 of the child's own one-agent
+	// manifest, which pins its children the same way — so a change
+	// anywhere below (a grandchild's prompt, a child's tools or model)
+	// changes this manifest and the hash of every agent above it.
+	Subagent     string `json:"subagent,omitempty"`
+	SubagentHash string `json:"subagent_hash,omitempty"`
 	// OutputType names the type an Output tool (submit_output) decodes
 	// into — "main.Invoice" (UX-S1-06): the tool is the run's typed
 	// answer, not a side effect. Absent on every other tool.
@@ -190,6 +201,7 @@ func (a *Agent) manifestEntry() manifestAgent {
 			PromptSnippet:   t.snippet,
 			Source:          toolSource(t),
 			Subagent:        t.subagent,
+			SubagentHash:    t.subagentHash,
 			Middleware:      toolLayers(t.mw),
 		}
 		if a.hasOutput && t.Name == outputToolName {

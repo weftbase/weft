@@ -651,6 +651,14 @@ type Agent struct {
 	// run's invoke_agent span and run_start record (ADR 0024). "" when
 	// the agent is unnamed (the manifest requires a name).
 	manifestHash string
+	// treeHash is the same hash for any agent, named or not: sha256 of
+	// its one-agent manifest document. A Subagent tool delegating to
+	// this agent carries it into its own agent's manifest, so a parent's
+	// hash covers its whole delegation tree. Agents are immutable after
+	// New and a child exists before any Subagent names it, so the
+	// pinning has no cycle to follow: each agent hashes its children's
+	// finished hashes, never their trees again.
+	treeHash string
 	// instructionsHash is hashText(system), computed once at New: a run
 	// that does not override Instructions reports it as is (ADR 0028
 	// §4), so the common run hashes nothing.
@@ -751,10 +759,11 @@ func New(m Model, opts ...Option) *Agent {
 	// middleware does not forward Info. The agent is immutable after
 	// this, so one hash serves every run (ADR 0024 moves it onto the
 	// emitter).
-	if a.name != "" {
-		if b, err := Manifest(a); err == nil {
-			sum := sha256.Sum256(b)
-			a.manifestHash = hex.EncodeToString(sum[:])
+	if b, err := manifestBytes(manifestDoc{Version: 1, Agents: []manifestAgent{a.manifestEntry()}}); err == nil {
+		sum := sha256.Sum256(b)
+		a.treeHash = hex.EncodeToString(sum[:])
+		if a.name != "" {
+			a.manifestHash = a.treeHash // the bytes Manifest(a) writes
 		}
 	}
 	return a

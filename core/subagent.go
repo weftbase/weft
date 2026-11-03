@@ -344,7 +344,7 @@ func Subagent(name, description string, child *Agent, opts ...ToolOption) *ToolD
 	if file, line, fn := callerSource(); file != "" {
 		t.sourceFile, t.sourceLine, t.sourceFunc = file, line, fn
 	}
-	t.subagent = child.name
+	t.subagent, t.subagentHash = child.name, child.treeHash
 	if t.origin == "" {
 		t.origin = toolSourceSubagent
 	}

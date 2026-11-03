@@ -196,3 +196,21 @@ it sets none, so an agent whose sampling knobs change hashes
 differently and a reader can show a run option's override against the
 agent's value. The record contract's "The onion in the manifest"
 paragraph is the reader's spec.
+
+## Amendment (2026-11-03 — a Subagent tool pins its child by hash)
+
+The `subagent` field named the child and nothing more, so an agent's
+manifest — and `weft.manifest.hash`, its sha256 — did not change when
+a child's prompt, tools or model did: a platform pinning runs to an
+agent version could resume a parent on a build whose children had
+changed under the same version. A Subagent tool now also carries
+`subagent_hash`: the sha256 of the child's own one-agent manifest
+document (computed at the child's `New`, named or not), which carries
+its own children's hashes in turn. The manifest still describes only
+the agents it was given — it does not recurse — but a change anywhere
+in the delegation tree changes the hash of every agent above it. There
+is no cycle to follow: agents are immutable after `New` and a child
+exists before any Subagent names it, so each agent hashes its
+children's finished hashes. The hash stays the sha256 of `Manifest(a)`
+(a content-addressed manifest store keeps working). A tool only a
+`ToolSource` supplies is not in the manifest and pins nothing.
