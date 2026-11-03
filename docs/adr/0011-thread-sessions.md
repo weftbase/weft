@@ -272,8 +272,7 @@ Consequences the amendment owns:
 
 ## Amendment 2026-10-01 — session core rules, the lease, the turn's durable shapes, and the deferred freeze
 
-The 2026-10-01 review of the shipped module
-(`WEFT-THREAD-REVIEW-2026-10-01.md`) found the decisions above
+The 2026-10-01 review of the shipped module found the decisions above
 under-kept or under-stated in places. This amendment is the decision
 restated where the code now differs; the companion amendments of the
 same day are in ADR 0019 (a steer's receipt), ADR 0020 (compaction),
