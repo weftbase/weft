@@ -88,6 +88,9 @@ func (s *Session) AppendApprovalRequests(ctx context.Context, reqs ...ApprovalRe
 		}
 		r.ID, r.ParentID, r.Created = id, parent, now
 		r.Args = slices.Clone(r.Args)
+		// The parent decides the mirror under its own quorum too, and
+		// records it so a reopen without the option still asks for it.
+		r.Quorum = max(r.Quorum, s.parkQuorum())
 		entries = append(entries, r)
 		out = append(out, r)
 		parent = id
@@ -151,7 +154,7 @@ func (s *Session) MirroredRequests(ctx context.Context) ([]MirroredRequest, erro
 	var out []MirroredRequest
 	for _, re := range s.liveMirrorsLocked() {
 		ds := scopedDecisions(walk.decisions[re.CallID], re.RunID)
-		_, decided := effectiveDecision(ds, s.cfg.quorum)
+		_, decided := effectiveDecision(ds, s.quorumOf(re))
 		out = append(out, MirroredRequest{
 			Request:   requestFromEntry(s.header.ID, re),
 			Wrapper:   re.Wrapper,

@@ -570,7 +570,7 @@ older reader can safely ignore is added without a version.
 | `info` | 1 | — | *`title`*, *`meta`* | no |
 | `custom` | 1 | — | `kind`, *`data`* (any JSON) | no |
 | `custom_message` | 1 | — | `kind`, `message` | yes |
-| `approval_request` | 2 | 2 | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata`), *`schema_sha256`* (the tool's input schema when the call parked) | no |
+| `approval_request` | 2 | 2 | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata`), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1) | no |
 | `approval_decision` | 2 | 2 | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`* | no |
 | `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
 | `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`*, *`who`* (the grantor), *`via`* (the door it came through) | no |
@@ -583,7 +583,7 @@ v0.1, 2 approvals (v0.2), 3 steering receipts (v0.3), 4 the pool
 (v0.5), 5 the trim record (the 2026-10-01 fix train). Fields and
 status values added without a version, because an older reader loses
 nothing by ignoring them: `message.run_id`; `turn.policy`, `rerun`,
-`late_steps`; `approval_request.child`, `wrapper`, `run`, `schema_sha256`;
+`late_steps`; `approval_request.child`, `wrapper`, `run`, `schema_sha256`, `quorum`;
 `approval_decision.request_id`, `args_sha256`, `always`; `grant.who`, `via`; `approval_audit.grant_id`,
 `grant_shared`, `key_id`, `decisions`; `receipt.unanswered`, `run` and the
 status `accepted`; the `pool_receipt` status `parked`; the header

@@ -136,6 +136,11 @@ type Request struct {
 	// which resumes the child and then completes the delegation. Empty
 	// on an ordinary request.
 	Child string
+	// Quorum is how many approvals from distinct identities the call
+	// needs before it resolves — the request's own, recorded when it
+	// parked, or the session's Quorum if higher; 0 when one decision
+	// resolves it.
+	Quorum int
 }
 
 // Decision is one call's outcome, the value Decide records (ADR 0021
@@ -577,10 +582,11 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		// effective verdict an approve, when some approval of the
 		// occurrence asked for it — never while a quorum is still
 		// open, never beside a denial, and once.
-		_, wasDecided := effectiveDecision(before, s.cfg.quorum)
+		quorum := max(s.cfg.quorum, req.Quorum)
+		_, wasDecided := effectiveDecision(before, quorum)
 		all := append(before, e)
 		held[d.CallID] = all
-		if eff, ok := effectiveDecision(all, s.cfg.quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
+		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
 			g := alwaysGrant(req.Tool, req.Args, e)
 			g.ID, g.ParentID, g.Created = s.mintIDLocked(), parent, now
 			entries = append(entries, g)
@@ -994,6 +1000,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
 			RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
 			Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),
+			Quorum: s.parkQuorum(),
 		})
 		cr.entries = append(cr.entries, steps...)
 		cr.entries = append(cr.entries,
@@ -1170,7 +1177,7 @@ func (s *Session) auditResumeStartLocked(ctx context.Context, t *Turn) error {
 		for _, d := range ds {
 			applied = append(applied, d.ID)
 		}
-		if d, ok := effectiveDecision(ds, s.cfg.quorum); ok && d.Outcome == OutcomeApprove {
+		if d, ok := effectiveDecision(ds, s.quorumOf(walk.requests[c.ID])); ok && d.Outcome == OutcomeApprove {
 			if drift := s.driftLocked(walk.requests[c.ID]); drift != "" {
 				drifted = append(drifted, ApprovalAuditEntry{
 					CallID: c.ID, Step: StepResume, Outcome: "drift", Detail: drift, RunID: t.runID,
@@ -1241,13 +1248,33 @@ func toolSchemaHash(a *core.Agent, name string) string {
 }
 
 // requestFromEntry lifts a stored request entry to its Request value.
+// Quorum is the entry's; the session's own, when higher, is the
+// caller's to fold in (pendingLocked).
 func requestFromEntry(session string, e ApprovalRequestEntry) Request {
 	return Request{
 		ID: e.ID, Session: session, CallID: e.CallID, Tool: e.Tool,
 		Args: slices.Clone(e.Args), ArgsSHA256: e.ArgsSHA256,
 		RunID: e.RunID, Reason: e.Reason, Expiry: e.Expiry, Created: e.Created,
-		Child: e.Child,
+		Child: e.Child, Quorum: e.Quorum,
 	}
+}
+
+// parkQuorum is the quorum a request parked now records: the
+// session's when above 1, else 0.
+func (s *Session) parkQuorum() int {
+	if s.cfg.quorum > 1 {
+		return s.cfg.quorum
+	}
+	return 0
+}
+
+// quorumOf is the quorum a call's occurrence is decided under: the
+// stricter of the one its request recorded when it parked and the
+// session's own — so a session reopened without Quorum (another
+// process, another build) never resolves on fewer approvals than
+// the call parked asking for. Callers hold s.mu.
+func (s *Session) quorumOf(r ApprovalRequestEntry) int {
+	return max(s.cfg.quorum, r.Quorum)
 }
 
 // fillApprovalEntry stamps a chain entry's tree fields — id, parent,
@@ -1626,17 +1653,23 @@ func (s *Session) pendingLocked() []Request {
 	var out []Request
 	for _, c := range dangling {
 		run, ds := walk.occurrence(c.ID)
-		if _, ok := effectiveDecision(ds, s.cfg.quorum); ok {
+		re, requested := walk.requests[c.ID]
+		if _, ok := effectiveDecision(ds, s.quorumOf(re)); ok {
 			continue
 		}
-		if re, ok := walk.requests[c.ID]; ok {
-			out = append(out, requestFromEntry(s.header.ID, re))
+		if requested {
+			r := requestFromEntry(s.header.ID, re)
+			r.Quorum = s.quorumOf(re)
+			if r.Quorum < 2 {
+				r.Quorum = 0
+			}
+			out = append(out, r)
 			continue
 		}
 		out = append(out, Request{
 			Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 			Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
-			RunID: run,
+			RunID: run, Quorum: s.parkQuorum(),
 		})
 	}
 	// Mirrored child requests (ADR 0022 §7): a pool child's parked
@@ -1646,10 +1679,14 @@ func (s *Session) pendingLocked() []Request {
 	// An async child's mirror is the only shape that surfaces: the
 	// parent's own transcript never dangles for it.
 	for _, re := range mirrors {
-		if _, ok := effectiveDecision(scopedDecisions(walk.decisions[re.CallID], re.RunID), s.cfg.quorum); ok {
+		if _, ok := effectiveDecision(scopedDecisions(walk.decisions[re.CallID], re.RunID), s.quorumOf(re)); ok {
 			continue
 		}
-		out = append(out, requestFromEntry(s.header.ID, re))
+		r := requestFromEntry(s.header.ID, re)
+		if r.Quorum = s.quorumOf(re); r.Quorum < 2 {
+			r.Quorum = 0
+		}
+		out = append(out, r)
 	}
 	return out
 }
@@ -1753,11 +1790,12 @@ func (s *Session) resumeLinkLocked() (parkedRun, actor string) {
 		if parkedRun == "" {
 			parkedRun = run
 		}
-		d, ok := effectiveDecision(ds, s.cfg.quorum)
+		quorum := s.quorumOf(walk.requests[c.ID])
+		d, ok := effectiveDecision(ds, quorum)
 		if !ok {
 			continue
 		}
-		for _, who := range decisionActors(d, ds, s.cfg.quorum) {
+		for _, who := range decisionActors(d, ds, quorum) {
 			if !slices.Contains(actors, who) {
 				actors = append(actors, who)
 			}
@@ -1841,7 +1879,7 @@ func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) [
 	undecided := false
 	for _, c := range dangling {
 		_, ds := walk.occurrence(c.ID)
-		d, ok := effectiveDecision(ds, s.cfg.quorum)
+		d, ok := effectiveDecision(ds, s.quorumOf(walk.requests[c.ID]))
 		if !ok {
 			undecided = true
 			continue
@@ -1917,7 +1955,13 @@ func (s *Session) approvalSourceLocked(d ApprovalDecisionEntry) (by, grant strin
 	case viaQuorum:
 		return approvedByQuorum, ""
 	case viaUser, viaSigned, "":
-		if s.cfg.quorum > 1 {
+		quorum := s.cfg.quorum
+		if i, ok := s.byID[d.RequestID]; ok && d.RequestID != "" {
+			if re, ok := s.order[i].(ApprovalRequestEntry); ok {
+				quorum = s.quorumOf(re)
+			}
+		}
+		if quorum > 1 {
 			return approvedByQuorum, ""
 		}
 		return approvedByUser, ""

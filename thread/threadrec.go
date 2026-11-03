@@ -326,7 +326,7 @@ func (s *Session) reportEntryLocked(e Entry) {
 		if !e.Expiry.IsZero() {
 			f["expiry"] = e.Expiry.UTC().Format(time.RFC3339Nano)
 		}
-		if q := s.cfg.quorum; q > 1 {
+		if q := s.quorumOf(e); q > 1 {
 			f["quorum"] = q
 		}
 		s.reportLocked(e.RunID, threadRec{kind: recApprovalRequest, at: e.Created, fields: f})

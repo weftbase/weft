@@ -650,7 +650,7 @@ func mirrorRequests(reqs []thread.Request, child, wrapper string) []thread.Appro
 	for _, r := range reqs {
 		out = append(out, thread.ApprovalRequestEntry{
 			CallID: mirrorCallID(child, r.CallID), Tool: r.Tool, Args: r.Args, ArgsSHA256: r.ArgsSHA256,
-			RunID: r.RunID, Reason: r.Reason, Expiry: r.Expiry,
+			RunID: r.RunID, Reason: r.Reason, Expiry: r.Expiry, Quorum: r.Quorum,
 			Child: child, Wrapper: wrapper,
 		})
 	}

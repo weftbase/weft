@@ -321,6 +321,12 @@ type ApprovalRequestEntry struct {
 	// a tool the agent's static set did not hold (a ToolSource's), which
 	// is not checked.
 	SchemaSHA256 string `json:"schema_sha256,omitempty"`
+	// Quorum is how many approvals from distinct identities the call
+	// needs (the session's Quorum when it parked, above 1), 0 when one
+	// decision resolves it. It binds the request for good: a session
+	// reopened without Quorum, or with a lower one, still asks this
+	// many — the stricter of the two holds.
+	Quorum int `json:"quorum,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021

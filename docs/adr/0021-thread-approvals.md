@@ -362,3 +362,10 @@ case; none changes a model-visible byte.
   drift: an approved call runs once, a denied one never. A tool only a
   `ToolSource` supplies is not checked; a static tool that moved to a
   `ToolSource` reads as gone.
+- **A quorum binds the request it parked.** `Quorum(n)` is a session
+  option, given per `Create` or `Open`; a request parked under it now
+  records n (`ApprovalRequestEntry.Quorum`, `Request.Quorum`), and the
+  stricter of the recorded and the session's quorum decides the call.
+  Before, a process reopening the session without the option resolved
+  a call parked under `Quorum(2)` on one approval. A mirrored pool
+  request carries the child's quorum and records the parent's.
