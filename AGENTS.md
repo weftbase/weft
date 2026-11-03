@@ -194,7 +194,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 // 5. Describe the fleet: weft.Manifest(agents...) → weft.json (generated,
 //    committed, golden-gated; never read back).
 
-// 6. Record runs (package weft/otel — the pipeline is the recorder; block 9 has
+// 6. Record runs (package weft/otel — the pipeline is the recorder; block 8 has
 //    the full destination menu): otel.Install(dests...) sends every event, delta,
 //    transcript record and span as it happens (weft.heartbeat records —
 //    otel.Heartbeat(d), default 10 s — keep a quiet run reading running).
@@ -206,12 +206,9 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    // github.com/weftbase/weftbase — `make layering` (scripts/check-layering.sh) fails if one does.
 //    weft.Metadata(map[string]string{"cwd": wd})  // run option: caller pairs on every record/span of the run
 //    // (inherited by subagents; thread sessions stamp weft.session.id,
-//    // weft.public_id, weft.turn — block 8).
+//    // weft.public_id, weft.turn — block 7).
 
-// 7. Studio, the devtools panel, the scope header and the playground's runtime
-//    link moved to weftbase (github.com/weftbase/weftbase, its AGENTS.md).
-
-// 8. Sessions (package weft/thread) — the map; godoc is the reference, docs/thread-operations.md the
+// 7. Sessions (package weft/thread) — the map; godoc is the reference, docs/thread-operations.md the
 //    operator's page; pre-1.0, API and format not frozen. st: jsonl.Open(dir) | sqlite.Open(path) (own
 //    package) | thread.Memory(); options thread.Salvage(), FsyncOnFlush(), NoLock(), OpenLogger(l); the live
 //    tail is st.(thread.Watcher).Watch(ctx, id, afterEntryID). s, _ := thread.Create(ctx, st, agent, opts...)
@@ -256,7 +253,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    p.Forward, p.Recover(ctx, parent) after a restart, p.Close(ctx); pool.Receipts, Children, Descendants.
 //    Errors: retry ErrBusy, ErrLocked · reopen ErrStale, ErrClosed · terminal ErrCorrupt, ErrNewerFormat.
 
-// 9. Observability pipeline (package weft/otel; several destinations at once,
+// 8. Observability pipeline (package weft/otel; several destinations at once,
 //    each with its own content policy; defer on exit):
 //    defer otel.Install(
 //        otel.Sink("store", open),                    // synchronous, first-party (content on): open returns the
@@ -291,8 +288,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    //   attrs, content-off → stripped; app weft.* keys renamed slog.weft.*; >120 attrs counted
 //    //   (weft.log.attrs_dropped); shed with the deltas on overflow;
 //    //   weft.logs.bridged (count) on heartbeats and each invoke_agent span, only on the destinations
-//    //   that take the lines and only while a bridge is live; GET runs/{id}/logs
-//    //   of a run without it (and no line) holds the not_recorded hint naming otel.Slog()
+//    //   that take the lines and only while a bridge is live
 //    otel.Installed(), p.Destinations()  // the registered pipeline; the destinations it built
 //    // The local destinations (exporter.Local, exporter.Studio, exporter.Install) are
 //    // weftbase's: github.com/weftbase/weftbase/exporter.

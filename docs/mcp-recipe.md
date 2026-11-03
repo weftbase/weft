@@ -1,9 +1,9 @@
 # MCP recipes
 
 Reading runs from Claude Code or Cursor (the stdio MCP server over a
-running Studio, formerly `weft mcp`) moved to weftbase with Studio:
-`weftbase mcp`, documented in weftbase's `docs/mcp-recipe.md`
-(github.com/weftbase/weftbase). This page keeps the framework's part.
+running Studio) is the platform's: `weftbase mcp`, documented in
+weftbase's `docs/mcp-recipe.md` (github.com/weftbase/weftbase). This
+page is the framework's part.
 
 ## Your own agents over MCP: the caller link (`weft/mcp`)
 

@@ -19,7 +19,7 @@ the first Go run, and CI's shared runners are slower.
 | Format | `make fmt` | no (lint covers gofmt) | — | yes | < 1 |
 | Vet | `make vet` | yes (`test` job) | — | yes | < 1 |
 | Lint | `make lint` | yes (`lint` job) | — | yes | < 1 (cached) |
-| Unit + contract + examples, `-race` | `make test` | yes (`test` job, Go 1.26.x and stable) | — | yes | ~10 |
+| Unit + contract + examples, `-race` | `make test` | yes (`test` job, Go 1.26.x and stable) | — | yes | a few |
 | Offline kill switch | `make offline` | yes (`offline` job) | — | yes | ~1 |
 | Fuzz, core | `make fuzz` | yes (`fuzz` job) | — | yes | ~1.2 |
 | Fuzz, thread | `make fuzz-thread` | yes (`fuzz` job) | — | yes | ~1.4 |
@@ -32,9 +32,8 @@ the first Go run, and CI's shared runners are slower.
 | The arena | `make check-dev` in `../weft-arena` | no (separate repo) | — | by hand | not timed |
 
 CI (`ci.yml`) runs on every push to `main` and on every pull request.
-The platform (Studio, the store, the CLI) and its gates — ClickHouse,
-the web app and panel, `make mcp-check`, the phase gates — are
-weftbase's (github.com/weftbase/weftbase, `docs/testing.md`). The soak (`soak.yml`) runs nightly and on manual
+The platform's gates (Studio, the store, the CLI) are weftbase's
+(github.com/weftbase/weftbase, `docs/testing.md`). The soak (`soak.yml`) runs nightly and on manual
 dispatch.
 
 ---
@@ -73,8 +72,7 @@ toolchain is newer than the linter.
 1.26.x and stable. The `lint` job runs golangci-lint per module.
 
 **Measured.** `make vet` 7 s, `make lint` 5 s (cached), `make test`
-a few minutes since the platform moved out (it was about 10 minutes,
-601 s, with `studio` alone at about 520 s). `make test` passes
+a few minutes. `make test` passes
 `-timeout 20m`, the value CI passes (`TEST_TIMEOUT ?= 20m` in the
 Makefile; raise it per invocation with `make test TEST_TIMEOUT=30m`).
 The slowest are `thread/sqlite` (~95 s), and `core`, `thread` and
@@ -108,18 +106,16 @@ go test -short ./thread/...   # a few long tests shrink under -short
 - **Golden files.** `wefttest.Golden(t, path, got)` compares bytes. Run
   `go test ./… -update` to rewrite the files, then review the diff and
   commit it. The record-contract fixtures have their own flag,
-  described in §8.
+  described in §7.
 - **`TestFacadesAreComplete`** (root, `facade_test.go`) fails when a
-  generated facade is stale (§9).
+  generated facade is stale (§8).
 - **`thread`'s rules T1–T5** are pinned by its own tests, including the
   crash matrix and the one-writer tables.
-- **The store's backend conformance and Studio's auth matrix** moved
-  with the platform: weftbase's `docs/testing.md`.
 
 **Reading a failure.** A failing test prints its name and file:line.
 Re-run that one test with `-run '^Name$' -count=1 -v` in its package.
 `-count=1` defeats the test cache. For a race report, both stacks are
-in the output. For a flake that only appears under load, go to §6.
+in the output. For a flake that only appears under load, go to §5.
 
 ## 2. The offline gate: `make offline` and `WEFT_MODEL_REQUESTS=deny`
 
@@ -238,14 +234,7 @@ run `go test -run '^FuzzRepair/<hash>$' ./core/`. Fix the bug, then
 `thread/testdata/fuzz/` (`FuzzDecodeEntry`, `FuzzDecodeHeader`). The
 `FuzzRepair` seed was added this way.
 
-## 5. ClickHouse: `WEFT_CLICKHOUSE_DSN`
-
-Moved to weftbase (github.com/weftbase/weftbase, `docs/testing.md`) with the platform.
-
----
-
-
-## 6. Loaded stress: `make stress`, and `TestNestedRandomChains`
+## 5. Loaded stress: `make stress`, and `TestNestedRandomChains`
 
 **What it proves.** Concurrent code holds up when the scheduler is
 hostile. CI's runners are slow and shared, so timing windows that never
@@ -326,7 +315,7 @@ of the racing goroutines still varies from run to run, so a race may
 need several runs with the same seed, or the stress recipe above, to
 show up again.
 
-## 7. The nightly race soak: `make soak-thread`
+## 6. The nightly race soak: `make soak-thread`
 
 **What it proves.** The thread layer's crash matrix, its one-writer
 tables and the pool's scheduling tests are where a single pass can miss
@@ -344,9 +333,9 @@ the same two steps. It is too slow to run on every push. Locally, expect
 it to take roughly 20–40 minutes, since one `-race` pass of
 `thread/...` takes about 2 minutes here (`thread/sqlite` is ~95 s of
 that). This was not timed end to end. To reproduce a soak failure, run the named test with
-`-count=50` and then under `make stress` (§6).
+`-count=50` and then under `make stress` (§5).
 
-## 8. Record-contract fixtures
+## 7. Record-contract fixtures
 
 `docs/record-contract.md` describes what the pipeline emits and what
 a store reads. The page stays here (weft emits the records); the tests
@@ -367,7 +356,7 @@ that pin it live with the store, in weftbase (github.com/weftbase/weftbase):
 A change to the records here is a change to that page in the same
 commit, and a fixture regeneration in weftbase.
 
-## 9. API stability and generated code
+## 8. API stability and generated code
 
 ```sh
 make apidiff-all     # every go.work module vs its own last tag (CI)
@@ -412,28 +401,7 @@ the go1.26.0 toolchain already in the module cache.
 Also run `make tidy` and then `git status --short`; no `go.mod` or
 `go.sum` should change.
 
-## 10. Studio and the devtools panel
-
-Moved to weftbase (github.com/weftbase/weftbase, `docs/testing.md`) with the platform.
-
----
-
-
-## 11. `make mcp-check`
-
-Moved to weftbase (github.com/weftbase/weftbase, `docs/testing.md`) with the platform.
-
----
-
-
-## 12. The phase gate scripts (`scripts/ux-gate/`)
-
-Moved to weftbase (github.com/weftbase/weftbase, `docs/testing.md`) with the platform.
-
----
-
-
-## 13. The arena (`../weft-arena`)
+## 9. The arena (`../weft-arena`)
 
 weft's own tests prove each promise in isolation. The arena is a
 separate repository and harness that checks the framework the way a
@@ -444,8 +412,7 @@ feature that no scenario covers. The scenarios run offline (scripted
 They can be driven from a CLI, a browser UI, or MCP, and they can seed a
 running Studio with realistic runs. It pins the published weft tags
 (`make check`, `GOWORK=off`). `make check-dev` runs the same gate
-against a sibling `../weft` checkout through `go.work`. The phase gates
-use its offline seed as their data.
+against a sibling `../weft` checkout through `go.work`.
 
 ```sh
 cd ../weft-arena
@@ -478,7 +445,7 @@ Live runs call real providers; keep them out of weft's gates.
 ## Before a release
 
 The release recipe bumps the version, tags `core/vX.Y.Z` and then
-`vX.Y.Z`, publishes the panel asset and pins the examples. Run these
+`vX.Y.Z` and pins the examples. Run these
 first, from a clean tree, each exiting 0:
 
 - [ ] `make fmt vet lint test`

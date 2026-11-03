@@ -14,7 +14,7 @@ import (
 	"github.com/weftbase/weft/thread/pool"
 )
 
-// The README's Sessions section and AGENTS.md block 8, copied line for
+// The README's Sessions section and AGENTS.md block 7, copied line for
 // line (placeholders filled, names unchanged) — the docs' code blocks
 // compile against the API they describe, and this test breaks when
 // either side drifts.
@@ -64,7 +64,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 	}
 	_ = again
 
-	// README and AGENTS block 8: the three ways to wait on a turn, the
+	// README and AGENTS block 7: the three ways to wait on a turn, the
 	// outcome, and WaitIdle.
 	if _, err := turn.WaitContext(ctx); err != nil {
 		t.Fatal(err)
@@ -105,13 +105,13 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 	if err := s2.Uncompact(ctx); err == nil {
 		t.Log("nothing to undo in a fresh session — fine")
 	}
-	// README and AGENTS block 8: the other verdicts and the off switch
+	// README and AGENTS block 7: the other verdicts and the off switch
 	// exist under these names.
 	_ = thread.Cancel()
 	_ = thread.Replace(plan)
 	_ = thread.NoAutoCompact()
 
-	// AGENTS block 8: the busy policy and the run options carry.
+	// AGENTS block 7: the busy policy and the run options carry.
 	s3, err := thread.Create(ctx, st, agent, thread.BusyPolicy(thread.Reject))
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// AGENTS block 8: the bookkeeping appends, on the session that
+	// AGENTS block 7: the bookkeeping appends, on the session that
 	// holds the entry.
 	if err := again.Label(ctx, turn.ID(), "bookmark"); err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// AGENTS block 8: key.Sign is the same exchange for an approver
+		// AGENTS block 7: key.Sign is the same exchange for an approver
 		// holding one key.
 		if _, err := key.Sign(r, thread.Approve(pend[0].CallID)); err != nil {
 			t.Fatal(err)
@@ -326,7 +326,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 	if err := pl.Recover(ctx, ps); err != nil {
 		t.Fatal(err)
 	}
-	// AGENTS block 8: the rest of the pool's names, as written there.
+	// AGENTS block 7: the rest of the pool's names, as written there.
 	if _, err := pl.Wrap("research2", "Research a topic.", researcher, pool.Async()); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// AGENTS block 8: the package-level calls, the keyset cursor, and
+	// AGENTS block 7: the package-level calls, the keyset cursor, and
 	// the open options every backend takes.
 	lp, err := thread.List(ctx, st, thread.Query{Before: time.Now(), BeforeID: "s_zzz", Limit: 10})
 	if err != nil {

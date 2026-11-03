@@ -589,21 +589,6 @@ func TestManifest(t *testing.T) {
 A tool or policy change without regenerating fails `go test`; the diff
 is the review artifact. ([ADR 0012](docs/adr/0012-manifest-format.md))
 
-Without a `weft.json`, weftbase's Studio shows the manifests your app's
-runtime link registers (weftbase's `runtime.Install`; `weftbase dev` has
-the playground on by default).
-
-A replay from step N may edit what it keeps before it runs: a kept
-step's user message (step 0's is the turn's prompt), a call's
-arguments (checked against the tool's schema, refused in the loop's
-`INVALID_INPUT` words), a tool result, a call-free reply, or a user
-message inserted at a step boundary — one `transcript_edits` list on
-the command. `POST /api/playground/preview` takes the same body and
-answers the exact first request that replay will send, diffed against
-the one step N recorded, without calling a model or needing a runtime;
-the replayed run carries `weft.edits` naming every edit
-([ADR 0029](docs/adr/0029-replay-input.md) decision 8).
-
 ## MCP: both ways
 
 `weft/mcp` (a package over the official Go MCP SDK, aliased
@@ -749,7 +734,7 @@ that must stay offline get loud failures, not surprise bills.
   (trace and logs — ADR 0016, ADR 0024), a no-op until an SDK
   registers — the zero-config instrumentation THE-END-GOAL sanctions
   as the core's single exception. The vendor SDKs, the OTel SDK and its
-  exporters, the SQLite and ClickHouse drivers are dependencies of the
+  exporters and the SQLite driver are dependencies of the
   framework module, never of `core` (ADR 0027).
 
 ## Layout
@@ -863,17 +848,16 @@ minor bump with a breaking CHANGELOG entry.
 4. ~~MCP interop~~ — **done** (consume and expose; ADR 0015). ~~Core
    observability~~ — **done** (OTel spans + slog lines; ADR 0016).
 5. The satellites: ~~`store`~~ — **removed** (step 5 of ADR 0024;
-   v0.1.3 remains on the module proxy). ~~`studio`~~ — **done** (the
-   Inspector, v0.1.0, ADR 0018; rewritten on obsdb, ADR 0024 S4).
+   v0.1.3 remains on the module proxy).
    ~~`thread`~~ — **shipped** (sessions, branching, compaction,
    approvals, steering, pool; [ADR 0011](docs/adr/0011-thread-sessions.md)
    and ADRs 0019–0022; the sandbox, ADR 0023, was abandoned). Pre-1.0
    and not frozen: the 2026-10-01 review's fix train shipped as
    thread v0.9.0 (thread/sqlite v0.3.0), and a field trial in real use
    comes before any API or format freeze.
-   ~~`obsdb`, `otel`, `runtime`~~ — **done** (ADR 0024: the recorder,
-   its database, the playground). Since 0.21 the platform (`studio`,
-   `obsdb`, `runtime`, the CLI) is its own repository, weftbase. Next:
+   ~~`otel`~~ — **done** (ADR 0024: the recorder). Since 0.21 the
+   platform (Studio, the store, the playground, the CLI) is its own
+   repository, weftbase. Next:
    `serve` and the eval/prompt/mem/trace modules.
 
 ## License
