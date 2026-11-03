@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/weftbase/weft/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/weftbase/weft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/weftbase/weft.svg)](https://pkg.go.dev/github.com/weftbase/weft)
-[![Version](https://img.shields.io/badge/version-v0.20.3-orange)](https://github.com/weftbase/weft/releases/tag/v0.20.3)
+[![Version](https://img.shields.io/badge/version-v0.21.0-orange)](https://github.com/weftbase/weft/releases/tag/v0.21.0)
 
 A modular framework for building AI agents in Go — designed the way the
 standard library is: small interfaces, `context` everywhere, functional
@@ -26,16 +26,17 @@ The platform — Studio (runs, sessions, traces and live streams in a web
 UI, the in-page devtools panel, the playground), the store the records
 land in (`obsdb`: SQLite or ClickHouse), the local exporter
 (`exporter.Local`, `exporter.Studio`), the runtime link and the
-`weftbase` CLI (`weftbase dev`) — is **weftbase**, its own repository and
-module: [github.com/weftbase/weftbase](https://github.com/weftbase/weftbase).
-weftbase imports weft; weft never imports weftbase (`make layering`).
+CLI — left weft for **weftbase**, its own repository and module, which
+is not released yet: Weftbase's console is coming. Until then weft's
+records go to any OpenTelemetry backend. weftbase imports weft; weft
+never imports weftbase (`make layering`).
 Coming from 0.20, see [`MIGRATION-0.21.md`](MIGRATION-0.21.md).
 
 Concurrency is the point, not a feature: a step's tools fan out over
 goroutines, parallelism is a one-line dial, and tool failures never cancel
 their siblings.
 
-> **Status:** v0.20.3 — experimental, pre-1.0, released as one module
+> **Status:** v0.21.0 — experimental, pre-1.0, released as one module
 > (plus `core`; see [Releases](https://github.com/weftbase/weft/releases),
 > `CHANGELOG.md` and, coming from 0.8, [`MIGRATION-0.9.md`](MIGRATION-0.9.md)). The core's three load-bearing contracts — message
 > model, error model, tool contract — are implemented and tested, and
@@ -338,18 +339,10 @@ function `Install` returns flushes them on the way out. It reads the standard `O
 and knows no viewer. The records' shape is
 [docs/record-contract.md](docs/record-contract.md).
 
-Storing, querying and showing them is the platform's:
-[weftbase](https://github.com/weftbase/weftbase). Locally:
-
-```sh
-go install github.com/weftbase/weftbase/cmd/weftbase@latest
-weftbase dev -- go run ./cmd/app     # Studio on 127.0.0.1:7331 and your app beside it
-```
-
-and in the app, `defer exporter.Install()()` from
-`github.com/weftbase/weftbase/exporter` (the local SQLite sink, or the
-running Studio it finds). Any OTLP/HTTP exporter can feed the same
-Studio: `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:7331`.
+Storing, querying and showing them is a backend's job: the records are
+standard OpenTelemetry, so any OTel backend reads them — point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at it, or name it with `otel.OTLP`.
+Weftbase's console, built for these records, is coming.
 
 ## Sessions — `weft/thread`
 

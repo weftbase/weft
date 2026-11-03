@@ -11,6 +11,11 @@ weft 0.21 does two breaking things at once, so importers move once:
    starting at v0.1.0; it reports the weft version it embeds). weftbase
    imports weft; weft never imports weftbase.
 
+> weftbase is not released yet: Weftbase's console is coming. Until
+> then, send weft's records to any OpenTelemetry backend
+> (`OTEL_EXPORTER_OTLP_ENDPOINT`, `otel.OTLP`); steps 2–4 describe the
+> platform packages and command line as they stand in weftbase today.
+
 An app that only builds agents (the loop, the adapters, `thread`, `otel`,
 `mcp`, `mw`, `wefttest`) needs step 1 only; one that imports a platform
 package (`studio`, `obsdb`, `runtime`, `scope`, `exporter`, `cmd/weft`)
@@ -32,7 +37,7 @@ grep -rlE 'github\.com/weftgo/weft' --include='*.go' . | xargs sed -i -E \
   -e 's#github\.com/weftgo/weft\b#github.com/weftbase/weft#g'
 go mod edit -droprequire github.com/weftgo/weft -droprequire github.com/weftgo/weft/core
 go get github.com/weftbase/weft@v0.21.0
-go get github.com/weftbase/weftbase@v0.1.0   # only when step 2 applies
+# step 2 only: github.com/weftbase/weftbase, once it is released
 go mod tidy
 ```
 
@@ -66,7 +71,7 @@ backend query or dashboard filtering on the old scope name needs the new one.
 | `github.com/weftgo/weft/thread/examples/approvals` | weftbase's `examples/approvals` |
 
 (Step 1's rewrite already made these moves; `go get
-github.com/weftbase/weftbase@v0.1.0` adds the module.)
+github.com/weftbase/weftbase` adds the module once it is released.)
 
 ### `otel.Local` and the other local destinations
 
