@@ -225,18 +225,14 @@ and stringified on ClickHouse, which is why every non-string contract
 key is on the list. `weft.metadata.dropped` (int, `invoke_agent` span)
 says how many pairs the metadata limits dropped.
 
-A known limit on ClickHouse (debt, not changed yet): a run's `meta` there
-is the greatest of its contributing rows' JSON maps compared as strings
-(`max(Meta)` in the runs view) — one row's map wins, the maps are not
-merged as on SQLite. The spans and records the core emits for a run
-carry the same map, so this is invisible for them, with one exception:
-the compaction marker a reopened `thread` session emits for a run it did
-not see (a forked or pool session's `Compact` after a reopen) carries
-only that session's `weft.session.*` keys, whose JSON sorts above a map
-starting `{"tenant…`, so it can win and drop the caller's pairs from that
-run's ClickHouse `meta`. A `thread` record (§4) filed under such a run
-carries the same fallback map (the session's run metadata under its
-identity) and has the same effect.
+On ClickHouse a run's `meta` is the union of its contributing rows' maps,
+as on SQLite (weftbase migration 0034, a `maxMap` over each row's pairs).
+On a key two rows carry with different values the greater value wins
+there, the later write on SQLite. The core stamps one map on every row
+of a run, so only an app's own attributes, or the `weft.session.*` keys
+of a compaction marker or `thread` record a reopened session files under
+a run it did not see, can differ; none of them removes another row's
+keys. Runs merged before 0034 keep the one map that merge kept.
 
 ## 3. Spans
 
@@ -435,7 +431,7 @@ Name `execute_tool <tool>`, kind Internal, child of `invoke_agent`.
 | `gen_ai.tool.name`, `gen_ai.tool.call.id` | string | always |
 | `weft.run.id`, `weft.step.index`, `weft.tool.seq` | string, int, int | always |
 | `weft.tool.approved` | bool `true` | a call resumed by `Approve` |
-| `weft.tool.approved_by`, `weft.grant.id` | string, string | an approved call's provenance, as `core.ApproveBy` named it — absent for a plain `Approve`: who or what approved it — `thread` passes `user` (`Decide`, `DecideSigned`), `grant` (a standing grant matched; `weft.grant.id` its grant entry id), `approver` (the `WithApprover` step), `quorum` (a `Quorum(n > 1)` of approvals) or `policy` (another session path: a pool parent's or child's record) on every resume it runs (UX-B-14); `weftbase/runtime` passes `runtime` on a playground approval of a runtime-started run, in both thread modes — an ephemeral run's resume through `core.ApproveBy`, a fork's through its session, which reports the approval it records for the playground as `runtime` (since 0.18.1; 0.18.0 read `user` there, the session's `Decide` door; the `queue_breakpoints` fixture). Ids and enums, never who by name (that is the `thread` record's `content.who`, §4); span attributes, never `meta` (ClickHouse 0024) |
+| `weft.tool.approved_by`, `weft.grant.id` | string, string | an approved call's provenance, as `core.ApproveBy` named it — absent for a plain `Approve`: who or what approved it — `thread` passes `user` (`Decide`, `DecideSigned`), `grant` (a standing grant matched; `weft.grant.id` its grant entry id), `approver` (the `WithApprover` step), `quorum` (a `Quorum(n > 1)` of approvals) or `policy` (another session path: a pool parent's or child's record) on every resume it runs (UX-B-14); `weftbase/runtime` passes `runtime` on a playground approval of a runtime-started run, in both thread modes — an ephemeral run's resume through `core.ApproveBy`, a fork's through its session, which reports the approval it records for the playground as `runtime` (since 0.18.1; 0.18.0 read `user` there, the session's `Decide` door; the `queue_breakpoints` fixture), and on an app turn decided through `runtime.Sessions` from Studio or the panel. Ids and enums, never who by name (that is the `thread` record's `content.who`, §4); span attributes, never `meta` (ClickHouse 0024) |
 | `weft.tool.denied`, `weft.tool.denied_kind` | bool `true`, string | a parked call the resume denied: `denied` (`Deny`) or `no_decision` (left undecided). The span is zero-length (start = end, the moment the resume decided it), carries `weft.step.index` 0 and no `weft.tool.seq` (no `tool_start`: the call never ran), `error.type` `DENIED`, status `Error` — never the reason |
 | `weft.tool.result_bytes` | int | at end, a successful result only (not an error result, not a parked call): the length of the result the model sees (after the result cap) |
 | `weft.tool.pending` | bool `true` | at end: the call was parked for approval |
