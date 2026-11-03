@@ -2,7 +2,7 @@
 // weft framework. It is what github.com/weftbase/weft re-exports under the
 // same names; import this path instead when a service wants the loop
 // alone — its only dependency is the OpenTelemetry API — and the
-// framework's sessions, recording and Studio are not needed.
+// framework's adapters, sessions and recording are not needed.
 //
 // Weft runs the agent loop — call a model, execute its tool calls in
 // parallel with defined failure semantics, stream typed events while work is
@@ -36,6 +36,6 @@
 // vendor wire formats into weft's events. The core/wefttest package
 // provides a scriptable Model for offline tests; core/mw the reference
 // middleware. The framework module (github.com/weftbase/weft) adds the
-// provider adapters, MCP, durable sessions (thread), OpenTelemetry
-// recording (otel, obsdb) and Studio.
+// provider adapters, MCP, durable sessions (thread) and OpenTelemetry
+// recording (otel).
 package core
