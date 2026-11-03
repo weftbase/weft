@@ -304,6 +304,11 @@ type ApprovalRequestEntry struct {
 	// with its lineage. Both empty on an ordinary request.
 	Child   string `json:"child,omitempty"`
 	Wrapper string `json:"wrapper,omitempty"`
+	// Park is the park rule the parked run ran under (core.RunResult.Park),
+	// nil when none was in force. A resume after a restart has lost the
+	// parked send's run options and context; it puts this rule back, so
+	// a ParkOn or ParkAllExcept run keeps parking what it parked.
+	Park *core.ParkRule `json:"park,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021

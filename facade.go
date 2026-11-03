@@ -1596,6 +1596,11 @@ type StepRecord = core.StepRecord
 // (including the input messages), one record per step, and summed usage.
 type RunResult = core.RunResult
 
+// ParkRule is a run's park rule as data (RunResult.Park): the tools the
+// run's ParkOn named, and, when All, the default-deny half — every
+// call parks except one to a tool AllExcept names. Names are sorted.
+type ParkRule = core.ParkRule
+
 // Run is a handle to one streaming execution. Create it with Agent.Stream,
 // then either range over Events (exactly once) or call Wait, which runs the
 // agent to completion and reports the final result.

@@ -538,6 +538,32 @@ func (c *runConfig) resolvePark(ctx context.Context) (context.Context, *parkRule
 	return ctx, rule
 }
 
+// export returns the rule as data for RunResult.Park: the run's own
+// ParkOn names (not the ones a ParkSource supplied) and the
+// default-deny half. nil when neither is in force.
+func (p *parkRule) export() *ParkRule {
+	if p == nil {
+		return nil
+	}
+	out := &ParkRule{All: p.all}
+	for name := range p.on {
+		if !p.sourced[name] {
+			out.On = append(out.On, name)
+		}
+	}
+	if p.all {
+		for name := range p.except {
+			out.AllExcept = append(out.AllExcept, name)
+		}
+	}
+	if len(out.On) == 0 && !out.All {
+		return nil
+	}
+	slices.Sort(out.On)
+	slices.Sort(out.AllExcept)
+	return out
+}
+
 type onMessagesOption struct {
 	fn func(context.Context, int, []Message)
 }
@@ -704,6 +730,41 @@ type RunResult struct {
 	// them and the transcript carries no result for them; resume with
 	// Messages(res.Messages...) plus Approve/Deny per call.
 	Pending []ToolCallPart
+	// Park is the park rule the run ran under — its own ParkOn and
+	// ParkAllExcept, and a ParkAllExcept it inherited from the run it
+	// was started inside — nil when no rule was in force. A caller that
+	// persists a parked run keeps it beside the pending calls and puts
+	// it back on the resuming run (ParkRule.Options), so a resume after
+	// a restart parks what the parked run would have parked. The names
+	// an agent's ParkSource supplied are not in it: the resuming run
+	// reads its sources again.
+	Park *ParkRule
+}
+
+// ParkRule is a run's park rule as data (RunResult.Park): the tools the
+// run's ParkOn named, and, when All, the default-deny half — every
+// call parks except one to a tool AllExcept names. Names are sorted.
+type ParkRule struct {
+	On        []string `json:"on,omitempty"`
+	All       bool     `json:"all,omitempty"`
+	AllExcept []string `json:"all_except,omitempty"`
+}
+
+// Options returns the run options that put the rule back on a run:
+// ParkOn for On, and ParkAllExcept for the default-deny half. A nil
+// rule returns none.
+func (p *ParkRule) Options() []RunOption {
+	if p == nil {
+		return nil
+	}
+	var opts []RunOption
+	if len(p.On) > 0 {
+		opts = append(opts, ParkOn(p.On...))
+	}
+	if p.All {
+		opts = append(opts, ParkAllExcept(p.AllExcept...))
+	}
+	return opts
 }
 
 // NumSteps returns how many model calls the run made.

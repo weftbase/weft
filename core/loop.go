@@ -412,6 +412,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 		cfg.parkSourced = a.readParkSources(ctx, cfg.id)
 	}
 	ctx, parkSet := cfg.resolvePark(ctx)
+	res.Park = parkSet.export()
 	if len(resume) > 0 {
 		results, pending, sub, err := a.resolvePending(ctx, cfg, resume, seq, emit, fetchTools, parkSet, &records)
 		if err != nil {

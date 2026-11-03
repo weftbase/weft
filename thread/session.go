@@ -2094,6 +2094,11 @@ func cloneEntry(e Entry) Entry {
 		return e
 	case ApprovalRequestEntry:
 		e.Args = slices.Clone(e.Args)
+		if e.Park != nil {
+			p := *e.Park
+			p.On, p.AllExcept = slices.Clone(p.On), slices.Clone(p.AllExcept)
+			e.Park = &p
+		}
 		return e
 	case ApprovalDecisionEntry:
 		return e

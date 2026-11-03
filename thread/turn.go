@@ -1011,6 +1011,13 @@ func (s *Session) runResume(item workItem) {
 			return
 		}
 		opts = append([]core.RunOption(nil), s.await.opts...)
+		// After a restart the parked turn is gone with its run options
+		// and context; the park rule it ran under was recorded on its
+		// requests and goes back on the run, so a resume never runs
+		// unasked what the parked run would have parked.
+		if s.await.turn == nil {
+			opts = append(opts, s.persistedParkLocked().Options()...)
+		}
 		// The approval class a layer deciding on someone's behalf named
 		// is the arming call's alone (WithApprovedBy): one the
 		// parked turn's context carried from an earlier resume is shadowed.
@@ -1211,7 +1218,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// and the request is not.
 	var chain *chainResult
 	if err == nil && res != nil && len(res.Pending) > 0 {
-		chain = s.runChain(persist, t, callerOpts, res.Pending)
+		chain = s.runChain(persist, t, callerOpts, res.Pending, res.Park)
 	}
 	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp})
 	// Steers still live when the run ended defer here: the run met a

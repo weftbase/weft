@@ -230,7 +230,12 @@ decided. The resume now runs on the arming call's context for
 cancellation and deadline and takes the parked turn's context values
 for every key the arming context lacks (the parked turn's run options
 already rode along, §1). After a restart the parked turn's context is
-gone, like its options.
+gone, like its options — except its park rule: the rule the parked
+run ran under (`core.RunResult.Park`: its ParkOn names and the
+ParkAllExcept in force, its own or inherited) is recorded on the
+boundary's request entries (`ApprovalRequestEntry.Park`) and put back
+on a resume that lost the parked turn, so a resume after a restart
+never runs unasked what the parked run would have parked (2026-11-03).
 
 ## Amendment (2026-10-01 — the approvals hardening)
 

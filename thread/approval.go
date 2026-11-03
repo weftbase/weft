@@ -873,7 +873,7 @@ type chainResult struct {
 // carries the expiry, the notification and the challenge the
 // remaining decisions answer, so the first approval is recorded
 // beside it, not instead of it.
-func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, calls []core.ToolCallPart) *chainResult {
+func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, calls []core.ToolCallPart, park *core.ParkRule) *chainResult {
 	cr := &chainResult{opts: opts, awaitCtx: ctx, runID: t.runID}
 	var expiry time.Time
 	if s.cfg.requestExpiry > 0 {
@@ -967,6 +967,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		cr.entries = append(cr.entries, ApprovalRequestEntry{
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
 			RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
+			Park: park,
 		})
 		cr.entries = append(cr.entries, steps...)
 		cr.entries = append(cr.entries,
@@ -1596,6 +1597,19 @@ func (s *Session) liveMirrorsLocked() []ApprovalRequestEntry {
 // it is open no plain Send runs — the queue holds — and no compaction
 // touches the tail: the dangling calls must stay raw for the decisions
 // to resolve. Callers hold s.mu.
+// persistedParkLocked returns the park rule the open boundary's
+// requests recorded (ApprovalRequestEntry.Park), nil when none did.
+// Callers hold s.mu.
+func (s *Session) persistedParkLocked() *core.ParkRule {
+	requests := s.approvalWalkLocked().requests
+	for _, c := range s.danglingCallsLocked() {
+		if r, ok := requests[c.ID]; ok && r.Park != nil {
+			return r.Park
+		}
+	}
+	return nil
+}
+
 func (s *Session) boundaryLocked() bool {
 	return len(s.danglingCallsLocked()) > 0
 }
