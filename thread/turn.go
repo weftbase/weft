@@ -1018,15 +1018,19 @@ func (s *Session) runResume(item workItem) {
 			return
 		}
 		opts = append([]core.RunOption(nil), s.await.opts...)
-		// After a restart the parked turn is gone with its run options
-		// and context; what it ran under was recorded on its requests
-		// (core.SettingsOf) and goes back on the run, so a resume never
-		// runs unasked what the parked run would have parked, nor
-		// offers a tool it narrowed away, nor spends past its budget,
-		// nor loses its tenant's metadata.
-		if s.await.turn == nil {
-			opts = append(opts, s.persistedRunLocked().Options()...)
-		}
+		// What the parked run ran under was recorded on its requests
+		// (core.SettingsOf over its options and context) and goes back
+		// on the run as options, so a resume never runs unasked what
+		// the parked run would have parked, nor offers a tool it
+		// narrowed away, nor spends past its budget, nor loses its
+		// tenant's metadata — after a restart, when the parked turn's
+		// options and context are gone, and in the same process, where
+		// a decider's context values (its own WithMetadata pairs, a
+		// ParkAllExcept list) would otherwise hide the parked turn's
+		// under the same keys (resumeCtxLocked). Applied over the
+		// captured options they change nothing: the same narrowing,
+		// park rules only adding up, the parked metadata winning.
+		opts = append(opts, s.persistedRunLocked().Options()...)
 		// The approval class a layer deciding on someone's behalf named
 		// is the arming call's alone (WithApprovedBy): one the
 		// parked turn's context carried from an earlier resume is shadowed.

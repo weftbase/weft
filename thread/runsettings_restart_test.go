@@ -194,3 +194,43 @@ func TestQueuedSendSettingsSurviveRestart(t *testing.T) {
 		t.Fatalf("pending = %+v, want wipe parked", p)
 	}
 }
+
+// A decider's own context metadata never hides the parked turn's: an
+// inbox handler that tags its request context (WithMetadata) and calls
+// Decide must not strip the tenant the parked turn ran under from the
+// resumed run — in the same process, with no restart. The decider's
+// pairs merge under the parked turn's.
+func TestDeciderMetadataDoesNotHideTheParkedTurns(t *testing.T) {
+	ctx := context.Background()
+	r := newRestartRig(t)
+	s, err := thread.Create(ctx, r.st, r.agent(
+		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "call_1", Args: `{"order_id":"1"}`}),
+		wefttest.Say("done")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(ctx) }()
+	turn, err := s.Send(core.WithMetadata(ctx, map[string]string{"tenant": "acme"}), core.User("ship it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	inbox := core.WithMetadata(ctx, map[string]string{"inbox.request": "r-9"})
+	rt, err := s.Decide(inbox, thread.Approve("call_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.shipMD) != 1 {
+		t.Fatalf("ship ran %d times", len(r.shipMD))
+	}
+	if md := r.shipMD[0]; md["tenant"] != "acme" || md["inbox.request"] != "r-9" {
+		t.Fatalf("resumed call's metadata = %v, want the parked turn's tenant and the decider's pair", md)
+	}
+}

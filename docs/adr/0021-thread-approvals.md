@@ -369,3 +369,14 @@ case; none changes a model-visible byte.
   Before, a process reopening the session without the option resolved
   a call parked under `Quorum(2)` on one approval. A mirrored pool
   request carries the child's quorum and records the parent's.
+- **A decider's context hides nothing the parked turn ran under.** The
+  resume takes the parked turn's context values only for keys the
+  arming context lacks (2026-10-07), and the metadata and the
+  `ParkAllExcept` list are one key each: an inbox handler that tagged
+  its own request context with `WithMetadata` and called `Decide`
+  stripped the parked turn's tenant from the resumed run. The settings
+  the requests recorded (`ApprovalRequestEntry.Run`) now ride every
+  resume as run options, not only one after a restart: the parked
+  metadata wins per key with the decider's merged under it, and the
+  parked park rule only adds up with whatever the decider's context
+  carries.
