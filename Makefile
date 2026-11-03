@@ -37,7 +37,7 @@ fmt:
 lint:
 	for m in $(MODULES); do (cd $$m && PATH="$$PATH:$$(go env GOPATH)/bin" golangci-lint run) || exit 1; done
 
-# The layering guard (WEFTBASE-REPO-SPLIT.md §7): no package of this
+# The layering guard (scripts/check-layering.sh): no package of this
 # workspace — its tests included — imports the platform
 # (github.com/weftbase/weftbase). The platform imports the framework,
 # never the reverse. CI runs it.

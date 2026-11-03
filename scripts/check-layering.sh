@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-layering.sh — the layering guard (WEFTBASE-REPO-SPLIT.md §7):
+# check-layering.sh — the layering guard:
 # weft emits; the platform (github.com/weftbase/weftbase: Studio,
 # obsdb, the runtime link, the local exporter, the weftbase CLI)
 # stores, shows and controls. The platform imports the framework,
