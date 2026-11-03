@@ -133,6 +133,7 @@ res, err := agt.Generate(ctx, weft.Prompt("Where is order 1234?"))
 //   weft.MetadataFromContext(ctx)   // read the merged pairs back (Tap, tool handler, child run)
 //   weft.WithMetadata(ctx, kv)      // the context-carried twin of weft.Metadata: pairs for every run started under ctx, the run option winning
 //   weft.StripContent(ev)           // the one content-shaping table: what a content-off destination receives
+//   weft.SettingsOf(ctx, opts...)   // what a run would run under, as data (RunSettings; .Options() puts it back)
 // A changed run carries weft.override.hash + weft.override.* on its invoke_agent span (the experiment's fingerprint).
 // res.Text(), res.Messages (full transcript), res.Steps, res.Usage, res.ID
 // Cancel with a cause: ctx, cancel := context.WithCancelCause(ctx); cancel(weft.CancelCause("app.shutdown"))
@@ -244,8 +245,13 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    Content, else the destination's policy; weft/otel strips it, otel.ContentThread for Redact); label names
 //    are metadata. An index, not evidence (ADR 0021, amendment 2026-10-19); the timeline that reads them is U12.2's.
 //    Approvals (ADR 0021): s.Pending(); s.Decide(ctx, thread.Approve(id) | Deny | Resolve | ResolveError |
-//    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); s.Grant, s.Revoke, thread.WithApprover(a,
-//    timeout), Quorum(n), RequestExpiry(d), OnRequest(fn), s.Audit(). Signed: NewKeyring + WithKeyring (+
+//    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); a Decision decided elsewhere binds what was
+//    shown: d.RequestID, d.ArgsSHA256 = r.ID, r.ArgsSHA256 (else ErrNotPending / ErrArgsChanged; the hash is
+//    recorded); s.Grant(thread.Grant{…, Who: grantor}), s.Revoke, thread.WithApprover(a, timeout), Quorum(n)
+//    (recorded per request: a reopen never lowers it), RequestExpiry(d), OnRequest(fn), s.Audit(). A parked
+//    or queued send's run options and context, as far as they are data (weft.SettingsOf → weft.RunSettings:
+//    park rule, OnlyTools, lowered budgets, overrides, metadata), are recorded and survive a restart; an
+//    approved call whose tool changed its input or vanished since it parked is denied, not run (audit: drift). Signed: NewKeyring + WithKeyring (+
 //    RequireSigned(), durable in the header); s.Request(callID) → ring.Sign(r, d) | key.Sign → s.DecideSigned.
 //    Pool (ADR 0022, thread/pool): p := pool.New(max), the bound per Pool value; p.MustWrap(name, desc,
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
