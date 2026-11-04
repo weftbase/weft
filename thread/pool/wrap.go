@@ -127,6 +127,12 @@ func ToolOptions(opts ...core.ToolOption) WrapOption { return toolOptionsOption{
 //     Close). The delegating call's own cancellation or timeout is
 //     not that: the ordinary machinery reports it.
 //
+// Under a session a delegation is a call of the parent's transcript:
+// one dispatched from inside another call's handler (Agent.CallTool)
+// is refused with ErrNestedDelegation before any child exists — its
+// receipt and mirrored requests would name a call the transcript does
+// not hold.
+//
 // name is also the resume key: children the wrap makes record it, and
 // a restarted process that wraps the same agents under the same names
 // can resume them. One name therefore names one agent — wrapping a
@@ -159,6 +165,12 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 			parent := thread.SessionFromContext(ctx)
 			if parent == nil {
 				return p.bare(ctx, call, next)
+			}
+			if c, ok := core.CallFromContext(ctx); ok && c.Outer != "" {
+				// Its receipt, lineage and mirror would name an inner
+				// call the parent's transcript does not hold: refused
+				// before any child exists (ErrNestedDelegation).
+				return "", fmt.Errorf("%w: %q from call %s", ErrNestedDelegation, name, c.Outer)
 			}
 			var in struct {
 				Prompt string `json:"prompt"`

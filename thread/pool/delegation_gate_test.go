@@ -387,3 +387,69 @@ func TestDelegationCutOffBeforeAcceptance(t *testing.T) {
 		})
 	}
 }
+
+// P1-2 (final review): under a session, a delegation dispatched from
+// inside another call's handler (Agent.CallTool) is refused before any
+// child exists. Its receipt, lineage and mirror would be keyed on the
+// inner call id, which is not in the parent transcript: the outer call
+// would be offered as an unknown outcome beside the child's parked
+// request, and approving both would delegate twice. The handler reads
+// ErrNestedDelegation; the outer call answers with it and nothing
+// parks.
+func TestNestedCallToolDelegationIsRefused(t *testing.T) {
+	for _, b := range gateBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			ctx := context.Background()
+			p := pool.New(2)
+			defer func() { _ = p.Close(ctx) }()
+			childModel := wefttest.Script(wefttest.Say("child done"))
+			research := p.MustWrap("research", "delegates", core.New(childModel))
+			var parent *core.Agent
+			var innerErr error
+			outer := core.Tool("outer", "", func(ctx context.Context, _ struct{}) (string, error) {
+				out, err := parent.CallTool(ctx, core.ToolCallPart{ID: "inner-1", Name: "research", Args: []byte(`{"prompt":"x"}`)})
+				innerErr = err
+				return out, err
+			})
+			parentModel := wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "outer", ID: "c-outer", Args: `{}`}),
+				wefttest.Say("parent done"),
+			)
+			parent = core.New(parentModel, outer, research)
+			s, err := thread.Create(ctx, b.open(t), parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(ctx) }()
+			turn, err := s.Send(ctx, core.User("go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := turn.Wait()
+			if err != nil || res.Text() != "parent done" {
+				t.Fatalf("turn = %v, %v; want it to answer", res, err)
+			}
+			if !errors.Is(innerErr, pool.ErrNestedDelegation) {
+				t.Fatalf("CallTool err = %v, want ErrNestedDelegation", innerErr)
+			}
+			if pend := s.Pending(); len(pend) != 0 {
+				t.Fatalf("Pending = %+v, want nothing parked", pend)
+			}
+			childNeverStarted(t, s, childModel)
+			reqs := parentModel.Requests()
+			last := reqs[len(reqs)-1]
+			found := false
+			for _, m := range last.Messages {
+				for _, part := range m.Content {
+					if r, ok := part.(core.ToolResultPart); ok && r.CallID == "c-outer" &&
+						strings.Contains(r.Content, pool.ErrNestedDelegation.Error()) {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Errorf("the model did not read the refusal for c-outer: %+v", last.Messages)
+			}
+		})
+	}
+}

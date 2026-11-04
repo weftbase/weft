@@ -114,6 +114,19 @@ var ErrCycle = errors.New("thread/pool: agent is already running in this call ch
 // names one agent.
 var ErrDuplicateWrap = errors.New("thread/pool: wrap name already in use")
 
+// ErrNestedDelegation is what a wrapped tool returns, under a session,
+// for a delegation dispatched from inside another call's handler
+// (Agent.CallTool; core.Call.Outer is set): it is refused before any
+// child exists. A delegation's receipt, lineage and mirrored requests
+// name the delegating call, and an inner call is not in the parent's
+// transcript — a crash, a cut-off or a parked child would leave the
+// outer call offered beside the child's request, and approving both
+// would delegate twice. The handler reads this error; returned, the
+// model reads it as the outer call's result. Give the model the
+// wrapped tool directly instead. Outside a session (a bare Generate)
+// the ordinary subagent path runs, nested or not.
+var ErrNestedDelegation = errors.New("thread/pool: a delegation dispatched from inside another tool call's handler is refused under a session; call the delegating tool directly")
+
 // A StateError reports a receipt whose child is not in the state the
 // call serves — Forward to a child that is queued, parked or settled;
 // Cancel of a settled one. It matches ErrNotRunning under errors.Is;
