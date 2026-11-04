@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -797,11 +798,12 @@ func samplerOf(cfg config) sdktrace.Sampler {
 // wins over detected, and Merge's second argument wins. weft.version
 // rides on the base.
 func buildResource(cfg config) (*sdkresource.Resource, error) {
+	attrs := append([]attribute.KeyValue{
+		semconv.ServiceName(filepath.Base(os.Args[0])),
+		attribute.String("weft.version", weftVersion()),
+	}, vcsAttrs()...)
 	base, err := sdkresource.New(context.Background(),
-		sdkresource.WithAttributes(
-			semconv.ServiceName(filepath.Base(os.Args[0])),
-			attribute.String("weft.version", weftVersion()),
-		),
+		sdkresource.WithAttributes(attrs...),
 		sdkresource.WithFromEnv(),
 	)
 	if err != nil {
@@ -822,6 +824,42 @@ func buildResource(cfg config) (*sdkresource.Resource, error) {
 		return sdkresource.Merge(base, cfg.resource)
 	}
 	return base, nil
+}
+
+// vcsAttrs is the build's version-control stamp on the resource
+// (record contract §1): weft.build.vcs.revision and
+// weft.build.vcs.modified, read from the stamp the go command embeds
+// (debug.ReadBuildInfo's vcs.revision and vcs.modified) — no hashing,
+// no file read, nothing when the binary was built without one (go
+// test, -buildvcs=false, outside a repository). A platform that
+// identifies a deployable by its digest stamps that itself
+// (otel.Resource or OTEL_RESOURCE_ATTRIBUTES, both of which win).
+var vcsAttrs = sync.OnceValue(func() []attribute.KeyValue {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil
+	}
+	return vcsAttrsOf(info.Settings)
+})
+
+func vcsAttrsOf(settings []debug.BuildSetting) []attribute.KeyValue {
+	var rev string
+	modified := false
+	for _, kv := range settings {
+		switch kv.Key {
+		case "vcs.revision":
+			rev = kv.Value
+		case "vcs.modified":
+			modified = kv.Value == "true"
+		}
+	}
+	if rev == "" {
+		return nil
+	}
+	return []attribute.KeyValue{
+		attribute.String("weft.build.vcs.revision", rev),
+		attribute.Bool("weft.build.vcs.modified", modified),
+	}
 }
 
 // weftVersion is the framework module's tag, [version.Version] — the

@@ -12,6 +12,8 @@ module, ADR 0005).
 
 - thread: `Request.Metadata` — the run metadata a parked run ran under, as its request recorded it: the session's run metadata (`WithRunMetadata`) merged under the parking `Send`'s own context and `core.Metadata` pairs. A platform's labels (a tenant, a deployment, an agent version under its own key such as `weftbase.agent_version`) are readable by whichever process reopens the session, whatever run metadata that process opened it with. weft never reads them.
 
+- otel: the default resource carries the build's version-control stamp, `weft.build.vcs.revision` and `weft.build.vcs.modified`, read from `debug.ReadBuildInfo` (nothing when the binary has no stamp). No option and no hashing: a platform that identifies a deployable by its digest stamps it with `otel.Resource` or `OTEL_RESOURCE_ATTRIBUTES`.
+
 ### Changed
 
 - thread: a parked request (`ApprovalRequestEntry.Run`) and a queued receipt (`ReceiptEntry.Run`) record the session's run metadata beside the send's own, so the resume or the restored send runs under the labels it was started with — the recorded pairs winning over the reopening Session's, as the parked settings already did. Before, only the send's own pairs were recorded and a reopen by a process with other run metadata lost them.
