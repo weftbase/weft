@@ -76,6 +76,11 @@ type stepPersist struct {
 	// holding the call and the call id — one occurrence, never a later
 	// call that reuses the id. Guarded by s.mu.
 	started map[string]bool
+	// inner holds the calls a handler dispatched with CallTool that the
+	// gate let start, by call id: each may be the outer call of a
+	// nested one (its key derived from theirs, recursively). Guarded by
+	// s.mu.
+	inner map[string]bool
 }
 
 // wasStarted reports whether the gate let callID start in this
@@ -93,7 +98,7 @@ func (sp *stepPersist) wasStarted(s *Session, callID string) bool {
 // a resume attempt knows its boundary's calls from the start. Callers
 // hold s.mu.
 func (s *Session) newStepPersistLocked(resume bool) *stepPersist {
-	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}}
+	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}, inner: map[string]bool{}}
 	if resume {
 		for _, c := range s.danglingCallsLocked() {
 			if e := s.callEntryLocked(c.ID); e != "" {

@@ -134,7 +134,9 @@ Rollback or `Close` has felled the turn; any other refusal (a step or
 record that cannot be made durable, a lost lease) also ends the run,
 cause `thread.not_dispatched`. A `CallTool` from inside a handler is
 keyed (from the dispatching call's key and its position) and passes
-the same gate, `Call.Outer` naming the dispatching call. A `Subagent`'s
+the same gate, `Call.Outer` naming the dispatching call — at any depth:
+a call nested under an inner call the gate let start starts too, its
+key derived from that one's. A `Subagent`'s
 child run inherits neither the key option nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.

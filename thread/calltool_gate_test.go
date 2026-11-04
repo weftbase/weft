@@ -75,3 +75,68 @@ func TestCallToolInnerCallsUnderTheSessionGate(t *testing.T) {
 		})
 	}
 }
+
+// Review 3 P2-1: CallTool at depth under a session. A non-safe tool's
+// handler dispatches a non-safe tool whose handler dispatches the
+// charge: each inner call starts under an outer call the gate let start
+// — the recorded call or a recorded inner one — and carries a key
+// derived from its outer's key and position, recursively. The charge
+// runs once; a nested call under a ReplaySafe tool's inner call is
+// still refused. Both backends.
+func TestCallToolNestedUnderTheSessionGate(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var keys []string
+			var agent *core.Agent
+			var innerErr, nestedErr, safeNestedErr error
+			charge := core.Tool("charge", "Charge.", func(ctx context.Context, _ struct{}) (string, error) {
+				c, _ := core.CallFromContext(ctx)
+				mu.Lock()
+				keys = append(keys, c.IdempotencyKey)
+				mu.Unlock()
+				return "charged", nil
+			})
+			wrap := core.Tool("wrap", "Wrap.", func(ctx context.Context, _ struct{}) (string, error) {
+				_, err := agent.CallTool(ctx, core.ToolCallPart{ID: "n1", Name: "charge", Args: []byte(`{}`)})
+				nestedErr = err
+				return "wrapped", err
+			})
+			look := core.Tool("look", "Look.", func(ctx context.Context, _ struct{}) (string, error) {
+				_, err := agent.CallTool(ctx, core.ToolCallPart{ID: "n2", Name: "charge", Args: []byte(`{}`)})
+				safeNestedErr = err
+				return "looked", nil
+			}, core.Replay(core.ReplaySafe))
+			checkout := core.Tool("checkout", "Checkout.", func(ctx context.Context, _ struct{}) (string, error) {
+				_, innerErr = agent.CallTool(ctx, core.ToolCallPart{ID: "i1", Name: "wrap", Args: []byte(`{}`)})
+				_, _ = agent.CallTool(ctx, core.ToolCallPart{ID: "i2", Name: "look", Args: []byte(`{}`)})
+				return "done", nil
+			})
+			agent = core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "checkout", ID: "c1", Args: `{}`}),
+				wefttest.Say("ok"),
+			), charge, wrap, look, checkout)
+			s, err := thread.Create(bg, b.open(t), agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(bg) }()
+			turn, err := s.Send(bg, core.User("go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := turn.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if innerErr != nil || nestedErr != nil {
+				t.Fatalf("inner %v, nested %v: a call nested under a recorded inner call runs", innerErr, nestedErr)
+			}
+			if !errors.Is(safeNestedErr, core.ErrNotDispatched) {
+				t.Fatalf("nested under a ReplaySafe tool's call = %v, want ErrNotDispatched", safeNestedErr)
+			}
+			if len(keys) != 1 || keys[0] == "" {
+				t.Fatalf("charge keys %v, want one run with a key", keys)
+			}
+		})
+	}
+}

@@ -82,9 +82,11 @@ ADR 0006 says a phase turned into a hook needs an ADR. This is that ADR.
    on a retry of the outer call that dispatches in the same order, so
    an inner MCP call carries a key too — and it passes the run's gate,
    `Call.Outer` naming the dispatching call. `weft/thread`'s gate lets
-   an inner call start only under an outer call it recorded as
-   dispatched (a `ReplaySafe` tool's handler starts no effect) and
-   while the writer holds the session. An inner handler cut off by the
+   an inner call start only under an outer call it let start — the
+   step's recorded call, or an inner call it let start before, at any
+   depth (a nested call's key is derived from its outer inner call's,
+   recursively) — never under a `ReplaySafe` tool's call (its handler
+   starts no effect), and while the writer holds the session. An inner handler cut off by the
    run's cancellation before it answered returns an error wrapping
    `ErrOutcomeUnknown`.
 5. **The last option wins**, for both; a nil function is ignored. A
