@@ -298,7 +298,10 @@ The same never-guess rule holds while the process lives (ADR 0032,
 WR-4 and WR-6): before each call that is not `ReplaySafe` the writer
 checks it still holds the session's lock (`thread.Fencer`: sqlite reads
 the lock row, jsonl checks its file) and starts nothing after a
-`BreakLock` or a takeover; and a call whose handler started but gave
+`BreakLock` or a takeover — the run ends with the cause
+`thread.not_dispatched`, its error wrapping `ErrLocked`; a call that
+reaches the gate after an Interrupt, a Rollback or `Close` felled its
+turn never starts; and a call whose handler started but gave
 no answer — its `Timeout` passed, or an Interrupt, Rollback or cancel
 felled it — is never recorded "timed out" or "interrupted": it parks
 for the same ladder at the turn's end (keyed retry, or a recovery

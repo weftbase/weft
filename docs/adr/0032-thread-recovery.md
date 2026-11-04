@@ -242,7 +242,24 @@ the model reads. When that turn has started a call that is not
 `ReplaySafe`, the move would let the model ask for the effect again
 as if it had not happened: the send is accepted as an `Interrupt`
 instead (recorded as one), and `Send` returns its `Turn` beside an error
-wrapping `ErrRollbackRefused`.
+wrapping `ErrRollbackRefused`. The check and the gate serialize on the
+session's lock (review P0-2): a call still in middleware when the
+Rollback is accepted reaches the gate after it and is refused — the
+gate refuses every call once an Interrupt, a Rollback or `Close` has
+felled the turn, or once the run's context has ended (a shutdown). So
+either the gate passes first and the Rollback is downgraded, or the
+Rollback lands first and the call never starts.
+
+**A refusal ends the run (review P2).** A gate refusal other than a
+felled turn — the step or the dispatch record cannot be made durable,
+or the fence says the lock is gone — also cancels the turn's run with
+the cause `thread.not_dispatched` (the turn's error wraps the refusal:
+a lost lease reads `ErrLocked`). A writer that cannot record starts
+nothing more, instead of handing the model refusals until `MaxSteps`.
+The fence is read last, after the dispatch record is flushed; the
+residual window is the time from that read to the handler's effect,
+and the handler's own run — a receiver that must refuse a zombie
+writer needs the idempotency key, not the fence.
 
 ## Amendment (2026-11-04 — the ladder's second rung: Reconcile)
 

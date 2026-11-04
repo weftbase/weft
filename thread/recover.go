@@ -129,44 +129,66 @@ func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r rec
 
 // dispatchGate is rule A, the core.BeforeDispatch gate every turn
 // carries: a call that is not ReplaySafe starts only when the step
-// entry holding it is in the file — appended and flushed by the step
-// observer before the loop dispatched the step, or the resume
-// boundary's — and only under the session's key for that entry. When
-// the entry is not durable (its step's append failed, and a retry here
-// fails too — a storage error, or ErrLocked / ErrStale for a writer
-// whose session another process has taken over), the handler never
-// runs and the model reads an error wrapping core.ErrNotDispatched. A
-// side effect the file does not show was asked for is never started.
-// ctx is the turn's persistence window. How durable "appended" is,
-// is the backend's (FsyncOnFlush for jsonl).
+// entry holding it is in the file — appended by the step observer
+// before the loop dispatched the step, or the resume boundary's — under
+// the session's key for that entry, with its own dispatch record
+// appended and flushed after it, and while this writer still holds the
+// session. A side effect the file does not show was asked for is never
+// started.
+//
+// It decides under s.mu, the lock an Interrupt, a Rollback and Close
+// take to fell the turn: a call reaching the gate after one of them, or
+// after the run's context ended (a shutdown, a caller walking away), is
+// refused — the felled turn starts nothing, and a Rollback accepted
+// because no effect had started stays true. Either the gate passes
+// first (and the turn has effects: a Rollback is downgraded) or the
+// felling does (and the call never starts).
+//
+// Any other refusal — the step or the record cannot be made durable (a
+// storage error, ErrLocked / ErrStale for a writer whose session
+// another process has taken over), or the fence says the lock is gone —
+// fails the call closed (an error wrapping core.ErrNotDispatched) and
+// ends the turn's run with that cause: a writer that cannot record
+// starts nothing more, rather than handing the model refusals until
+// MaxSteps.
+//
+// The fence is read last, after the record is flushed, as close to the
+// handler as the gate can be. The residual window is the time from
+// that read to the handler's first effect, plus the handler's own run:
+// a lock broken inside it is not seen — a receiver that must refuse a
+// zombie needs the idempotency key, not the fence. ctx is the turn's
+// persistence window. How durable "appended" is, is the backend's
+// (FsyncOnFlush for jsonl).
 func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) core.RunOption {
-	return core.BeforeDispatch(func(_ context.Context, c core.Call, def *core.ToolDef) error {
+	return core.BeforeDispatch(func(cctx context.Context, c core.Call, def *core.ToolDef) error {
 		if def == nil || def.ReplayPolicy() == core.ReplaySafe {
 			return nil
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if err := felled(cctx, t); err != nil {
+			return err
+		}
+		refuse := func(err error) error {
+			s.agent.Logger().Warn("thread: a call is not dispatched; the run ends",
+				"session", s.header.ID, "run", c.RunID, "call", c.CallID, "err", err)
+			t.mu.Lock()
+			cancel := t.cancel
+			t.mu.Unlock()
+			if cancel != nil {
+				cancel(&notDispatchedCause{err: err})
+			}
+			return err
+		}
 		entry := sp.calls[c.CallID]
 		if entry == "" {
 			if err := s.flushStepsLocked(ctx, sp); err != nil {
-				s.agent.Logger().Warn("thread: a call's step is not durable; the call is not run",
-					"session", s.header.ID, "run", c.RunID, "call", c.CallID, "err", err)
-				return fmt.Errorf("the step holding call %q is not durable: %w", c.CallID, err)
+				return refuse(fmt.Errorf("the step holding call %q is not durable: %w", c.CallID, err))
 			}
 			entry = sp.calls[c.CallID]
 		}
 		if entry == "" {
-			return fmt.Errorf("call %q is not in this run's recorded steps", c.CallID)
-		}
-		// The self-fence (WR-4): the writer still holds the session's
-		// lock, read now — a writer whose lock was broken or taken over
-		// since its step landed starts nothing.
-		if f, ok := s.st.(Fencer); ok {
-			if err := f.Fence(ctx, s.header.ID); err != nil {
-				s.agent.Logger().Warn("thread: this writer no longer holds the session; the call is not run",
-					"session", s.header.ID, "run", c.RunID, "call", c.CallID, "err", err)
-				return fmt.Errorf("the session's lock is not held: %w", err)
-			}
+			return refuse(fmt.Errorf("call %q is not in this run's recorded steps", c.CallID))
 		}
 		want := IdempotencyKey(s.header.ID, entry, c.CallID, "")
 		if sp.resume {
@@ -175,7 +197,7 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		if c.IdempotencyKey != want {
 			// The loop named the call before its step was durable: its
 			// key is run-scoped, not the session's.
-			return fmt.Errorf("call %q carries no recovery-stable key", c.CallID)
+			return refuse(fmt.Errorf("call %q carries no recovery-stable key", c.CallID))
 		}
 		// Record before acting: the dispatch is on file and, with the
 		// step before it, flushed (WR-1: under a backend that defers its
@@ -187,11 +209,21 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 			return ApprovalAuditEntry{ID: id, ParentID: parent, Created: created,
 				CallID: c.CallID, Step: StepDispatch, RunID: c.RunID}
 		}); err != nil {
-			return fmt.Errorf("the dispatch of call %q is not recorded: %w", c.CallID, err)
+			return refuse(fmt.Errorf("the dispatch of call %q is not recorded: %w", c.CallID, err))
 		}
 		if f, ok := s.st.(Flusher); ok {
 			if err := f.Flush(ctx, s.header.ID); err != nil {
-				return fmt.Errorf("the dispatch of call %q is not durable: %w", c.CallID, err)
+				return refuse(fmt.Errorf("the dispatch of call %q is not durable: %w", c.CallID, err))
+			}
+		}
+		// The self-fence (WR-4), last: the writer still holds the
+		// session's lock, read now — a writer whose lock was broken or
+		// taken over since its step landed starts nothing. A record
+		// written just before a failed fence reads "may have run" after
+		// a crash: the safe side.
+		if f, ok := s.st.(Fencer); ok {
+			if err := f.Fence(ctx, s.header.ID); err != nil {
+				return refuse(fmt.Errorf("the session's lock is not held: %w", err))
 			}
 		}
 		sp.started[entry+"\x00"+c.CallID] = true
@@ -201,6 +233,34 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		return nil
 	})
 }
+
+// felled is the gate's refusal for a turn already felled: an Interrupt,
+// a Rollback or Close marked it (under s.mu, which the caller holds),
+// or the call's context ended — a shutdown, the caller walking away.
+// The run is ending: nothing more starts in it.
+func felled(ctx context.Context, t *Turn) error {
+	if t.wasInterrupted() {
+		return fmt.Errorf("the turn was felled before the call started: %w", t.interruptCause())
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("the run ended before the call started: %w", context.Cause(ctx))
+	}
+	return nil
+}
+
+// notDispatchedCause is the cause a refusing gate fells its turn's run
+// with (weft.cancel.cause thread.not_dispatched): a cancellation that
+// carries the refusal — a lost lease reads errors.Is(err, ErrLocked).
+type notDispatchedCause struct{ err error }
+
+func (c *notDispatchedCause) Error() string {
+	return "thread: the run stopped: a call could not be dispatched: " + c.err.Error()
+}
+func (c *notDispatchedCause) Unwrap() []error      { return []error{c.err, core.ErrNotDispatched} }
+func (c *notDispatchedCause) Is(target error) bool { return target == context.Canceled }
+
+// Kind names the cause on the run's span (core.CancelCause's rule).
+func (c *notDispatchedCause) Kind() string { return "thread.not_dispatched" }
 
 // cutOff is a run the session's file shows started and never ended
 // on its own: no turn entry, or one marked CutOff (a shutdown), and no

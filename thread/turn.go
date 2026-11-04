@@ -1333,6 +1333,11 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	if shutdown && shutdownOf(ctx, t) {
 		report = fmt.Errorf("%w: %w", ErrShutdown, report)
 	}
+	if cause, ok := errors.AsType[*notDispatchedCause](context.Cause(ctx)); ok && err != nil {
+		// The gate refused a call it could not record and ended the
+		// run: the turn says why (a lost lease reads ErrLocked).
+		report = fmt.Errorf("%w: %w", cause, report)
+	}
 	var keep []core.ToolCallPart // unanswered on the line, for the chain
 	if !shutdown {
 		keep = unknown
