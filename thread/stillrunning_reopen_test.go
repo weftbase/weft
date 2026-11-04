@@ -149,10 +149,10 @@ func TestStillRunningDoesNotCrossStoresOfOneSessionID(t *testing.T) {
 	var ran atomic.Int32
 	quick := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		if ran.Add(1) == 1 {
-			time.Sleep(30 * time.Millisecond) // past its Timeout, back inside the bound
+			time.Sleep(300 * time.Millisecond) // past its Timeout, back inside the bound
 		}
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(5*time.Millisecond))
+	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
 	b, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("done"),

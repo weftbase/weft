@@ -152,9 +152,9 @@ func recoveryBoundary(t *testing.T, st thread.Storage, opts ...thread.SessionOpt
 	var shipped atomic.Int32
 	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		shipped.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(5*time.Millisecond))
+	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
 	ask := core.Tool("ask", "Ask.", func(context.Context, struct{}) (string, error) {
 		return "asked", nil
 	}, core.RequireApproval())

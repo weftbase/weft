@@ -19,9 +19,9 @@ import (
 func TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest(t *testing.T) {
 	ctx := context.Background()
 	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(5*time.Millisecond))
+	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
 	s, err := Create(ctx, Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("x"),
@@ -77,7 +77,7 @@ func TestAbandonedRegistryReleasesOnReturn(t *testing.T) {
 	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		<-release
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(5*time.Millisecond))
+	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
 	s, err := Create(ctx, Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("skipped"),
