@@ -2325,6 +2325,9 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 	if ctx.Err() != nil {
 		return fmt.Sprintf("%s: tool %q was cut off before it answered; it may have run; outcome unknown", CodeOutcomeUnknown, call.Name), true
 	}
+	if errors.Is(fail.err, ErrOutcomeUnknown) {
+		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, fail.text), true
+	}
 	return "", false
 }
 

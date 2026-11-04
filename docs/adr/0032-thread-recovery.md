@@ -227,3 +227,11 @@ nothing, so the next recovery asks again and the tool never runs on
 its account. Pinned reasons: `cut off: the system of record reports
 the call took effect; its result is recorded`, `cut off: the system of
 record has no such call; it runs again with the same idempotency key`.
+
+**A lost answer (WR-8).** `core.ErrOutcomeUnknown` lets a handler say it
+cannot tell whether its effect happened (a request sent and its answer
+lost); for a tool that is not `ReplaySafe` the loop then treats the call
+as of unknown outcome, as above. weft/mcp wraps every tools/call
+transport failure in it and always sends the call's idempotency key in
+`_meta` (`dev.weftgo/idempotency_key`), so a server that deduplicates
+applies a retry once.

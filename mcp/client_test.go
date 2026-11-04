@@ -931,3 +931,57 @@ func TestToolsRPCErrorIsNotTransport(t *testing.T) {
 		t.Errorf("stdio EOF: %v (%s), want mcp_transport", err, got)
 	}
 }
+
+// WR-8: a tools/call always carries the call's idempotency key in
+// _meta (MetaIdempotencyKey), with or without the caller link, and a
+// transport failure is an unknown outcome, never "failed": the run
+// reads OUTCOME_UNKNOWN for an imported tool (ReplayNever by default),
+// since the call may have run on the server before its answer was
+// lost.
+func TestToolsCallCarriesItsKeyAndLostAnswersAreUnknown(t *testing.T) {
+	var mu sync.Mutex
+	var key any
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "pay", false, func(_ context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			mu.Lock()
+			key = req.Params.Meta[MetaIdempotencyKey]
+			mu.Unlock()
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "paid"}}}, nil
+		})
+	})
+	tools, err := Tools(context.Background(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen string
+	probe := func(next core.ToolCaller) core.ToolCaller {
+		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+			c, _ := core.CallFromContext(ctx)
+			seen = c.IdempotencyKey
+			return next(ctx, call)
+		}
+	}
+	agent := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{"q":"a"}`}),
+		wefttest.Say("ok"),
+		wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c2", Args: `{"q":"a"}`}),
+		wefttest.Say("ok"),
+	), core.WrapTools(probe), core.Timeout(500*time.Millisecond), tools[0])
+	if _, err := agent.Generate(context.Background(), core.Prompt("pay")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := key
+	mu.Unlock()
+	if got != seen || seen == "" {
+		t.Fatalf("server saw key %v, the call carried %q", got, seen)
+	}
+	stop() // the connection drops
+	res, err := agent.Generate(context.Background(), core.Prompt("pay again"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := res.Steps[0].Results[0]; !r.IsError || !strings.HasPrefix(r.Content, core.CodeOutcomeUnknown+`: tool "pay" `) {
+		t.Fatalf("a lost answer reads %q, want OUTCOME_UNKNOWN", r.Content)
+	}
+}

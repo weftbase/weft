@@ -37,6 +37,12 @@ import (
 // caller under: {"run_id": "<run>", "call_id": "<tool call>"}.
 const MetaCaller = "dev.weftgo/caller"
 
+// MetaIdempotencyKey is the params._meta key every tools/call carries
+// its core.Call.IdempotencyKey under — always, whether or not the
+// caller link is sent: a server that deduplicates on it applies a call
+// retried after a lost answer once (WR-8).
+const MetaIdempotencyKey = "dev.weftgo/idempotency_key"
+
 // metaIDMax bounds a caller id read from _meta, in bytes (core's
 // metadata value bound): a longer one is ignored.
 const metaIDMax = 1024

@@ -371,6 +371,15 @@ func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) fu
 		if sendCaller {
 			params.Meta = callerMeta(ctx)
 		}
+		// The call's idempotency key always rides along (WR-8), apart
+		// from the caller link: a server that deduplicates applies a
+		// retried call once.
+		if c, ok := core.CallFromContext(ctx); ok && c.IdempotencyKey != "" {
+			if params.Meta == nil {
+				params.Meta = sdk.Meta{}
+			}
+			params.Meta[MetaIdempotencyKey] = c.IdempotencyKey
+		}
 		res, err := sess.CallTool(ctx, params)
 		if err != nil {
 			// Transport and protocol failures are data too: the tool
@@ -429,6 +438,13 @@ type transportError struct{ err error }
 func (e *transportError) Error() string     { return "mcp: " + e.err.Error() }
 func (e *transportError) Unwrap() error     { return e.err }
 func (e *transportError) ErrorType() string { return "mcp_transport" }
+
+// Is reports a transport failure as an unknown outcome
+// (core.ErrOutcomeUnknown): the tools/call may have reached the server
+// and run there before its answer was lost (WR-8), so a tool that is
+// not ReplaySafe is never told "failed" — the loop records it as
+// OUTCOME_UNKNOWN, and a session sends it down its recovery ladder.
+func (e *transportError) Is(target error) bool { return target == core.ErrOutcomeUnknown }
 
 // transportCode says a JSON-RPC error code is the go-sdk's own word for
 // a transport failure, never a server's answer: ErrRejected (-32005,

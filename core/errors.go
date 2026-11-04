@@ -226,3 +226,12 @@ func ModelRetry(hint string) error {
 // result never says the call failed, timed out or was interrupted as
 // if that were known.
 const CodeOutcomeUnknown = "OUTCOME_UNKNOWN"
+
+// ErrOutcomeUnknown is what a handler returns, wrapped, when it cannot
+// tell whether its effect happened — a request sent and its answer lost
+// (a dropped connection, a transport failure after the send). For a
+// tool that is not ReplaySafe the loop treats the call as of unknown
+// outcome (ADR 0032): the result reads "OUTCOME_UNKNOWN: …", or the
+// call parks under ParkUnknown for the caller's recovery ladder. weft/mcp
+// wraps it in a tools/call transport failure.
+var ErrOutcomeUnknown = errors.New("weft: the call's outcome is unknown")

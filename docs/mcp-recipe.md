@@ -26,3 +26,14 @@ session's own turn, whatever ids a client states (record contract §2).
 `CallerMeta` is **off by default**: the run and call ids and the trace
 state name your runs to the server. Turn it on for servers you run, not
 for a third party's.
+
+**The idempotency key always rides along.** Every `tools/call` carries
+the call's `Call.IdempotencyKey` in `params._meta` under
+`dev.weftgo/idempotency_key` (`mcp.MetaIdempotencyKey`), with or without
+`CallerMeta`: a server that deduplicates on it applies a retried call
+once. A transport failure — the connection dropped after the request
+may have reached the server — is an unknown outcome
+(`core.ErrOutcomeUnknown`), never a plain failure: for an imported tool
+(`ReplayNever` unless you vouch otherwise) the model reads
+`OUTCOME_UNKNOWN: …`, and a `weft/thread` session parks the call for its
+recovery ladder (ADR 0032).

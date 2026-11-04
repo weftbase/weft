@@ -690,6 +690,15 @@ func ModelRetry(hint string) error { return core.ModelRetry(hint) }
 // if that were known.
 const CodeOutcomeUnknown = core.CodeOutcomeUnknown
 
+// ErrOutcomeUnknown is what a handler returns, wrapped, when it cannot
+// tell whether its effect happened — a request sent and its answer lost
+// (a dropped connection, a transport failure after the send). For a
+// tool that is not ReplaySafe the loop treats the call as of unknown
+// outcome (ADR 0032): the result reads "OUTCOME_UNKNOWN: …", or the
+// call parks under ParkUnknown for the caller's recovery ladder. weft/mcp
+// wraps it in a tools/call transport failure.
+var ErrOutcomeUnknown = core.ErrOutcomeUnknown
+
 // Event is the sealed set of run progress events, yielded by Run.Events in
 // emission order. New event types may be added additively; external types
 // cannot join, so switches over events stay exhaustively lintable.
