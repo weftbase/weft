@@ -780,7 +780,15 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 		// the interrupting Send's follow-up runs behind it, on a
 		// context no caller's walk-away can fell — the resolution is
 		// what frees the message.
-		if _, err := s.armResumeLocked(context.Background()); err != nil {
+		//
+		// Unless the felled resume left a call that may have run — an
+		// approved call the interrupt cut off: its recovery request
+		// refuses the arming (mintResumeLocked) and the boundary, the
+		// follow-up behind it, waits for a person's decision.
+		if _, err := s.armResumeLocked(context.Background()); errors.Is(err, ErrRecoveryRequired) {
+			s.agent.Logger().Debug("thread: interrupt re-arm waits for a recovery decision",
+				"session", s.header.ID, "err", err)
+		} else if err != nil {
 			s.agent.Logger().Error("thread: interrupt re-arm failed",
 				"session", s.header.ID, "err", err)
 		}
@@ -802,12 +810,15 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 		// at once, under the settings captured when the turn parked.
 		// The minted resume is registered like any arming, so a
 		// concurrent Resume joins it rather than arming a second one.
-		rt := s.mintResumeLocked()
-		ctx := s.await.ctx
-		if ctx == nil {
-			ctx = context.Background()
+		rt, err := s.mintResumeLocked()
+		if err == nil {
+			ctx := s.await.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return s.handLocked(workItem{ps: pendingSend{ctx: ctx, turn: rt}, resume: true})
 		}
-		return s.handLocked(workItem{ps: pendingSend{ctx: ctx, turn: rt}, resume: true})
+		s.agent.Logger().Debug("thread: settled boundary not resumed", "session", s.header.ID, "err", err)
 	}
 	if len(s.queue) > 0 && !s.boundaryLocked() && s.readyHintsLocked() {
 		// Under OnReady the queue is not drained: its head is handed
@@ -1069,9 +1080,12 @@ func (s *Session) runResume(item workItem) {
 			return
 		}
 		// Every resume run passes here, whichever path armed it (G5):
-		// a cut-off run's call of unknown outcome is never run again
-		// by a resume — RecoverTurn decides it first.
-		if err := s.errRecoveryRequiredLocked(); err != nil {
+		// the arming choke point again (resumeRefusedLocked), for what
+		// may have changed since the arming — a cut-off run's call of
+		// unknown outcome is never run again by a resume (RecoverTurn
+		// decides it first), and an undecided recovery request is
+		// never handed to the core to settle "no decision".
+		if err := s.resumeRefusedLocked(); err != nil {
 			startErr = fmt.Errorf("%w: %w", ErrNotRun, err)
 			return
 		}
@@ -1414,8 +1428,11 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 				// the boundary's one armed resume, so a Resume arriving
 				// while it flies returns this turn instead of arming a
 				// second one beside it (one boundary, one resume).
-				rt := s.mintResumeLocked()
-				s.resumeWork = &pendingResume{ctx: chain.awaitCtx, turn: rt}
+				if rt, err := s.mintResumeLocked(); err == nil {
+					s.resumeWork = &pendingResume{ctx: chain.awaitCtx, turn: rt}
+				} else {
+					s.agent.Logger().Debug("thread: chain-decided boundary not resumed", "session", s.header.ID, "err", err)
+				}
 			}
 		})
 		if undecided > 0 {

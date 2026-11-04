@@ -538,3 +538,69 @@ Tests: `TestRecoverTurnLeavesALiveDelegationToThePool`,
 `TestInterruptedEffectParksAndHoldsTheInterrupt`,
 `TestCallToolParkReturnedByTheHandlerDoesNotPark` (thread),
 `TestCallToolParkReturnedByTheHandlerFailsTheOuterCall` (core).
+
+## Amendment (2026-11-04 — release gate: one choke point)
+
+Review rounds kept finding one more path that settled an undecided
+recovery request as a plain `DENIED: no decision`, or reported an
+unknown outcome as a failure. Each was closed where it was found; this
+amendment closes the class.
+
+**One choke point for every resume (P1-A).** A resume is minted in one
+function (`mintResumeLocked`); it refuses — `ErrRecoveryRequired`,
+nothing minted, the boundary parked — while a cut-off run's call of
+unknown outcome is on file or a recovery request (the session's own,
+or a pool child's mirrored here) is undecided. Every arming path mints
+there: `Decide`, `DecideSigned`, `Resume`, `Continue`, a `Send`'s
+settled-boundary pickup, the runner's chain-decided hand-off and
+settled pickup, the re-arm after an `Interrupt` felled a resume,
+`RecoverTurn`, `ReplayDecisions` and the pool's replay. The runner
+asks the same function again when it starts a resume (`runResume`), for
+what may have changed since the arming. The path the review found: an
+`Interrupt` felled a resume while its approved call with effects ran;
+the felled call parked as a recovery request, and the runner's re-arm
+for the Interrupt's follow-up resumed over it. It now stays parked, the
+follow-up behind it, until a person decides — as P2-2 above already
+said of a felled turn.
+
+The deny channels (expiry, an Interrupt over a parked boundary, a pool
+`Cancel`) still settle a recovery request: each is a decision of its
+own, read by the model as the `OUTCOME_UNKNOWN … do not repeat it`
+skip, never as `DENIED`.
+
+**One place a child's refusal maps to "parked" (P1-B).** A pool child
+refuses a replay with `ErrStillRunning` (an approval of a call whose
+abandoned handler still runs) or `ErrRecoveryRequired`. Neither is the
+delegation's failure — the call's outcome is unknown, not failed — so
+the pool's run maps both, in one place (`refusedReplay`), to a park on
+the same mirrors, never to a `failed` settlement (which read
+`SUBAGENT_FAILED` to the parent's model). And before that,
+`Pool.Decide` and `Pool.DecideSigned` refuse such an approval on the
+parent with `ErrStillRunning`, nothing recorded; one recorded through
+the parent session's own `Decide` is replayed by the pool when the
+handler returns.
+
+**The abandoned handler is the process's (P2-1, P2-2).** "In-process"
+above meant one `Session`: a `Close` then `Open` in the same process —
+a server evicting an idle session — forgot the handler, and an
+approval ran a second one beside it. The handlers a turn's end leaves
+running are now held in a process-wide registry keyed by the call's
+occurrence (session id, run id, call id) and the session header's
+`Created` — the identity the lease already uses for "the same stored
+session", so two stores holding one pinned session id stay apart. A
+lookup that cannot name `Created` (`AbandonedHandler`, from a pool
+parent) matches any; a collision there can only refuse an approval. An
+entry is added when the call parks as still running and removed by
+`core.AfterDispatch` when the handler returns, whatever became of the
+request — the registry holds only handlers that run. A restart still
+ends them with the process.
+
+Tests: `TestInterruptedResumeLeavesItsRecoveryRequestForAPerson`,
+`TestNoArmingPathSettlesAnUndecidedRecoveryRequest`,
+`TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest`,
+`TestStillRunningSurvivesAnInProcessReopen`,
+`TestStillRunningDoesNotCrossStoresOfOneSessionID`,
+`TestAbandonedRegistryReleasesOnReturn` (thread);
+`TestPoolDecideRefusesApprovingAStillRunningChildCall`,
+`TestRefusedChildReplayKeepsTheDelegationParked`,
+`TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest` (thread/pool).

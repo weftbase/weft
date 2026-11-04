@@ -111,20 +111,18 @@ func (s *Session) retryBackoffLocked() time.Duration {
 
 // retryBackoffBase is the backoff before the session's first keyed
 // retry of one call, doubling for each next one up to retryBackoffCap
-// (R12). abandonedWait bounds how long the end of a turn waits for a
-// handler the loop abandoned (its Timeout passed, a cancel it ignored)
-// to return before the session retries its call: still running past
-// it, the call goes to a person instead. Variables for the tests only.
+// (R12). ladder.AbandonedWait bounds how long the end of a turn waits
+// for a handler the loop abandoned (its Timeout passed, a cancel it
+// ignored) to return before the session retries its call: still
+// running past it, the call goes to a person instead (it lives in
+// thread/internal/ladder so thread/pool's tests can shorten it too).
+// Variables for the tests only.
 var (
 	retryBackoffBase = defaultRetryBackoffBase
 	retryBackoffCap  = 30 * time.Second
-	abandonedWait    = defaultAbandonedWait
 )
 
-const (
-	defaultRetryBackoffBase = time.Second
-	defaultAbandonedWait    = 30 * time.Second
-)
+const defaultRetryBackoffBase = time.Second
 
 // reconciled is what a tool's Reconcile said of one call (ADR 0032,
 // the ladder's second rung): found with its result, missing, or err.
@@ -660,6 +658,34 @@ func (s *Session) recoveryRequiredLocked() bool {
 func (s *Session) errRecoveryRequiredLocked() error {
 	if s.recoveryRequiredLocked() {
 		return fmt.Errorf("%w: session %s", ErrRecoveryRequired, s.header.ID)
+	}
+	return nil
+}
+
+// resumeRefusedLocked is the choke point every resume passes, armed
+// (mintResumeLocked) and again when it runs (runResume): a resume
+// runs only when it cannot repeat or misreport a call whose outcome
+// is unknown. It refuses, with ErrRecoveryRequired:
+//
+//   - a cut-off run's call of unknown outcome (recoveryRequiredLocked):
+//     RecoverTurn decides it first;
+//   - an undecided recovery request (Request.Recovery) — of this
+//     session, or a pool child's mirrored here: the resume would hand
+//     the core a call with no decision, and the core settles it as
+//     "DENIED: no decision", which the model answers by asking again
+//     over an effect that may have landed. Only a person approves
+//     (retries) or denies (skips) it (ADR 0032 rule D).
+//
+// Callers hold s.mu.
+func (s *Session) resumeRefusedLocked() error {
+	if err := s.errRecoveryRequiredLocked(); err != nil {
+		return err
+	}
+	for _, r := range s.pendingLocked() {
+		if r.Recovery {
+			return fmt.Errorf("%w: session %s: recovery request %s for call %q is undecided; approve (retry) or deny (skip) it",
+				ErrRecoveryRequired, s.header.ID, r.ID, r.CallID)
+		}
 	}
 	return nil
 }

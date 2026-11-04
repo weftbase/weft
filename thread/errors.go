@@ -94,10 +94,13 @@ var (
 	// started (or approved to start) and without a recorded result. A
 	// new turn would answer it with a synthetic result and the model
 	// could ask for it again; a resume could run it again. Call
-	// Session.RecoverTurn first (ADR 0032). Resume returns it too while
-	// a recovery request (Request.Recovery) is undecided: the resume
-	// would deny it "no decision", and the model would ask again for a
-	// call that may have run — decide it (approve retries, deny skips).
+	// Session.RecoverTurn first (ADR 0032). No resume is armed while a
+	// recovery request (Request.Recovery) is undecided either — Resume
+	// returns it, and the paths that arm on their own (AutoResume, the
+	// re-arm after an Interrupt felled a resume, the pool's replay)
+	// leave the boundary parked: the resume would deny the request "no
+	// decision", and the model would ask again for a call that may have
+	// run — decide it (approve retries, deny skips).
 	// A turn whose cancellation (an Interrupt, its own context) left
 	// such a request reports it the same way: its Wait error matches
 	// ErrRecoveryRequired beside the cancellation.
@@ -110,7 +113,12 @@ var (
 	// waited for it (the request's Reason says so). The approval retries
 	// the call, and a second handler beside the first could repeat its
 	// effect: approve again once the handler has returned. A deny or a
-	// resolve is taken. Retryable; nothing was recorded.
+	// resolve is taken. Retryable; nothing was recorded. The handler is
+	// known to the process, not to one Session: a session closed and
+	// opened again in the same process refuses the approval the same
+	// way, and thread/pool's Decide refuses it on the parent before
+	// recording anything (AbandonedHandler). A restart ends the handler
+	// with the process.
 	ErrStillRunning = errors.New("thread: the call's abandoned handler is still running")
 
 	// ErrRollbackRefused is returned beside a Turn by a Send under the

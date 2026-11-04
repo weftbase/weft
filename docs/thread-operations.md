@@ -339,11 +339,23 @@ or offers the call; still running past that, the call goes to a person
 (`… still running past its bound; approve to retry it … once it has
 returned …`) and an `Approve` is refused with `thread.ErrStillRunning`
 until the handler returns (retry it then; `Deny` is taken at once).
+The handler is known to the process, not to the `Session`: closing an
+idle session and opening it again in the same process (an eviction)
+still refuses the `Approve` while the first handler runs, and
+`pool.Decide` refuses the approval of a child's still-running call on
+the parent, recording nothing (`thread.AbandonedHandler` reads the
+registry). A restart ends the handler, and the refusal with it.
 Skipping a recovery request (`Deny`) shows the model
 `OUTCOME_UNKNOWN: … it was skipped, not retried: do not repeat it`,
-never `DENIED`; and `Resume` refuses with `ErrRecoveryRequired` while a
-recovery request is undecided — its default would deny it `no
-decision`, a `DENIED` the model would answer by asking again.
+never `DENIED`; and no resume starts while a recovery request is
+undecided — its default would deny it `no decision`, a `DENIED` the
+model would answer by asking again. `Resume` refuses with
+`ErrRecoveryRequired`, and the paths that resume on their own
+(`AutoResume` after the last decision, the re-arm after an `Interrupt`
+felled a resume, the pool's replay into a child) leave the boundary
+parked: the one check sits where every resume is armed. A pool child
+that refuses a replay this way stays parked on its mirrors; its
+delegation is never settled `failed` for it.
 
 **An Interrupt over a call with effects waits for a person.** An
 `Interrupt` (or a cancel) that fells a turn while a handler with
@@ -351,7 +363,8 @@ effects runs leaves that call's outcome unknown: the felled turn parks
 it as a recovery request, its `Wait` error matches
 `ErrRecoveryRequired` (beside `context.Canceled`), and the Interrupt's
 own turn waits in the queue behind the request until someone decides
-it in `s.Pending()` — unbounded, by design: the session never guesses
+it in `s.Pending()` — also when the Interrupt fells a resume, the
+approved call it was running parked again as a recovery request — unbounded, by design: the session never guesses
 whether the effect landed. Watch for `ErrRecoveryRequired` on the
 felled turn (or `OnRequest`), and bound your own wait with
 `turn.WaitContext`.

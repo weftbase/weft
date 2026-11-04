@@ -1166,6 +1166,20 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 				continue
 			}
 		}
+		refused := false
+		if refusedReplay(err) && ctx.Err() == nil && len(d.child.Pending()) > 0 {
+			// The child refused to go on and its boundary holds: a call's
+			// abandoned handler still runs (thread.ErrStillRunning, a
+			// replayed approval it did not record), or a call of unknown
+			// outcome waits for a person (thread.ErrRecoveryRequired — a
+			// refused resume, or a felled turn that parked one). Neither
+			// is the delegation's failure: that call's outcome is unknown,
+			// not failed. The one place either maps to its answer: park
+			// on the same boundary, its mirrors in place — never a failed
+			// settlement. A run its own context ended (Cancel, Close) is
+			// not refused but ended, and settles as before.
+			err, turn, refused = nil, nil, true
+		}
 		if err == nil && turn != nil && (res == nil || len(res.Pending) == 0) {
 			break // an answer
 		}
@@ -1182,6 +1196,9 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 		}
 		if perr != nil {
 			return outcome{err: perr, canceled: errors.Is(perr, errCanceledAtPark)}
+		}
+		if refused {
+			p.pumpWhenReturned(d) // a refused approval is replayed once its handler returned
 		}
 		return outcome{parked: true}
 	}
@@ -1209,6 +1226,48 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 	}
 	p.concludeRun(ctx, ledger, d, stateOf(err), stopOf(err), text, true)
 	return outcome{err: err, canceled: canceled}
+}
+
+// refusedReplay reports whether a child's run ended because the child
+// refused to go on over a call of unknown outcome, not because the run
+// failed: thread.ErrStillRunning or thread.ErrRecoveryRequired, from
+// the replay, the recovery, or a felled turn's Wait. run maps it, in
+// one place, to "stay parked, keep the mirror" — never to a failed
+// settlement. A shutdown's cut-off is not one: the receipt is left
+// unsettled for Recover (run).
+func refusedReplay(err error) bool {
+	if errors.Is(err, thread.ErrShutdown) || errors.Is(err, thread.ErrLocked) {
+		return false
+	}
+	return errors.Is(err, thread.ErrStillRunning) || errors.Is(err, thread.ErrRecoveryRequired)
+}
+
+// pumpWhenReturned pumps d's parent once each still-running abandoned
+// handler of d's child has returned, so an approval the child refused
+// with ErrStillRunning is replayed without waiting for the next
+// Decide. Pool-owned work: counted in the drain, ended by Close.
+func (p *Pool) pumpWhenReturned(d *delegate) {
+	for _, r := range d.child.Pending() {
+		done := thread.AbandonedHandler(d.child.ID(), r.RunID, r.CallID)
+		if done == nil {
+			continue
+		}
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return
+		}
+		p.wg.Add(1)
+		p.mu.Unlock()
+		go func() {
+			defer p.wg.Done()
+			select {
+			case <-done:
+				p.pumpAsync(d.parent, d.agent.Logger())
+			case <-p.ctx.Done():
+			}
+		}()
+	}
 }
 
 // concludeStale settles a resume that found nothing to resume: the

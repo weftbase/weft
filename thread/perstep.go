@@ -93,6 +93,9 @@ type stepPersist struct {
 type handlerRun struct {
 	n    int
 	done chan struct{}
+	// abandoned holds the registry keys (abandoned) the turn's end
+	// filed this handler under, released when done closes.
+	abandoned []abandonKey
 }
 
 // wasStarted reports whether the gate let callID start in this
@@ -131,9 +134,29 @@ func (s *Session) afterDispatch(sp *stepPersist) core.RunOption {
 			h.n--
 			if h.n == 0 {
 				close(h.done)
+				// Returned: the process-wide registry forgets it, whatever
+				// became of its call's request.
+				for _, k := range h.abandoned {
+					abandoned.release(k, h.done)
+				}
 			}
 		}
 	})
+}
+
+// abandonLocked files the still-running handler of callID under the
+// process-wide registry as run's (abandoned): an approval of its
+// call's recovery request waits for it, from this Session and from
+// any later one of the same session in this process. Callers hold
+// s.mu.
+func (sp *stepPersist) abandonLocked(s *Session, run, callID string) {
+	h := sp.running[sp.calls[callID]+"\x00"+callID]
+	if h == nil || h.n == 0 {
+		return // returned since the wait gave up on it
+	}
+	k := abandonKey{session: s.header.ID, run: run, call: callID}
+	h.abandoned = append(h.abandoned, k)
+	abandoned.add(k, s.header.Created, h.done)
 }
 
 // stillRunning waits, under one shared deadline bound, for every

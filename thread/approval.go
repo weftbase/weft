@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/thread/internal/ladder"
 )
 
 // Outcome is a decision's kind (ADR 0021 §1): approve (run the call
@@ -774,21 +775,11 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 }
 
 // handlerRunningLocked reports whether req's call has a handler a
-// turn's end left running past its bound that has not returned yet
-// (stillRunning); one that has is forgotten. Callers hold s.mu.
+// turn's end left running past its bound that has not returned yet —
+// in this process, from this Session or an earlier one of the same
+// session (the abandoned registry). Callers hold s.mu.
 func (s *Session) handlerRunningLocked(req Request) bool {
-	key := req.RunID + "\x00" + req.CallID
-	done, ok := s.stillRunning[key]
-	if !ok {
-		return false
-	}
-	select {
-	case <-done:
-		delete(s.stillRunning, key)
-		return false
-	default:
-		return true
-	}
+	return abandoned.running(abandonKey{session: s.header.ID, run: req.RunID, call: req.CallID}, s.header.Created)
 }
 
 // anyAlways reports whether some approval among ds asked for the
@@ -966,15 +957,8 @@ func (s *Session) Resume(ctx context.Context) (*Turn, error) {
 	if _, err := s.resolveExpiredLocked(ctx); err != nil {
 		return nil, err
 	}
-	for _, r := range s.pendingLocked() {
-		if r.Recovery {
-			// The resume would deny it "no decision": a plain DENIED
-			// the model answers by asking again, over an effect that
-			// may have landed. A person decides it (ADR 0032 rule D).
-			return nil, fmt.Errorf("%w: session %s: recovery request %s for call %q is undecided; approve (retry) or deny (skip) it",
-				ErrRecoveryRequired, s.header.ID, r.ID, r.CallID)
-		}
-	}
+	// An undecided recovery request refuses the arming itself
+	// (mintResumeLocked): Resume never forces one to "no decision".
 	return s.armResumeLocked(ctx)
 }
 
@@ -985,17 +969,16 @@ func (s *Session) Resume(ctx context.Context) (*Turn, error) {
 // once, so a second Resume before the first lands returns the turn
 // already armed — overwriting it would orphan the first caller's Turn
 // on a wait that never ends. Callers hold s.mu; the boundary is
-// decided (or Resume is forcing it).
+// decided (or Resume is forcing it). It fails, arming nothing, where
+// mintResumeLocked refuses: ErrRecoveryRequired.
 func (s *Session) armResumeLocked(ctx context.Context) (*Turn, error) {
 	if s.await.resumed != nil {
 		return s.await.resumed, nil // one boundary resumes once
 	}
-	if err := s.errRecoveryRequiredLocked(); err != nil {
-		// A resume a crash cut short after it started an approved
-		// call: running the boundary again could repeat the call.
+	t, err := s.mintResumeLocked()
+	if err != nil {
 		return nil, err
 	}
-	t := s.mintResumeLocked()
 	if s.running {
 		s.resumeWork = &pendingResume{ctx: ctx, turn: t}
 		return t, nil
@@ -1013,10 +996,23 @@ func (s *Session) armResumeLocked(ctx context.Context) (*Turn, error) {
 // key Decide, Resume and the runner's own arming paths (the
 // chain-decided hand-off, the settled-boundary pickup) all share, so
 // two paths can never arm two resumes for one boundary. A resume
-// already armed is returned as-is, never displaced. Callers hold s.mu.
-func (s *Session) mintResumeLocked() *Turn {
+// already armed is returned as-is, never displaced.
+//
+// It is also the one place a resume is refused (resumeRefusedLocked):
+// every arming path — Decide, DecideSigned, Resume, Continue, a Send's
+// settled-boundary pickup, the runner's own hand-offs (the
+// chain-decided boundary, the settled pickup, the re-arm after an
+// Interrupt felled a resume), RecoverTurn, ReplayDecisions and the
+// pool's replay — mints here, so none can arm a resume that would
+// settle an undecided recovery request as "no decision" or repeat a
+// cut-off run's call. Refused, it mints nothing and the boundary stays
+// parked for a person. Callers hold s.mu.
+func (s *Session) mintResumeLocked() (*Turn, error) {
 	if s.await.resumed != nil {
-		return s.await.resumed
+		return s.await.resumed, nil
+	}
+	if err := s.resumeRefusedLocked(); err != nil {
+		return nil, err
 	}
 	t := s.newTurnLocked()
 	t.resume = true
@@ -1024,7 +1020,7 @@ func (s *Session) mintResumeLocked() *Turn {
 	if s.await.turn != nil { // nil after a restart: the parked Turn object is gone
 		s.await.turn.setNext(t)
 	}
-	return t
+	return t, nil
 }
 
 // settleResumeLocked retires a resume turn's arming and drops the
@@ -1176,21 +1172,16 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			waitFor = append(waitFor, c.ID)
 		}
 	}
-	running := sp.stillRunning(s, waitFor, abandonedWait)
+	running := sp.stillRunning(s, waitFor, ladder.AbandonedWait)
 	for _, c := range calls {
 		if es, ok := unknown[c.ID]; ok {
-			if done, still := running[c.ID]; still {
+			if _, still := running[c.ID]; still {
 				// Still running past the bound: a person decides, and
 				// an approval waits for the handler (ErrStillRunning).
 				req := es[0].(ApprovalRequestEntry)
 				req.Reason = reasonStillRunning
 				es = []Entry{req}
-				s.locked(func() {
-					if s.stillRunning == nil {
-						s.stillRunning = map[string]<-chan struct{}{}
-					}
-					s.stillRunning[t.runID+"\x00"+c.ID] = done
-				})
+				s.locked(func() { sp.abandonLocked(s, t.runID, c.ID) })
 			}
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {

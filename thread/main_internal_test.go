@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/weftbase/weft/thread/internal/ladder"
 )
 
 // TestMain shortens the recovery ladder's waits for the package's
@@ -12,7 +14,7 @@ import (
 // values are pinned by TestRecoveryTimingDefaults.
 func TestMain(m *testing.M) {
 	retryBackoffBase = 10 * time.Millisecond
-	abandonedWait = 2 * time.Second
+	ladder.AbandonedWait = 2 * time.Second
 	os.Exit(m.Run())
 }
 
@@ -20,7 +22,7 @@ func TestMain(m *testing.M) {
 // retry waits 1 s, 2 s, 4 s (doubling, capped at 30 s), and the end of
 // a turn waits at most 30 s for an abandoned handler to return.
 func TestRecoveryTimingDefaults(t *testing.T) {
-	if defaultRetryBackoffBase != time.Second || retryBackoffCap != 30*time.Second || defaultAbandonedWait != 30*time.Second {
-		t.Fatalf("backoff %v cap %v wait %v", defaultRetryBackoffBase, retryBackoffCap, defaultAbandonedWait)
+	if defaultRetryBackoffBase != time.Second || retryBackoffCap != 30*time.Second || ladder.DefaultAbandonedWait != 30*time.Second {
+		t.Fatalf("backoff %v cap %v wait %v", defaultRetryBackoffBase, retryBackoffCap, ladder.DefaultAbandonedWait)
 	}
 }

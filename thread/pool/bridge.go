@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -1048,7 +1049,13 @@ func (p *Pool) Register(sessionID string, agent *core.Agent) error {
 // joined (errors.Join): the parent's refusal of the decisions —
 // nothing is recorded and nothing pumped — or, per child that could
 // not be armed, why: ErrNoAgent for one the pool cannot reopen. The
-// other children are armed regardless.
+// other children are armed regardless. An approval of a mirrored
+// recovery request whose call's abandoned handler still runs in the
+// child is refused first with thread.ErrStillRunning, nothing
+// recorded: approve again once it has returned. Should one reach the
+// child anyway (a Decide on the parent session itself), the child's
+// refusal keeps the delegation parked on its mirrors — never failed —
+// and the pool replays the approval when the handler returns.
 func (p *Pool) Decide(ctx context.Context, parent *thread.Session, ds ...thread.Decision) error {
 	if parent == nil {
 		return fmt.Errorf("thread/pool: Decide with no parent session")
@@ -1058,6 +1065,9 @@ func (p *Pool) Decide(ctx context.Context, parent *thread.Session, ds ...thread.
 	}
 	p.attach(parent)
 	if len(ds) > 0 {
+		if err := refuseStillRunning(parent, ds...); err != nil {
+			return err // nothing recorded: the child could only refuse it
+		}
 		// Recording only: a nested boundary is the children's to
 		// resume, and the parent arms nothing of its own while a
 		// delegating call is still pending.
@@ -1066,6 +1076,54 @@ func (p *Pool) Decide(ctx context.Context, parent *thread.Session, ds ...thread.
 		}
 	}
 	return p.pump(ctx, parent)
+}
+
+// refuseStillRunning is Decide's check before the parent records
+// anything: an approval of a mirrored recovery request whose call's
+// handler — abandoned in the child, at any depth of the chain — is
+// still running in this process fails with thread.ErrStillRunning, as
+// the child's own replay would. Recorded on the parent, the approval
+// would reach a child that refuses it; refused here, nothing is
+// recorded and the caller approves again once the handler returned.
+func refuseStillRunning(parent *thread.Session, ds ...thread.Decision) error {
+	var byCall map[string]thread.Request
+	for _, d := range ds {
+		if d.Kind != thread.OutcomeApprove {
+			continue
+		}
+		if byCall == nil {
+			byCall = map[string]thread.Request{}
+			for _, r := range parent.Pending() {
+				byCall[r.CallID] = r
+			}
+		}
+		r, ok := byCall[d.CallID]
+		if !ok || r.Child == "" || !r.Recovery {
+			continue
+		}
+		if childHandler(r) != nil {
+			return fmt.Errorf("%w: call %q (request %s) of child session %s: approving retries it; approve again once its handler has returned",
+				thread.ErrStillRunning, d.CallID, r.ID, r.Child)
+		}
+	}
+	return nil
+}
+
+// childHandler is thread.AbandonedHandler for a mirrored request: the
+// done channel of the still-running handler of the child call the
+// mirror names, nil when none runs. A mirror's call id is the child's
+// own, namespaced by the child session (mirrorCallID) — once per level
+// of a chain, the run id the innermost child's — so each split of it
+// names a session and a call in that session's terms, and the
+// innermost is the one that ran.
+func childHandler(r thread.Request) <-chan struct{} {
+	parts := strings.Split(r.CallID, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if done := thread.AbandonedHandler(parts[i], r.RunID, strings.Join(parts[i+1:], "/")); done != nil {
+			return done
+		}
+	}
+	return nil
 }
 
 // DecideSigned is Decide for one signed decision: sd is verified and
@@ -1079,6 +1137,11 @@ func (p *Pool) DecideSigned(ctx context.Context, parent *thread.Session, sd thre
 		return err
 	}
 	p.attach(parent)
+	if sd.Kind == thread.OutcomeApprove {
+		if err := refuseStillRunning(parent, thread.Decision{CallID: sd.CallID, Kind: sd.Kind}); err != nil {
+			return err
+		}
+	}
 	if _, err := parent.DecideSigned(ctx, sd); err != nil {
 		return err
 	}
@@ -1876,7 +1939,13 @@ func replayOrRecover(ctx context.Context, child *thread.Session, replay ...threa
 	}
 	t, err := child.ReplayDecisions(ctx, replay...)
 	if errors.Is(err, thread.ErrRecoveryRequired) {
-		return child.RecoverTurn(ctx)
+		rt, rerr := child.RecoverTurn(ctx)
+		if errors.Is(rerr, thread.ErrNotPending) {
+			// No cut-off turn: the refusal was an undecided recovery
+			// request. The child stays parked on it (run).
+			return nil, err
+		}
+		return rt, rerr
 	}
 	return t, err
 }
