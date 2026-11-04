@@ -1103,6 +1103,15 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			s.locked(func() {
 				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, nil)
 			})
+			if d, ok := es[len(es)-1].(ApprovalDecisionEntry); ok && d.Outcome == OutcomeApprove && !sp.returned(s, c.ID, abandonedWait) {
+				// A keyed retry never starts while the abandoned
+				// handler may still be running: it waits for it to
+				// return, bounded; still running past the bound, the
+				// call goes to a person instead (review 3 P2-2).
+				req := es[0].(ApprovalRequestEntry)
+				req.Reason = reasonStillRunning
+				es = []Entry{req}
+			}
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {
 				cr.parkedCalls = append(cr.parkedCalls, c)

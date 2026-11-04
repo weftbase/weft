@@ -80,10 +80,12 @@ func TestKeyedRetriesAreBounded(t *testing.T) {
 		t.Run(b.name, func(t *testing.T) {
 			var mu sync.Mutex
 			invoked := 0
+			var at []time.Time
 			slow := func() *core.ToolDef {
 				return core.Tool("ship", "Ship.", func(ctx context.Context, _ struct{}) (string, error) {
 					mu.Lock()
 					invoked++
+					at = append(at, time.Now())
 					mu.Unlock()
 					<-ctx.Done()
 					return "", ctx.Err()
@@ -101,7 +103,7 @@ func TestKeyedRetriesAreBounded(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, _ = turn.Wait()
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(30 * time.Second)
 			for {
 				_ = s.WaitIdle(bg)
 				if p := s.Pending(); len(p) == 1 || time.Now().After(deadline) {
@@ -111,9 +113,20 @@ func TestKeyedRetriesAreBounded(t *testing.T) {
 			}
 			mu.Lock()
 			n := invoked
+			gaps := make([]time.Duration, 0, 3)
+			for i := 1; i < len(at); i++ {
+				gaps = append(gaps, at[i].Sub(at[i-1]))
+			}
 			mu.Unlock()
 			if n != 4 {
 				t.Fatalf("ship ran %d times, want 4: the first run and 3 automatic retries", n)
+			}
+			// Every automatic retry backs off, doubling: base, 2·base,
+			// 4·base (the package's tests run with a 10 ms base).
+			for i, g := range gaps {
+				if want := (10 * time.Millisecond) << i; g < want {
+					t.Fatalf("retry %d started %v after the previous run, want ≥ %v (gaps %v)", i+1, g, want, gaps)
+				}
 			}
 			p := s.Pending()
 			if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "retries are spent") {
@@ -185,5 +198,118 @@ func TestSkippedRecoveryReadsOutcomeUnknown(t *testing.T) {
 				t.Fatalf("charge ran %d times", len(charge.ran()))
 			}
 		})
+	}
+}
+
+// Review 3 P2-2: in a live process a keyed call whose handler the loop
+// abandoned at its Timeout is not retried while that handler may still
+// be running: the end of the turn waits for it to return (bounded),
+// then retries under the same key — never two handlers of the call at
+// once.
+func TestKeyedRetryWaitsForTheAbandonedHandler(t *testing.T) {
+	var mu sync.Mutex
+	var keys []string
+	active, most := 0, 0
+	release := make(chan struct{})
+	started := make(chan struct{}, 4)
+	ship := core.Tool("ship", "Ship.", func(ctx context.Context, _ struct{}) (string, error) {
+		c, _ := core.CallFromContext(ctx)
+		mu.Lock()
+		keys = append(keys, c.IdempotencyKey)
+		first := len(keys) == 1
+		active++
+		most = max(most, active)
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}()
+		started <- struct{}{}
+		if first {
+			<-release // ignores its deadline: abandoned, still running
+		}
+		return "shipped", nil
+	}, core.Replay(core.ReplayKeyed), core.Timeout(10*time.Millisecond))
+	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+		wefttest.Say("done"),
+	), ship))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, err := s.Send(bg, core.User("ship it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	time.Sleep(200 * time.Millisecond) // the timeout passed long ago; the retry must wait
+	mu.Lock()
+	n := len(keys)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("ship ran %d times while the abandoned handler still ran, want 1", n)
+	}
+	close(release)
+	_, _ = turn.Wait()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_ = s.WaitIdle(bg)
+		mu.Lock()
+		n = len(keys)
+		mu.Unlock()
+		if n == 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = s.WaitIdle(bg)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(keys) != 2 || keys[0] != keys[1] || most != 1 {
+		t.Fatalf("keys %v, at most %d at once: want one retry under the same key, after the first returned", keys, most)
+	}
+	if p := s.Pending(); len(p) != 0 {
+		t.Fatalf("Pending = %+v", p)
+	}
+}
+
+// A handler still running past the bound (the package's tests run with
+// 2 s): the session does not retry it — the call goes to a person, the
+// handler ran once.
+func TestKeyedRetryOfAStillRunningHandlerAsksAPerson(t *testing.T) {
+	var mu sync.Mutex
+	invoked := 0
+	release := make(chan struct{})
+	defer close(release)
+	ship := core.Tool("ship", "Ship.", func(ctx context.Context, _ struct{}) (string, error) {
+		mu.Lock()
+		invoked++
+		mu.Unlock()
+		<-release
+		return "shipped", nil
+	}, core.Replay(core.ReplayKeyed), core.Timeout(10*time.Millisecond))
+	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+	), ship))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, err := s.Send(bg, core.User("ship it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = turn.Wait()
+	_ = s.WaitIdle(bg)
+	p := s.Pending()
+	if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "still running") {
+		t.Fatalf("Pending = %+v, want the call waiting for a person", p)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if invoked != 1 {
+		t.Fatalf("ship ran %d times, want 1", invoked)
 	}
 }

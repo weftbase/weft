@@ -1194,7 +1194,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		runOpts = append(runOpts, s.idempotencyKeys(sp))
 		// Rule A (ADR 0032): a call that is not ReplaySafe starts only
 		// once the step entry holding it is durable.
-		runOpts = append(runOpts, s.dispatchGate(persist, sp, t))
+		runOpts = append(runOpts, s.dispatchGate(persist, sp, t), s.afterDispatch(sp))
 		// A started call with an effect that gives no answer parks
 		// instead of reading as failed (ADR 0032, WR-6): the recovery
 		// ladder decides it at the turn's end.

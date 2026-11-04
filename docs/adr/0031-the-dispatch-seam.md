@@ -65,7 +65,14 @@ ADR 0006 says a phase turned into a hook needs an ADR. This is that ADR.
    about to allow (ADR 0032's dispatch records). `weft/thread`'s gate
    is Rule A of crash recovery (ADR 0032): a call that is not
    `ReplaySafe` starts only when the step entry holding it, and its own
-   dispatch record, are durable.
+   dispatch record, are durable. Its counterpart, `AfterDispatch(fn
+   AfterDispatchFunc) RunOption` (amended 2026-11-04, review 3 P2-2), is
+   called on the same goroutine once the handler has returned or
+   panicked — also a handler the loop abandoned at its `Timeout` or the
+   run's cancellation, when it finally returns — so a caller knows
+   whether a call it may retry is still running (`weft/thread` never
+   retries a keyed call over its own running handler). Same
+   inheritance as the gate.
 4. **A child run inherits neither; a `CallTool` inherits both, derived
    (amended 2026-11-04, review P1-5).** A `Subagent`'s child run gets
    neither the key option nor the gate: the gate is cleared from the

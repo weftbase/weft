@@ -211,3 +211,78 @@ func TestTimeoutIsAnUnknownOutcome(t *testing.T) {
 		t.Fatalf("handlers completed %d times, want 4 (each one, late)", done.Load())
 	}
 }
+
+// AfterDispatch is told when a started handler returns — also one the
+// loop abandoned at its Timeout, when it finally returns after the run
+// ended — never for a call the gate refused or a parked call, and a
+// CallTool's inner call reports too; a Subagent's child run does not
+// inherit it.
+func TestAfterDispatchReportsTheHandlersReturn(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	returned := map[string]bool{}
+	slow := core.Tool("slow", "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+		<-release // ignores its deadline
+		return "late", nil
+	}, core.Timeout(10*time.Millisecond))
+	var agent *core.Agent
+	outer := core.Tool("outer", "Outer.", func(ctx context.Context, _ struct{}) (string, error) {
+		return agent.CallTool(ctx, core.ToolCallPart{ID: "in1", Name: "fast", Args: []byte(`{}`)})
+	})
+	fast := core.Tool("fast", "Fast.", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	child := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "fast", ID: "k1", Args: `{}`}),
+		wefttest.Say("child done"),
+	), fast)
+	agent = core.New(wefttest.Script(
+		wefttest.ToolCalls(
+			wefttest.Call{Name: "slow", ID: "c1", Args: `{}`},
+			wefttest.Call{Name: "outer", ID: "c2", Args: `{}`},
+			wefttest.Call{Name: "fast", ID: "c3", Args: `{}`},
+			wefttest.Call{Name: "gated", ID: "c4", Args: `{}`},
+			wefttest.Call{Name: "delegate", ID: "c5", Args: `{"prompt":"go"}`},
+		),
+		wefttest.Say("done"),
+	), slow, outer, fast, core.Tool("gated", "Gated.", func(context.Context, struct{}) (string, error) { return "", nil }, core.RequireApproval()),
+		core.Subagent("delegate", "Delegate.", child))
+	_, err := agent.Generate(context.Background(), core.Prompt("go"),
+		core.BeforeDispatch(func(ctx context.Context, c core.Call, def *core.ToolDef) error {
+			if c.CallID == "c3" {
+				return errors.New("refused")
+			}
+			return nil
+		}),
+		core.AfterDispatch(func(ctx context.Context, c core.Call, def *core.ToolDef) {
+			mu.Lock()
+			returned[c.CallID] = true
+			mu.Unlock()
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if returned["c1"] {
+		t.Fatal("reported the abandoned handler before it returned")
+	}
+	if !returned["c2"] || !returned["in1"] || !returned["c5"] {
+		t.Fatalf("returned = %v, want c2, its inner call and the delegation", returned)
+	}
+	if returned["c3"] || returned["c4"] || returned["k1"] {
+		t.Fatalf("returned = %v: a refused call, a parked call or a child run's call reported", returned)
+	}
+	mu.Unlock()
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		done := returned["c1"]
+		mu.Unlock()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the abandoned handler's return was never reported")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

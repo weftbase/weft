@@ -751,7 +751,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 			}
 		default:
 			var retried []string
-			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch, cfg.parkUnknown)
+			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown)
 			for _, name := range retried {
 				state.retries[name]++
 			}
@@ -1225,7 +1225,7 @@ func (a *Agent) modelInfo() ModelInfo { return InfoOf(a.model) }
 // rec is the run's recorder, told each call's truncation before its
 // ToolFinish is emitted (the tool_finish record's
 // weft.tool.truncated_bytes); nil records nothing.
-func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc, parkUnknown bool) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
+func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc, after AfterDispatchFunc, parkUnknown bool) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
 	outcomes := make([]ToolResultPart, len(calls))
 	parked := make([]bool, len(calls))
 	sem := make(chan struct{}, parallelism)
@@ -1354,6 +1354,9 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			if dispatch != nil {
 				callCtx = withDispatch(callCtx, dispatch)
 			}
+			if after != nil {
+				callCtx = withAfterDispatch(callCtx, after)
+			}
 			if parkUnknown {
 				callCtx = withParkUnknown(callCtx)
 			}
@@ -1475,7 +1478,7 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 			approved = append(approved, c)
 		}
 	}
-	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch, cfg.parkUnknown)
+	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown)
 	byID := make(map[string]ToolResultPart, len(ran))
 	for _, r := range ran {
 		byID[r.CallID] = r
@@ -1766,6 +1769,9 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 			if in.gate != nil {
 				ctx = withDispatch(ctx, in.gate)
 			}
+			if in.after != nil {
+				ctx = withAfterDispatch(ctx, in.after)
+			}
 		}
 		ctx = withCall(ctx, inner)
 	}
@@ -1847,11 +1853,20 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 				return "", fmt.Errorf("%w: %w", ErrNotDispatched, err)
 			}
 		}
+		// AfterDispatch: told when the handler that starts below has
+		// returned (or panicked) — also when the loop has abandoned it
+		// at its Timeout or the run's cancellation, for this goroutine
+		// carries on to the end.
+		after := afterDispatchFrom(ctx)
+		if after != nil {
+			ctx = withAfterDispatch(ctx, nil)
+			defer after(ctx, c, def)
+		}
 		if inLoop {
 			// A CallTool from inside the handler dispatches under this
 			// call: a key derived from its key and the inner call's
 			// position, through the same gate (P1-5).
-			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate})
+			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate, after: after})
 		}
 		if mark == nil {
 			return def.invoke(ctx, call.Args, strict)

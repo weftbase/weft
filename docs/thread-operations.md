@@ -310,8 +310,11 @@ felled it — is never recorded "timed out" or "interrupted": it parks
 for the same ladder at the turn's end (keyed retry, or a recovery
 request — never a `Reconcile`, since the abandoned handler may still be
 running), the step's other results kept. The session's own keyed
-retries of one call are capped at 3 (on file, with a backoff); then a
-person decides. Skipping a recovery request (`Deny`) shows the model
+retries of one call are capped at 3 (on file), each after a backoff
+of 1 s, 2 s, 4 s; then a person decides. A keyed retry never starts
+while the abandoned handler of the same call is still running: the
+end of the turn waits for it to return, at most 30 s, and past that
+the call goes to a person (`… still running past its bound …`). Skipping a recovery request (`Deny`) shows the model
 `OUTCOME_UNKNOWN: … it was skipped, not retried: do not repeat it`,
 never `DENIED`.
 

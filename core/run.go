@@ -55,6 +55,9 @@ type runConfig struct {
 	// dispatch is BeforeDispatch's gate; nil on an ordinary run, never
 	// inherited by a child run.
 	dispatch DispatchFunc
+	// afterDispatch is AfterDispatch's hook; nil on an ordinary run,
+	// never inherited by a child run.
+	afterDispatch AfterDispatchFunc
 	// parkUnknown parks a call whose outcome is unknown instead of
 	// answering it (ParkUnknown); never inherited by a child run.
 	parkUnknown bool
@@ -698,6 +701,42 @@ func (o dispatchOption) applyRun(c *runConfig) {
 // inherits it. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return dispatchOption{fn} }
 
+// AfterDispatchFunc is the hook AfterDispatch installs: called once the
+// handler of a call has returned or panicked, with the Call and the
+// tool's definition the gate saw.
+type AfterDispatchFunc func(ctx context.Context, c Call, def *ToolDef)
+
+type afterDispatchOption struct{ fn AfterDispatchFunc }
+
+func (o afterDispatchOption) applyRun(c *runConfig) {
+	if o.fn != nil {
+		c.afterDispatch = o.fn
+	}
+}
+
+// AfterDispatch returns the RunOption installing fn as the run's
+// after-dispatch hook (ADR 0031, ADR 0032): the loop calls it on the
+// call's goroutine once a handler that started — past the middleware,
+// the approval boundary and the BeforeDispatch gate — has returned or
+// panicked. It is called also for a handler the loop abandoned at its
+// Timeout or at the run's cancellation, when that handler finally
+// returns, so a caller can tell whether a call it may retry is still
+// running (weft/thread waits for it before a keyed retry). A handler
+// that never returns never calls it. A CallTool from inside the handler
+// inherits it; a Subagent's child run does not. The last option wins.
+func AfterDispatch(fn AfterDispatchFunc) RunOption { return afterDispatchOption{fn} }
+
+type afterDispatchKey struct{}
+
+func withAfterDispatch(ctx context.Context, fn AfterDispatchFunc) context.Context {
+	return context.WithValue(ctx, afterDispatchKey{}, fn)
+}
+
+func afterDispatchFrom(ctx context.Context) AfterDispatchFunc {
+	fn, _ := ctx.Value(afterDispatchKey{}).(AfterDispatchFunc)
+	return fn
+}
+
 type parkUnknownOption struct{}
 
 func (parkUnknownOption) applyRun(c *runConfig) { c.parkUnknown = true }
@@ -740,6 +779,7 @@ func innerKey(outer string, n int64) string {
 type innerDispatch struct {
 	outer Call
 	gate  DispatchFunc
+	after AfterDispatchFunc
 	n     atomic.Int64
 }
 

@@ -1659,6 +1659,23 @@ type DispatchFunc = core.DispatchFunc
 // inherits it. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return core.BeforeDispatch(fn) }
 
+// AfterDispatchFunc is the hook AfterDispatch installs: called once the
+// handler of a call has returned or panicked, with the Call and the
+// tool's definition the gate saw.
+type AfterDispatchFunc = core.AfterDispatchFunc
+
+// AfterDispatch returns the RunOption installing fn as the run's
+// after-dispatch hook (ADR 0031, ADR 0032): the loop calls it on the
+// call's goroutine once a handler that started — past the middleware,
+// the approval boundary and the BeforeDispatch gate — has returned or
+// panicked. It is called also for a handler the loop abandoned at its
+// Timeout or at the run's cancellation, when that handler finally
+// returns, so a caller can tell whether a call it may retry is still
+// running (weft/thread waits for it before a keyed retry). A handler
+// that never returns never calls it. A CallTool from inside the handler
+// inherits it; a Subagent's child run does not. The last option wins.
+func AfterDispatch(fn AfterDispatchFunc) RunOption { return core.AfterDispatch(fn) }
+
 // ParkUnknown returns the RunOption that parks a call whose outcome is
 // unknown instead of answering it (ADR 0032): a call of a tool that is
 // not ReplaySafe whose handler started and gave no answer of its own —

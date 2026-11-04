@@ -144,14 +144,30 @@ denial reads the same way).
 **Bounded keyed retries (review P1-2).** The session's own retries of
 one call occurrence are capped at 3 — counted from the `recover`/`retry`
 audit steps after the step entry holding it, so the cap survives a
-restart — and a resume that carries the n-th (n ≥ 2) waits 100 ms ·
-2^(n-2) first (an interrupt cuts the wait short). Past the cap the call
+restart — and a resume that carries the n-th (n ≥ 1) waits 1 s ·
+2^(n-1) first, at most 30 s — 1 s, 2 s, 4 s (review 3 P2-2: the first
+retry backs off too; an interrupt cuts the wait short). Past the cap the call
 parks as a recovery request for a person, reason `outcome unknown: the
 session's automatic retries are spent; approve to retry it with the
 same idempotency key, deny to skip it`; a person's retry that ends
 unknown again comes straight back to a person. Without the cap a
 `Timeout` shorter than the provider looped (timeout → park → retry →
 timeout).
+
+**No retry over a running handler (review 3 P2-2).** In a live
+process the handler a keyed retry would repeat may still be running —
+the loop abandoned it at its `Timeout`, or it ignored the run's
+cancellation. The session sees each handler the gate let start return
+(`core.AfterDispatch`, called on the call's goroutine when the handler
+returns or panics, abandoned or not) and the end of the turn waits for
+it, at most 30 s, before it approves the retry: two handlers of one call
+never run at once. Still running past the bound, the call parks as a
+recovery request for a person instead, reason `outcome unknown: the
+call's handler is still running past its bound; approve to retry it
+with the same idempotency key, deny to skip it` — no retry is counted.
+The wait holds the turn's end (a `Close` waits for it, within its own
+deadline). After a crash no handler is left running, and nothing
+waits.
 
 **Rule E — audited like any decision.** The session's own retries are
 decision entries with a `recover` audit step (Outcome `retry`, Detail

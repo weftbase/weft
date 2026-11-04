@@ -96,6 +96,7 @@ base
   BeforeDispatch gate ───── refused → ErrNotDispatched; the handler never runs
   decode (StrictInput) ──── failure → INVALID_INPUT naming the field
   handler ───────────────── string verbatim / JSON; error or *ToolError
+  AfterDispatch hook ────── the handler returned (abandoned or not)
         │
         ▼
 ── containment boundary ── panic → "tool X panicked"; Timeout → "timed out"

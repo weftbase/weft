@@ -32,6 +32,7 @@ const (
 	reasonNotStarted     = "cut off before it started: approve to run it, deny to skip it"
 	reasonDelegated      = "cut off while it delegated: the delegated work may have run; approve to delegate it again, deny to skip it"
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
+	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key, deny to skip it"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
@@ -89,9 +90,9 @@ func (s *Session) autoRetriesLocked(callID string) int {
 }
 
 // retryBackoffLocked is how long a resume waits before it runs: the
-// session's n-th automatic retry of a call (n ≥ 2) waits
-// retryBackoffBase·2^(n-2) — the first runs at once. Callers hold
-// s.mu.
+// session's n-th automatic retry of a call (n ≥ 1) waits
+// retryBackoffBase·2^(n-1), at most retryBackoffCap — 1 s, 2 s, 4 s
+// for the three the bound allows. Callers hold s.mu.
 func (s *Session) retryBackoffLocked() time.Duration {
 	var wait time.Duration
 	walk := s.approvalWalkLocked()
@@ -101,16 +102,29 @@ func (s *Session) retryBackoffLocked() time.Duration {
 		if !ok || d.Outcome != OutcomeApprove || d.Via != viaRecovery {
 			continue
 		}
-		if n := s.autoRetriesLocked(c.ID); n >= 2 {
-			wait = max(wait, retryBackoffBase<<(n-2))
+		if n := s.autoRetriesLocked(c.ID); n >= 1 {
+			wait = max(wait, min(retryBackoffBase<<min(n-1, 16), retryBackoffCap))
 		}
 	}
 	return wait
 }
 
-// retryBackoffBase is the first backoff between the session's own
-// keyed retries of one call.
-const retryBackoffBase = 100 * time.Millisecond
+// retryBackoffBase is the backoff before the session's first keyed
+// retry of one call, doubling for each next one up to retryBackoffCap
+// (R12). abandonedWait bounds how long the end of a turn waits for a
+// handler the loop abandoned (its Timeout passed, a cancel it ignored)
+// to return before the session retries its call: still running past
+// it, the call goes to a person instead. Variables for the tests only.
+var (
+	retryBackoffBase = defaultRetryBackoffBase
+	retryBackoffCap  = 30 * time.Second
+	abandonedWait    = defaultAbandonedWait
+)
+
+const (
+	defaultRetryBackoffBase = time.Second
+	defaultAbandonedWait    = 30 * time.Second
+)
 
 // reconciled is what a tool's Reconcile said of one call (ADR 0032,
 // the ladder's second rung): found with its result, missing, or err.
@@ -308,6 +322,7 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 			}
 		}
 		sp.started[entry+"\x00"+c.CallID] = true
+		sp.handlerStartedLocked(entry + "\x00" + c.CallID)
 		t.mu.Lock()
 		t.effects = true
 		t.mu.Unlock()

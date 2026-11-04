@@ -81,6 +81,18 @@ type stepPersist struct {
 	// nested one (its key derived from theirs, recursively). Guarded by
 	// s.mu.
 	inner map[string]bool
+	// running holds, by the same key as started, the handlers the gate
+	// let start that have not returned yet (core.AfterDispatch) — one
+	// the loop abandoned at its Timeout or a cancellation may still be
+	// running. Guarded by s.mu.
+	running map[string]*handlerRun
+}
+
+// handlerRun counts one call's handlers in flight (a middleware may
+// call next more than once); done closes when the count is back to 0.
+type handlerRun struct {
+	n    int
+	done chan struct{}
 }
 
 // wasStarted reports whether the gate let callID start in this
@@ -94,11 +106,63 @@ func (sp *stepPersist) wasStarted(s *Session, callID string) bool {
 	return sp.started[sp.calls[callID]+"\x00"+callID]
 }
 
+// handlerStartedLocked notes a handler the gate let start under key.
+// Callers hold s.mu.
+func (sp *stepPersist) handlerStartedLocked(key string) {
+	h := sp.running[key]
+	if h == nil || h.n == 0 {
+		h = &handlerRun{done: make(chan struct{})}
+		sp.running[key] = h
+	}
+	h.n++
+}
+
+// afterDispatch is the turn's core.AfterDispatch hook: a handler the
+// gate let start has returned — also one the loop abandoned, when it
+// finally does.
+func (s *Session) afterDispatch(sp *stepPersist) core.RunOption {
+	return core.AfterDispatch(func(_ context.Context, c core.Call, _ *core.ToolDef) {
+		if c.Outer != "" {
+			return // an inner call: its outer call's handler is what is waited for
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if h := sp.running[sp.calls[c.CallID]+"\x00"+c.CallID]; h != nil && h.n > 0 {
+			h.n--
+			if h.n == 0 {
+				close(h.done)
+			}
+		}
+	})
+}
+
+// returned waits, at most bound, for every handler of callID the gate
+// let start in this attempt to return; it reports whether they did. A
+// keyed retry never starts while the handler it retries may still be
+// running (review 3 P2-2).
+func (sp *stepPersist) returned(s *Session, callID string, bound time.Duration) bool {
+	s.mu.Lock()
+	h := sp.running[sp.calls[callID]+"\x00"+callID]
+	s.mu.Unlock()
+	if h == nil {
+		return true
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-h.done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 // newStepPersistLocked starts an attempt's per-step state at the leaf;
 // a resume attempt knows its boundary's calls from the start. Callers
 // hold s.mu.
 func (s *Session) newStepPersistLocked(resume bool) *stepPersist {
-	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}, inner: map[string]bool{}}
+	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}, inner: map[string]bool{},
+		running: map[string]*handlerRun{}}
 	if resume {
 		for _, c := range s.danglingCallsLocked() {
 			if e := s.callEntryLocked(c.ID); e != "" {
