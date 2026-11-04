@@ -150,6 +150,13 @@ type Request struct {
 	// key), readable by whichever process reopens the session. weft
 	// never reads it. A copy; nil when the run carried none.
 	Metadata map[string]string
+	// IdempotencyKey is the key the call runs under when it is
+	// approved (IdempotencyKey: from the session, the assistant entry
+	// holding the call and the call id) — the handler reads the same
+	// value as core.Call.IdempotencyKey, on whichever worker resumes it,
+	// and a recovery retry keeps it. Empty on a mirrored child request
+	// (the child's own Pending names it).
+	IdempotencyKey string
 }
 
 // Decision is one call's outcome, the value Decide records (ADR 0021
@@ -974,6 +981,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 				Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
 				RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
 			}
+			s.locked(func() { s.requestKeyLocked(&req) })
 			d, decided, outcome := s.consultApprover(ctx, req)
 			steps = append(steps, ApprovalAuditEntry{
 				CallID: c.ID, Step: StepApprover, Outcome: outcome, RunID: t.runID,
@@ -1113,7 +1121,9 @@ func (s *Session) fireOnRequest(cr *chainResult) {
 	var reqs []Request
 	for i := len(s.order) - 1; i >= 0 && len(reqs) < len(cr.parkedCalls); i-- {
 		if re, ok := s.order[i].(ApprovalRequestEntry); ok && want[re.CallID] {
-			reqs = append(reqs, requestFromEntry(s.header.ID, re))
+			r := requestFromEntry(s.header.ID, re)
+			s.requestKeyLocked(&r)
+			reqs = append(reqs, r)
 		}
 	}
 	fn := s.cfg.onRequest
@@ -1676,14 +1686,17 @@ func (s *Session) pendingLocked() []Request {
 			if r.Quorum < 2 {
 				r.Quorum = 0
 			}
+			s.requestKeyLocked(&r)
 			out = append(out, r)
 			continue
 		}
-		out = append(out, Request{
+		r := Request{
 			Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 			Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
 			RunID: run, Quorum: s.parkQuorum(),
-		})
+		}
+		s.requestKeyLocked(&r)
+		out = append(out, r)
 	}
 	// Mirrored child requests (ADR 0022 §7): a pool child's parked
 	// call is requested in its own session and mirrored here, so the

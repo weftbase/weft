@@ -1079,7 +1079,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// own line of it.
 	var firstOverflow error
 	var sp *stepPersist
-	s.locked(func() { sp = &stepPersist{startLeaf: s.leaf, resume: t.resume} })
+	s.locked(func() { sp = s.newStepPersistLocked(t.resume) })
 	for attempt := 0; ; attempt++ {
 		// The input is the session's context — the walk already includes
 		// the prompt entry appended for this turn, or the boundary's
@@ -1121,6 +1121,9 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		// the run emits is appended as it joins, so a crash mid-turn
 		// loses nothing emitted.
 		runOpts = append(runOpts, s.observer(persist, sp, t.RunID()))
+		// Each executed call's key is recovery-stable: derived from the
+		// assistant entry holding it (IdempotencyKey).
+		runOpts = append(runOpts, s.idempotencyKeys(sp))
 		// The session's identity rides every run (ADR 0024 S5), appended
 		// after the caller's options and before the transcript — a later
 		// core.Metadata wins (S1.1), so the session's keys win over a
@@ -1162,7 +1165,9 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 				if branched {
 					// A fresh attempt: nothing observed, nothing held (the
 					// failed attempt's unwritten messages die with it).
-					*sp = stepPersist{startLeaf: s.leaf, resume: t.resume, late: sp.late, err: sp.err}
+					late, lerr := sp.late, sp.err
+					*sp = *s.newStepPersistLocked(t.resume)
+					sp.late, sp.err = late, lerr
 				}
 			})
 			if cerr := s.compactForOverflow(persist); cerr == nil && branched {

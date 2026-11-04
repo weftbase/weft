@@ -64,6 +64,27 @@ type stepPersist struct {
 	late int
 	// err is the first such failure.
 	err error
+	// calls maps each call id this attempt may execute to the
+	// assistant entry that holds it: the attempt's own steps' (as they
+	// land), and for a resume the boundary's dangling calls. A call's
+	// idempotency key and dispatch marker name only an entry from here
+	// — never an older message that reused the call id.
+	calls map[string]string
+}
+
+// newStepPersistLocked starts an attempt's per-step state at the leaf;
+// a resume attempt knows its boundary's calls from the start. Callers
+// hold s.mu.
+func (s *Session) newStepPersistLocked(resume bool) *stepPersist {
+	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}}
+	if resume {
+		for _, c := range s.danglingCallsLocked() {
+			if e := s.callEntryLocked(c.ID); e != "" {
+				sp.calls[c.ID] = e
+			}
+		}
+	}
+	return sp
 }
 
 // observer returns the run-scoped transcript observer for one attempt.
@@ -120,6 +141,15 @@ func (s *Session) persistStep(ctx context.Context, sp *stepPersist, msgs []core.
 	sp.observed += len(msgs)
 	for _, m := range msgs {
 		sp.backlog = append(sp.backlog, cloneMessage(m))
+		if m.Role == core.RoleAssistant {
+			// The step's calls are this message's now: an older entry
+			// that used the same ids no longer names them.
+			for _, p := range m.Content {
+				if c, ok := p.(core.ToolCallPart); ok {
+					delete(sp.calls, c.ID)
+				}
+			}
+		}
 	}
 	if err := s.flushStepsLocked(ctx, sp); err != nil {
 		sp.late++
@@ -170,6 +200,13 @@ func (s *Session) flushStepsLocked(ctx context.Context, sp *stepPersist) error {
 	}
 	for _, e := range entries {
 		s.adoptLocked(e)
+		if me, ok := e.(MessageEntry); ok && me.Message.Role == core.RoleAssistant {
+			for _, p := range me.Message.Content {
+				if c, ok := p.(core.ToolCallPart); ok {
+					sp.calls[c.ID] = me.ID
+				}
+			}
+		}
 	}
 	sp.backlog = nil
 	return nil

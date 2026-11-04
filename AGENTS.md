@@ -255,6 +255,9 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    park rule, OnlyTools, lowered budgets, overrides, metadata), are recorded and survive a restart; an
 //    approved call whose tool changed its input or vanished since it parked is denied, not run (audit: drift). Signed: NewKeyring + WithKeyring (+
 //    RequireSigned(), durable in the header); s.Request(callID) → ring.Sign(r, d) | key.Sign → s.DecideSigned.
+//    Keys (ADR 0031): every session call's Call.IdempotencyKey is thread.IdempotencyKey(session, assistant entry, call) —
+//    stable across crash, restart and resume; Request.IdempotencyKey names it on a parked call; Request.Metadata the run
+//    metadata it parked under.
 //    Pool (ADR 0022, thread/pool): p := pool.New(max), the bound per Pool value; p.MustWrap(name, desc,
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
 //    p.Decide(ctx, parent, ds...) error records and arms, p.Wait(ctx, parent, id) follows; p.Cancel,

@@ -509,6 +509,16 @@ not the numbers themselves.
 
 ## 11. Approvals operations
 
+- **Idempotency keys.** Every call a session runs carries
+  `weft.Call.IdempotencyKey` = `thread.IdempotencyKey(session id,
+  assistant entry id, call id)` (ADR 0031): a tool with side effects
+  passes it to an API that deduplicates. The same call keeps it across
+  a crash, a restart, a resume on another worker and a recovery retry;
+  `Request.IdempotencyKey` names it on a parked call. A call the model
+  re-issues under the same id in a later turn sits in another entry
+  and gets another key; a fork gets new keys. A `weft.Subagent`'s child
+  run does not inherit them: its calls carry run-scoped keys, new on
+  every re-run of the child.
 - **Keys.** A `thread.Keyring` holds HMAC keys by id; the one active
   key mints new challenges, every key verifies. Keys are never
   written to a session — only key ids are — and a ring is
