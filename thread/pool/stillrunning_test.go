@@ -426,7 +426,8 @@ func TestPoolCloseGiveUpThenRecoverWaitsForTheStillRunningHandler(t *testing.T) 
 				if err == nil {
 					break
 				}
-				if !errors.Is(err, thread.ErrLocked) || time.Now().After(deadline) {
+				// ErrStale: the old child's cut-off entry landed after Open.
+				if !errors.Is(err, thread.ErrLocked) && !errors.Is(err, thread.ErrStale) || time.Now().After(deadline) {
 					t.Fatalf("the cut-off child's hold was not released: %v", err)
 				}
 				time.Sleep(5 * time.Millisecond)
