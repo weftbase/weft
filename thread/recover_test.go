@@ -868,3 +868,104 @@ func (m *hangOnce) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[
 		yield(nil, ctx.Err())
 	}
 }
+
+// Double crashes (the crash matrix's second-crash rows): the recovery
+// itself is cut off. A continuation RecoverTurn started is a run like
+// any — named by the recovery's audit, not by a prompt — so a second
+// crash inside it leaves it cut off, and the next process recovers it
+// again: the first cut-off turn is never read as the session's end.
+func TestRecoverDoubleCrashInTheContinuation(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			charge := &sideEffect{}
+			id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+				m := &crashModel{Model: wefttest.Script(charged("charge"), wefttest.Say("never")), n: 2, store: cs}
+				return core.New(m, charge.def())
+			}, nil)
+			st = restart(t, b, st, id)
+
+			// Process 2: the continuation's model call is cut off.
+			cs := &crashStore{Storage: st}
+			s, err := thread.Open(bg, cs, id, core.New(&crashModel{Model: wefttest.Script(wefttest.Say("never")), n: 1, store: cs}, charge.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, err := s.RecoverTurn(bg)
+			if err != nil || rt == nil {
+				t.Fatalf("RecoverTurn = %v, %v", rt, err)
+			}
+			_, _ = rt.Wait()
+			_ = s.WaitIdle(bg)
+			if !cs.down.Load() {
+				t.Fatal("the second crash never happened")
+			}
+			st = restart(t, b, st, id)
+
+			// Process 3: the continuation is cut off, and recovered.
+			s3, err := thread.Open(bg, st, id, core.New(wefttest.Script(wefttest.Say("charged, and done")), charge.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s3.Close(bg) }()
+			rt, err = s3.RecoverTurn(bg)
+			if err != nil || rt == nil {
+				t.Fatalf("RecoverTurn after the second crash = %v, %v; want a continuation", rt, err)
+			}
+			res, err := rt.Wait()
+			if err != nil || res.Text() != "charged, and done" || len(charge.ran()) != 1 {
+				t.Fatalf("answer %q (err %v), charges %v", res.Text(), err, charge.ran())
+			}
+		})
+	}
+}
+
+// The second crash lands inside the session's own keyed retry: the
+// resume started and never ended. The next process retries it once
+// more, under the same key.
+func TestRecoverDoubleCrashInAKeyedRetry(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			charge := &sideEffect{}
+			keyed := core.Replay(core.ReplayKeyed)
+			id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+				charge.crash = cs
+				return core.New(wefttest.Script(charged("charge")), charge.def(keyed))
+			}, nil)
+			st = restart(t, b, st, id)
+
+			// Process 2: the retry is cut off inside the handler.
+			cs := &crashStore{Storage: st}
+			charge.crash = cs
+			s, err := thread.Open(bg, cs, id, core.New(wefttest.Script(wefttest.Say("never")), charge.def(keyed)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, err := s.RecoverTurn(bg)
+			if err != nil || rt == nil {
+				t.Fatalf("RecoverTurn = %v, %v; want the retry running", rt, err)
+			}
+			_, _ = rt.Wait()
+			_ = s.WaitIdle(bg)
+			charge.crash = nil
+			st = restart(t, b, st, id)
+
+			// Process 3: retried once more, then the answer.
+			s3, err := thread.Open(bg, st, id, core.New(wefttest.Script(wefttest.Say("done")), charge.def(keyed)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s3.Close(bg) }()
+			rt, err = s3.RecoverTurn(bg)
+			if err != nil || rt == nil {
+				t.Fatalf("RecoverTurn after the second crash = %v, %v; want the retry", rt, err)
+			}
+			res, err := rt.Wait()
+			if err != nil || res.Text() != "done" {
+				t.Fatalf("answer %q, err %v", res.Text(), err)
+			}
+			if keys := charge.ran(); len(keys) != 3 || keys[0] != keys[1] || keys[1] != keys[2] {
+				t.Fatalf("keys %v, want three runs under one key", keys)
+			}
+		})
+	}
+}

@@ -22,41 +22,37 @@ import (
 //     pending request the parent holds no mirror for is mirrored —
 //     the crash window between a child's park and its mirror — and
 //     the receipt records parked. The child resumes when its requests
-//     are decided, as if nothing had happened. That includes a child
-//     whose resume was under way when the process died: its decisions
-//     are recorded and its boundary was never closed by a finished
-//     run (the session's rule — a resume that started and did not
-//     finish leaves the boundary resumable), so the pump at the end
-//     of Recover resumes it again — except an approved call whose
-//     result was not recorded and that is not core.ReplaySafe: its
-//     outcome is unknown, so the child's resume is refused
-//     (thread.ErrRecoveryRequired) and the child is recovered instead
-//     (thread.Session.RecoverTurn): the call parks as a recovery
-//     request mirrored onto the parent, for a person to retry (same
-//     idempotency key) or skip; a core.ReplayKeyed call is retried at
-//     once. The same holds at any depth: a grandchild whose approved
-//     call was running parks through its parent's recovered
-//     delegation. A
-//     sync delegation whose delegating run died before its turn ended
-//     — the child parked and mirrored, the parent's park never
-//     recorded — has no delegating call to resolve: nothing parked it
-//     (no turn entry, no boundary; the parent's next run repairs it as
-//     interrupted). The child is reattached as a delegation by no call:
-//     its requests stay offered, a decision resumes it, and its answer
-//     settles the receipt only.
+//     are decided, as if nothing had happened. A sync delegation whose
+//     delegating run died before its turn ended — the child parked and
+//     mirrored, the parent's park never recorded — has no delegating
+//     call to resolve: nothing parked it (no turn entry, no boundary;
+//     the parent's next run repairs it as interrupted). The child is
+//     reattached as a delegation by no call: its requests stay
+//     offered, a decision resumes it, and its answer settles the
+//     receipt only.
+//   - a crash or a shutdown cut the child's run off (ADR 0032: the last
+//     run started — a prompt, a resume, a recovery's continuation —
+//     has no turn entry, or one recorded cut off, and no recovery
+//     handled it; a second crash inside a recovery is cut off the same
+//     way): it is not settled failed — what it did is not known, and a
+//     parent told "failed" may delegate the work again over an effect
+//     the child had. The child is reattached and recovered on its own
+//     ladder (thread.Session.RecoverTurn), the receipt left open: a
+//     call of unknown outcome that is not core.ReplaySafe parks as a
+//     recovery request mirrored onto the parent, for a person to retry
+//     (same idempotency key) or skip; a core.ReplayKeyed call is
+//     retried under its key (up to the session's bound, then a
+//     person); otherwise it continues to its answer, which settles the
+//     receipt. That includes a resume a person's approval or the
+//     session's own keyed retry started: the approved call is never
+//     re-run blind and never left parked with nothing to decide. The
+//     same holds at any depth: a grandchild whose approved call was
+//     running parks through its parent's recovered delegation. A
+//     cut-off child that was itself delegating (an open receipt or
+//     mirror of its own) is ended depth first as below.
 //   - the child finished its run: the receipt settles from the child's
 //     own ledger — done with its final text, failed, capped or
 //     canceled with its recorded cause — with the child's usage.
-//   - a crash or a shutdown cut the child's run off (ADR 0032: a run
-//     started and never ended, or a turn recorded cut off): it is not
-//     settled failed — what it did is not known, and a parent told
-//     "failed" may delegate the work again over an effect the child
-//     had. The child is reattached and recovered on its own ladder
-//     (thread.Session.RecoverTurn), the receipt left open: its calls
-//     of unknown outcome park — mirrored onto the parent as recovery
-//     requests — or it continues to its answer, which settles the
-//     receipt. A cut-off child that was itself delegating (an open
-//     receipt or mirror of its own) is ended depth first as below.
 //   - the child never started its run (queued when the process died),
 //     or was cut off while delegating: the receipt settles failed,
 //     saying so, its own delegations ended first.
@@ -387,31 +383,54 @@ func classify(entries []thread.Entry) (state State, stop string, usage core.Usag
 }
 
 // cutOff reports whether a child's file shows a run that started and
-// never ended on its own (ADR 0032): a prompt entry after the last turn
-// entry (or with none at all), or a last turn entry marked CutOff that
-// no recovery closed. Its outcome is not known.
+// never ended on its own (ADR 0032), the rule the session's own
+// recovery reads (thread.Session.RecoverTurn): the last run started —
+// a prompt entry's run, a resume's "started" audit, a recovery's
+// continuation (its "continued" audit's Detail), an overflow attempt's
+// re-run — has no turn entry, or one marked CutOff, and no StepRecover
+// audit has handled it. Its outcome is not known. A run is started
+// from its start record until its own turn entry lands: a continuation
+// or a resume cut off by a second crash is cut off too, never read as
+// the first cut-off turn's failure.
 func cutOff(entries []thread.Entry) bool {
-	started, cut := false, false
-	closed := map[string]bool{}
+	run := ""
+	recovered := map[string]bool{}
+	turns := map[string]thread.TurnEntry{}
 	for _, e := range entries {
 		switch e := e.(type) {
 		case thread.MessageEntry:
 			if e.RunID != "" {
-				started = true
+				run = e.RunID
 			}
 		case thread.TurnEntry:
-			started, cut = false, e.CutOff
-			if cut && closed[e.RunID] {
-				cut = false
-			}
+			turns[e.RunID] = e
 		case thread.ApprovalAuditEntry:
-			if e.Step == thread.StepRecover && e.CallID == "" {
-				closed[e.RunID] = true
-				cut = false // recovered: a continuation, a park or a close follows
+			switch {
+			case e.Step == thread.StepResume && e.Outcome == "started":
+				run = e.RunID
+			case e.Step == thread.StepRecover && e.CallID == "":
+				recovered[e.RunID] = true
+				if e.Outcome == "continued" && e.Detail != "" {
+					run = e.Detail
+				}
 			}
 		}
 	}
-	return started || cut
+	if run == "" {
+		return false
+	}
+	for {
+		te, ok := turns[run]
+		if !ok || te.ReRun == "" || te.CutOff {
+			break
+		}
+		run = te.ReRun
+	}
+	if recovered[run] {
+		return false
+	}
+	te, ok := turns[run]
+	return !ok || te.CutOff
 }
 
 // recoverCutOff reattaches a cut-off child and starts its recovery on

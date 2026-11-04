@@ -514,16 +514,16 @@ not the numbers themselves.
   `p.Recover(ctx, parent)`. It reattaches children parked at an
   approval (mirroring any request the crash left unmirrored), settles
   children that finished from their own files, and settles `failed`
-  those that never finished their first run — that run is not started
-  again. A child that was resuming when the process died is still at
-  its decided boundary (a resume that started and did not finish
-  leaves it resumable, as in any session), so `Recover` resumes it
-  again: **an approved call whose result was not recorded runs
-  again**, at any depth of a chain. Nothing on file tells a call that
-  never started from one cut off half-way, and `weft.Replay`'s
-  side-effect classes are the playground's, not a session resume's:
-  a tool that must not run twice has to be idempotent itself (key it
-  by the call id, `weft.CallFromContext`). A child
+  those that never started their first run. A child whose run a crash
+  or a shutdown cut off — its first run, a resume after an approval,
+  the session's own keyed retry, or a recovery's continuation that a
+  second crash cut off — is never settled `failed`: it is recovered on
+  its own ladder (`RecoverTurn`, §6) and its receipt stays open. A
+  call of unknown outcome reaches the parent as a mirrored recovery
+  request (approve retries it with its same key, deny skips it); a
+  `weft.ReplayKeyed` one is retried under its key, at most 3 times
+  across restarts, then a person decides; otherwise the child runs on
+  to its answer. A child
   whose agent the pool does not hold is reported (`pool.ErrNoAgent`)
   and left for a later call. Limits: a finished child's answer is read
   back as its last assistant text (a structured `Output` answer is not
