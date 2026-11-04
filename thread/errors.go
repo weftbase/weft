@@ -98,6 +98,9 @@ var (
 	// a recovery request (Request.Recovery) is undecided: the resume
 	// would deny it "no decision", and the model would ask again for a
 	// call that may have run — decide it (approve retries, deny skips).
+	// A turn whose cancellation (an Interrupt, its own context) left
+	// such a request reports it the same way: its Wait error matches
+	// ErrRecoveryRequired beside the cancellation.
 	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
 
 	// ErrStillRunning is returned by Decide, DecideSigned and the pool's

@@ -1085,6 +1085,28 @@ type chainResult struct {
 	runID       string           // the run that parked
 }
 
+// recoveryRequests counts the recovery requests the chain left for a
+// person: a request entry with Recovery set and no decision after it.
+func (cr *chainResult) recoveryRequests() int {
+	n := 0
+	for i, e := range cr.entries {
+		re, ok := e.(ApprovalRequestEntry)
+		if !ok || !re.Recovery {
+			continue
+		}
+		decided := false
+		for _, f := range cr.entries[i+1:] {
+			if d, ok := f.(ApprovalDecisionEntry); ok && d.CallID == re.CallID {
+				decided = true
+			}
+		}
+		if !decided {
+			n++
+		}
+	}
+	return n
+}
+
 // runChain is the decision chain (ADR 0021 §2): for each call a turn
 // left pending, grants (ADR 0021 §4), then a bounded Approver, then
 // the park — except a call that delegates to a thread/pool child,

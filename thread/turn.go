@@ -62,6 +62,16 @@ const (
 	// its receipt; in a process whose pool has not taken the session
 	// over yet (after a restart, before Recover) the child stays
 	// parked until it does.
+	//
+	// A call with effects the interrupt cuts off mid-handler (not
+	// core.ReplaySafe, started, no answer) has an unknown outcome: the
+	// felled turn parks it as a recovery request (ADR 0032), and its
+	// Wait error matches ErrRecoveryRequired. The Interrupt's own turn
+	// then waits in the queue behind that request until a person
+	// decides it — approve retries the call, deny skips it — however
+	// long that takes: the session never guesses whether the effect
+	// landed. Session.Pending lists the request; a caller that must
+	// not wait unbounded uses Turn.WaitContext.
 	Interrupt
 	// Rollback is an Interrupt that also branches the leaf back to
 	// before the interrupted turn's receipt entry: the follow-up runs
@@ -1342,6 +1352,14 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	}
 	if err != nil && !shutdown && len(unknown) > 0 {
 		chain = s.runChain(persist, t, callerOpts, unknown, sp)
+		if n := chain.recoveryRequests(); n > 0 {
+			// The felled turn leaves calls that may have run for a
+			// person: its caller reads so (ErrRecoveryRequired), and
+			// anything queued behind it — an Interrupt's own turn —
+			// waits for those decisions, never a guess.
+			report = fmt.Errorf("%w: %d call(s) of the felled turn may have run and wait for a person's decision (Session.Pending): %w",
+				ErrRecoveryRequired, n, report)
+		}
 	}
 	if shutdown && shutdownOf(ctx, t) {
 		report = fmt.Errorf("%w: %w", ErrShutdown, report)
@@ -2347,6 +2365,10 @@ func (t *Turn) Done() <-chan struct{} { return t.done }
 //   - ErrNotPersisted — the run ended but its end could not be
 //     written. It is joined to the run's own error when there is one;
 //     when the run succeeded the result is returned beside it.
+//   - ErrRecoveryRequired — beside a canceled run's error (an
+//     Interrupt, its own context): the turn left calls that may have
+//     run parked as recovery requests (Session.Pending). Sends queued
+//     behind it wait until a person decides them.
 func (t *Turn) Wait() (*core.RunResult, error) {
 	<-t.done
 	t.mu.Lock()

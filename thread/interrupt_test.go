@@ -930,3 +930,65 @@ func TestInterruptDuringARiskyCall(t *testing.T) {
 		t.Fatalf("paid %d times", paid.Load())
 	}
 }
+
+// P2-2 (final review): an Interrupt that fells a turn while a call with
+// effects runs leaves that call's outcome unknown: the felled turn
+// parks it as a recovery request, and the Interrupt's own turn waits
+// behind that request until a person decides it (never a guess). The
+// wait is discoverable: the felled turn's Wait error matches
+// ErrRecoveryRequired, and Pending lists the request. Deciding it lets
+// the Interrupt's turn run. Both backends: the request is durable.
+func TestInterruptedEffectParksAndHoldsTheInterrupt(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			ctx := context.Background()
+			started := make(chan struct{}, 1)
+			charge := core.Tool("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+				started <- struct{}{}
+				<-ctx.Done()
+				return "", ctx.Err()
+			})
+			s, err := thread.Create(ctx, b.open(t), core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "charge", ID: "c1", Args: `{}`}),
+				wefttest.Say("after the decision"),
+				wefttest.Say("the interrupt's answer"),
+			), charge))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(ctx) }()
+			t1, err := s.Send(ctx, core.User("go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			t2, err := s.Send(ctx, core.User("stop"), thread.As(thread.Interrupt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := t1.Wait(); !errors.Is(err, thread.ErrRecoveryRequired) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("the felled turn's Wait = %v; want ErrRecoveryRequired beside the cancellation", err)
+			}
+			p := s.Pending()
+			if len(p) != 1 || !p[0].Recovery || p[0].CallID != "c1" {
+				t.Fatalf("Pending = %+v, want the charge as a recovery request", p)
+			}
+			select {
+			case <-t2.Done():
+				t.Fatalf("the Interrupt's turn ran before the recovery request was decided: %v", t2.Outcome())
+			case <-time.After(100 * time.Millisecond):
+			}
+			rt, err := s.Decide(ctx, thread.Deny("c1", "").Bind(p[0]))
+			if err != nil || rt == nil {
+				t.Fatalf("Decide = %v, %v", rt, err)
+			}
+			if _, err := rt.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			res, err := t2.Wait()
+			if err != nil || res.Text() != "the interrupt's answer" {
+				t.Fatalf("the Interrupt's turn = %v, %v", res, err)
+			}
+		})
+	}
+}

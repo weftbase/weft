@@ -331,12 +331,30 @@ for the same ladder at the turn's end (keyed retry, or a recovery
 request — never a `Reconcile`, since the abandoned handler may still be
 running), the step's other results kept. The session's own keyed
 retries of one call are capped at 3 (on file), each after a backoff
-of 1 s, 2 s, 4 s; then a person decides. A keyed retry never starts
-while the abandoned handler of the same call is still running: the
-end of the turn waits for it to return, at most 30 s, and past that
-the call goes to a person (`… still running past its bound …`). Skipping a recovery request (`Deny`) shows the model
+of 1 s, 2 s, 4 s; then a person decides. No retry — the session's own
+or a person's — ever starts while the abandoned handler of the same
+call is still running: the end of the turn waits for every such
+handler to return, under one shared 30 s deadline, before it retries
+or offers the call; still running past that, the call goes to a person
+(`… still running past its bound; approve to retry it … once it has
+returned …`) and an `Approve` is refused with `thread.ErrStillRunning`
+until the handler returns (retry it then; `Deny` is taken at once).
+Skipping a recovery request (`Deny`) shows the model
 `OUTCOME_UNKNOWN: … it was skipped, not retried: do not repeat it`,
-never `DENIED`.
+never `DENIED`; and `Resume` refuses with `ErrRecoveryRequired` while a
+recovery request is undecided — its default would deny it `no
+decision`, a `DENIED` the model would answer by asking again.
+
+**An Interrupt over a call with effects waits for a person.** An
+`Interrupt` (or a cancel) that fells a turn while a handler with
+effects runs leaves that call's outcome unknown: the felled turn parks
+it as a recovery request, its `Wait` error matches
+`ErrRecoveryRequired` (beside `context.Canceled`), and the Interrupt's
+own turn waits in the queue behind the request until someone decides
+it in `s.Pending()` — unbounded, by design: the session never guesses
+whether the effect landed. Watch for `ErrRecoveryRequired` on the
+felled turn (or `OnRequest`), and bound your own wait with
+`turn.WaitContext`.
 
 A `Send`'s own run options are not on file: a continuation or a
 recovery resume runs under the session's run metadata and the
