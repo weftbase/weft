@@ -338,6 +338,8 @@ func (s *Session) Send(ctx context.Context, msg core.Message, opts ...SendOption
 				s.agent.Logger().Error("thread: auto-resume arm failed",
 					"session", s.header.ID, "err", err)
 			}
+		} else if !s.running && s.readyHintsLocked() && s.await.resumed == nil && s.settledBoundaryLocked() {
+			s.announceResumeLocked()
 		}
 		return t, nil
 	}
@@ -640,6 +642,18 @@ func (s *Session) kickRunnerLocked() {
 	if s.running || len(s.queue) == 0 || s.boundaryLocked() {
 		return
 	}
+	if s.readyHintsLocked() {
+		s.announceQueuedLocked() // OnReady's owner starts it (Continue)
+		return
+	}
+	s.startHeadLocked()
+}
+
+// startHeadLocked starts the runner at the queue's head — kick's body,
+// and Continue's under OnReady (the callback owner's own start).
+// Callers hold s.mu and have checked that no runner is alive, the
+// queue is not empty and no boundary holds it.
+func (s *Session) startHeadLocked() {
 	first := s.queue[0]
 	s.queue = s.queue[1:]
 	s.startRunnerLocked(workItem{ps: first})
@@ -762,6 +776,12 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 		s.resumeWork = nil
 		return s.handLocked(workItem{ps: pendingSend{ctx: rw.ctx, turn: rw.turn}, resume: true})
 	}
+	if retry && !s.cfg.autoResume && s.readyHintsLocked() && s.await.resumed == nil && s.settledBoundaryLocked() {
+		// Under OnReady a settled boundary is handed over, not run.
+		s.announceResumeLocked()
+		s.exitRunnerLocked()
+		return workItem{}, false
+	}
 	if retry && s.cfg.autoResume && s.settledBoundaryLocked() { // expiry resolved first
 		// The last decision of a parked boundary landed while this
 		// runner worked, or its last undecided request lapsed: resume
@@ -774,6 +794,13 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 			ctx = context.Background()
 		}
 		return s.handLocked(workItem{ps: pendingSend{ctx: ctx, turn: rt}, resume: true})
+	}
+	if len(s.queue) > 0 && !s.boundaryLocked() && s.readyHintsLocked() {
+		// Under OnReady the queue is not drained: its head is handed
+		// over, and the owner's Continue starts it.
+		s.announceQueuedLocked()
+		s.exitRunnerLocked()
+		return workItem{}, false
 	}
 	if len(s.queue) > 0 && !s.boundaryLocked() {
 		head := s.queue[0]
@@ -1289,6 +1316,9 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 			// branch sees only boundaries the chain fully decided.
 			s.sweepExpiredLocked() // expiry resolved on every arming path
 			undecided = len(s.pendingLocked())
+			if undecided == 0 && !s.cfg.autoResume {
+				s.announceResumeLocked() // OnReady's owner starts it
+			}
 			if undecided == 0 && s.cfg.autoResume {
 				// The runner's own arming goes through the same
 				// registration as Decide and Resume: the minted resume is

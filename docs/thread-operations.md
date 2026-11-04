@@ -374,6 +374,34 @@ under what their receipts recorded as data (`ReceiptEntry.Run`, a
 overrides, metadata); `UseModel` and `OnMessages` are code and do not
 come back.
 
+**One resumer: `OnReady`.** A platform that must decide when work runs
+— admission, slots, budgets in its own queue; a desktop app's job
+runner — opens every session with `thread.OnReady(fn)`. The session then
+starts nothing nobody asked for: a decision that settles an approval
+boundary does not resume it (`AutoResume` is off), and the sends queued
+behind a turn are not drained when it ends. Instead the session calls
+`fn(thread.Ready{Session, Kind, RunID})` — after the append that made
+the work ready, on a goroutine of its own, never under its lock, in
+order — and the owner starts the work when it admits it:
+`s.Resume(ctx)` for `thread.ReadyResume`, `s.Continue(ctx)` for
+`thread.ReadyQueued` (one queued send per call; the next is handed over
+when it ends). A `Send` on an idle session still runs at once. A hint
+is in-process and best-effort, not a durable event: it may come twice,
+the work may be gone when the owner acts (`Resume` then fails with
+`ErrNotPending`), and it dies with its process — whether the work it
+names survives a power loss is the backend's append guarantee
+(`FsyncOnFlush`). Work that was ready before the Session existed (a
+boundary decided before a crash, sends restored by `Open`, a cut-off
+turn) is never handed over: boot recovery is **Open → Claim → Ready →
+act**. `s.Ready()` reads the journal — `ReadyRecover` alone when a turn
+was cut off (`RecoverTurn` first, §6), `ReadyResume` for a boundary
+whose requests are all decided or lapsed, `ReadyQueued` for waiting
+sends — and the `Claim` (`ErrLocked`: alive in another worker, leave it)
+keeps two workers from recovering the same session. Without `OnReady`,
+`AutoResume(false)` keeps its contract and `s.Ready()` still lists a
+decided boundary. Discovering which sessions have work without opening
+each one needs a store-level index — not in weft yet.
+
 **The queue is unbounded.** The session does not cap how many steers
 or sends may wait; each costs one entry. If users can pile messages
 onto a running turn, check `len(s.Queue())` before sending.

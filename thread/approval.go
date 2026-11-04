@@ -304,7 +304,9 @@ func (o autoResumeOption) applySession(c *sessionConfig) { c.autoResume = bool(o
 // AutoResume sets whether the session resumes on its own once every
 // pending call of the parked boundary has a decision (ADR 0021 §1).
 // The default is on; AutoResume(false) parks the decided boundary
-// until the caller calls Resume. Either way a plain Send never runs
+// until the caller calls Resume — Session.Ready lists it, and under
+// OnReady (which implies AutoResume(false)) the session hands it to
+// the callback. Either way a plain Send never runs
 // while a boundary is open — only the resume run resolves it.
 func AutoResume(on bool) SessionOption { return autoResumeOption(on) }
 
@@ -760,8 +762,13 @@ func (s *Session) settledBoundaryLocked() bool {
 // boundary has every call decided; (nil, nil) otherwise. Callers hold
 // s.mu and have resolved expiry.
 func (s *Session) armSettledLocked(ctx context.Context) (*Turn, error) {
-	if s.cfg.autoResume && s.boundaryLocked() && len(s.pendingLocked()) == 0 {
-		return s.armResumeLocked(ctx)
+	if s.boundaryLocked() && len(s.pendingLocked()) == 0 {
+		if s.cfg.autoResume {
+			return s.armResumeLocked(ctx)
+		}
+		if s.await.resumed == nil {
+			s.announceResumeLocked() // OnReady's to start
+		}
 	}
 	return nil, nil
 }

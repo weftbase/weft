@@ -262,6 +262,9 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
 //    p.Decide(ctx, parent, ds...) error records and arms, p.Wait(ctx, parent, id) follows; p.Cancel,
 //    p.Forward, p.Recover(ctx, parent) after a restart, p.Close(ctx); pool.Receipts, Children, Descendants.
+//    One resumer: thread.OnReady(fn) hands ready work to fn (Ready{Session, Kind, RunID}: ReadyResume → s.Resume,
+//    ReadyQueued → s.Continue) instead of starting it — implies AutoResume(false), an in-process best-effort hint;
+//    s.Ready() lists it from the journal (ReadyRecover alone after a crash). Boot: Open → Claim → Ready → act.
 //    Crash recovery (ADR 0032): a call that is not ReplaySafe starts only once its step entry is on file (else
 //    ErrNotDispatched); after a crash a cut-off turn with a call of unknown outcome refuses Send/Continue/Resume/arming
 //    (ErrRecoveryRequired) until s.RecoverTurn(ctx) — Open → Claim → RecoverTurn: ReplayKeyed calls retry with their

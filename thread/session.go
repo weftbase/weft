@@ -81,6 +81,9 @@ type sessionConfig struct {
 	// createOnly names the header options that were applied, in the
 	// order given, so Open can refuse them by name (ErrCreateOnly).
 	createOnly []string
+	// onReady, when set, is handed the work the session would start on
+	// its own (OnReady); it implies AutoResume(false).
+	onReady func(Ready)
 }
 
 // now is the session's time source: the Clock option's function, or
@@ -98,6 +101,9 @@ func resolveSession(opts ...SessionOption) sessionConfig {
 		if o != nil {
 			o.applySession(&cfg)
 		}
+	}
+	if cfg.onReady != nil {
+		cfg.autoResume = false // the callback's owner is the one resumer
 	}
 	return cfg
 }
@@ -435,6 +441,9 @@ type Session struct {
 	// sealed, with aborted the side state a Close whose context ended
 	// leaves behind; closeDone is closed once the seal's release has
 	// returned, and closeErr is what it returned.
+	// notify delivers OnReady hints in order, off the session's lock.
+	notify notifier
+
 	closing        closeState
 	closeDone      chan struct{}
 	closeErr       error
@@ -1611,6 +1620,14 @@ func (s *Session) Continue(ctx context.Context) (*Turn, error) {
 	}
 	if first == nil && len(s.queue) > 0 {
 		first = s.queue[0].turn
+	}
+	if s.readyHintsLocked() {
+		// The callback owner's own start: one queued send, now. The
+		// next one is handed over when this one's turn ends.
+		if !s.running && len(s.queue) > 0 && !s.boundaryLocked() {
+			s.startHeadLocked()
+		}
+		return first, nil
 	}
 	s.kickRunnerLocked()
 	return first, nil
