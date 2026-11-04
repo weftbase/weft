@@ -129,7 +129,10 @@ refusal is an error result the model reads. `weft/thread`'s gate
 refuses a call that is not `ReplaySafe` unless the step entry holding
 it is durable, and records the dispatch (a format-6 `dispatch` audit
 entry, flushed) before letting it start — after a crash a call with no
-such record never started. A `CallTool` from inside a handler is
+such record never started. It refuses every call once an Interrupt, a
+Rollback or `Close` has felled the turn; any other refusal (a step or
+record that cannot be made durable, a lost lease) also ends the run,
+cause `thread.not_dispatched`. A `CallTool` from inside a handler is
 keyed (from the dispatching call's key and its position) and passes
 the same gate, `Call.Outer` naming the dispatching call. A `Subagent`'s
 child run inherits neither the key option nor the gate.
