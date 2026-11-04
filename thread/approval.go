@@ -903,7 +903,10 @@ func (s *Session) armSettledLocked(ctx context.Context) (*Turn, error) {
 // decided calls resolve under their decisions — approved calls run
 // with Call.Approved set, denied ones show their reason, resolved ones
 // their content — and every undecided call is denied with the core's
-// "no decision" text. Requests strictly past their expiry are denied
+// "no decision" text — except a recovery request (Request.Recovery):
+// while one is undecided Resume fails with ErrRecoveryRequired and
+// starts nothing, for the call may have run and only a person retries
+// or skips it. Requests strictly past their expiry are denied
 // first, on the spot, with the stated reason — the same sweep Decide
 // and every other arming path runs. The parked boundary must still be
 // open: Resume with nothing to resume fails with ErrNotPending. The
@@ -940,6 +943,15 @@ func (s *Session) Resume(ctx context.Context) (*Turn, error) {
 	}
 	if _, err := s.resolveExpiredLocked(ctx); err != nil {
 		return nil, err
+	}
+	for _, r := range s.pendingLocked() {
+		if r.Recovery {
+			// The resume would deny it "no decision": a plain DENIED
+			// the model answers by asking again, over an effect that
+			// may have landed. A person decides it (ADR 0032 rule D).
+			return nil, fmt.Errorf("%w: session %s: recovery request %s for call %q is undecided; approve (retry) or deny (skip) it",
+				ErrRecoveryRequired, s.header.ID, r.ID, r.CallID)
+		}
 	}
 	return s.armResumeLocked(ctx)
 }

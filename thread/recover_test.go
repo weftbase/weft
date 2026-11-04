@@ -1008,3 +1008,66 @@ func TestRecoverUsesTheReplayClassAtDispatch(t *testing.T) {
 		}
 	}
 }
+
+// P1-3 (final review): Resume refuses while a recovery request is
+// undecided (ErrRecoveryRequired): the resume would deny it with the
+// core's "no decision" — a plain DENIED the model would answer by
+// asking again, over an effect that may have landed. A person decides
+// it; a skip reads OUTCOME_UNKNOWN, never DENIED.
+func TestResumeRefusesAnUndecidedRecoveryRequest(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			charge := &sideEffect{}
+			id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+				charge.crash = cs
+				return core.New(wefttest.Script(charged("charge")), charge.def())
+			}, nil)
+			charge.crash = nil
+			st = restart(t, b, st, id)
+			s, err := thread.Open(bg, st, id, core.New(wefttest.Script(wefttest.Say("ok")), charge.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(bg) }()
+			if rt, err := s.RecoverTurn(bg); err != nil || rt != nil {
+				t.Fatalf("RecoverTurn = %v, %v", rt, err)
+			}
+			p := s.Pending()
+			if len(p) != 1 || !p[0].Recovery {
+				t.Fatalf("pending = %+v", p)
+			}
+			if rt, err := s.Resume(bg); !errors.Is(err, thread.ErrRecoveryRequired) || rt != nil {
+				t.Fatalf("Resume = %v, %v; want ErrRecoveryRequired", rt, err)
+			}
+			if p := s.Pending(); len(p) != 1 || !p[0].Recovery {
+				t.Fatalf("after the refused Resume, pending = %+v; want the request still offered", p)
+			}
+			rt, err := s.Decide(bg, thread.Deny(p[0].CallID, "").Bind(p[0]))
+			if err != nil || rt == nil {
+				t.Fatalf("Decide = %v, %v", rt, err)
+			}
+			if _, err := rt.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			got := toolResultFor(s.Context(), "call_1")
+			if !strings.Contains(got, core.CodeOutcomeUnknown) || strings.Contains(got, "DENIED") {
+				t.Errorf("the skipped recovery request reads %q, want an OUTCOME_UNKNOWN skip", got)
+			}
+			if n := len(charge.ran()); n != 1 {
+				t.Errorf("charge ran %d times, want once (before the crash)", n)
+			}
+		})
+	}
+}
+
+// toolResultFor returns the content of callID's tool result in msgs.
+func toolResultFor(msgs []core.Message, callID string) string {
+	for _, m := range msgs {
+		for _, p := range m.Content {
+			if r, ok := p.(core.ToolResultPart); ok && r.CallID == callID {
+				return r.Content
+			}
+		}
+	}
+	return ""
+}

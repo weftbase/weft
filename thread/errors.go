@@ -94,7 +94,10 @@ var (
 	// started (or approved to start) and without a recorded result. A
 	// new turn would answer it with a synthetic result and the model
 	// could ask for it again; a resume could run it again. Call
-	// Session.RecoverTurn first (ADR 0032).
+	// Session.RecoverTurn first (ADR 0032). Resume returns it too while
+	// a recovery request (Request.Recovery) is undecided: the resume
+	// would deny it "no decision", and the model would ask again for a
+	// call that may have run — decide it (approve retries, deny skips).
 	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
 
 	// ErrRollbackRefused is returned beside a Turn by a Send under the
