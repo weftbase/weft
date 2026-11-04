@@ -906,8 +906,8 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 
 	// The child takes the parent's approval policy (ADR 0022 §7):
 	// expiry, quorum, the signing rule and its keyring, the clock.
-	// A child runs under its parent's run metadata (a tenant, a
-	// deployment label): written into its header, as a Fork's is.
+	// A child runs under its parent's run metadata: written into its
+	// header, as a Fork's is.
 	opts := []thread.SessionOption{thread.WithLineage(parent.ID(), callID), thread.InheritApprovals(parent),
 		thread.WithRunMetadata(parent.RunMeta())}
 	if name != "" {

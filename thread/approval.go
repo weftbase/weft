@@ -102,10 +102,10 @@ var ErrDelegated = errors.New("thread: call is delegated to a child session")
 type Request struct {
 	// ID is the request entry's id: the name of this one occurrence of
 	// the call. Call ids repeat across turns; this never does, and a
-	// signed decision is bound to it. Empty in the two places no entry
-	// exists yet or at all — the Request an Approver is handed (the
-	// chain asks before it persists), and a dangling call with no
-	// request entry.
+	// signed decision is bound to it. Empty on the Request an Approver
+	// is handed (the chain asks before it persists). A dangling call
+	// with no request entry is named by a deterministic id ("r_" and 26
+	// hex digits, no entry's), so a bound decision can decide it.
 	ID string
 	// Session is the session the request lives in.
 	Session string
@@ -157,10 +157,9 @@ type Request struct {
 	// Metadata is the run metadata the parked run ran under, as its
 	// request recorded it (ApprovalRequestEntry.Run): the session's
 	// run metadata (WithRunMetadata) merged under the parking Send's
-	// own context and core.Metadata pairs — the labels a platform set
-	// on the session (a tenant, a deployment, a version under its own
-	// key), readable by whichever process reopens the session. weft
-	// never reads it. A copy; nil when the run carried none.
+	// own context and core.Metadata pairs — the caller's labels, under
+	// its own keys, readable by whichever process reopens the session.
+	// weft never reads it. A copy; nil when the run carried none.
 	Metadata map[string]string
 	// RevisionOf names the request this one revises (OutcomeEdit): its
 	// Args are an editor's, not the model's, and the resume runs them.
@@ -237,10 +236,11 @@ type Decision struct {
 	// and hashed in canonical form (Edit). Empty on every other outcome.
 	EditedArgs json.RawMessage
 	// Cosigners names everyone a remote authority counted for this
-	// decision — the deciders behind one forwarded decision (Weftbase
-	// counts its quorum and forwards once). Recorded on the decision
-	// entry and covered by a signature's MAC when present; weft never
-	// counts it toward its own Quorum. Opaque ids, never addresses.
+	// decision — the deciders behind one forwarded decision, when an
+	// authority outside the session counts its own quorum and forwards
+	// once. Recorded on the decision entry and covered by a signature's
+	// MAC when present; weft never counts it toward its own Quorum.
+	// Opaque ids, never addresses.
 	Cosigners []string
 }
 
@@ -602,9 +602,28 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	// matches what was recorded for it. Without a request id a retry
 	// is ambiguous and never takes this path.
 	kept := batch[:0:0]
+	var inForce approvalWalk
+	walked := false
 	for _, d := range batch {
-		if req, ok := byCall[d.CallID]; (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d) {
+		req, ok := byCall[d.CallID]
+		if (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d) {
 			continue
+		}
+		if ok && d.RequestID == req.ID && d.RequestID != "" {
+			// Still pending — under Quorum, one approval short: the same
+			// decision again counts nothing and records nothing. Only a
+			// decision in force repeats (a spent one, on another line of
+			// the tree, does not: the call reads pending again).
+			if !walked {
+				inForce, walked = s.approvalWalkLocked(), true
+			}
+			ds := scopedDecisions(inForce.decisions[req.CallID], req.RunID)
+			if req.Child == "" {
+				_, ds = inForce.occurrence(req.CallID)
+			}
+			if slices.ContainsFunc(ds, func(de ApprovalDecisionEntry) bool { return de.RequestID == d.RequestID && sameDecision(de, d) }) {
+				continue
+			}
 		}
 		kept = append(kept, d)
 	}
@@ -1820,6 +1839,17 @@ func effectiveDecision(decisions []ApprovalDecisionEntry, quorum int) (ApprovalD
 	return ApprovalDecisionEntry{}, false
 }
 
+// danglingRequestID names the request Pending offers for a dangling
+// call that has no request entry: deterministic — from the session,
+// the assistant entry holding the call and the call id — so a decision
+// bound to it (Decision.Bind) names this occurrence on every read, in
+// every process. It is no entry's id: "r_" and 26 hex digits of the
+// SHA-256 of the three, NUL-separated.
+func danglingRequestID(session, entry, callID string) string {
+	h := sha256.Sum256([]byte(session + "\x00" + entry + "\x00" + callID))
+	return "r_" + hex.EncodeToString(h[:13])
+}
+
 // pendingLocked returns the undecided requests of the open boundary,
 // in call order: the dangling calls that carry a request and no
 // effective decision. A dangling call without a request entry — the
@@ -1855,6 +1885,7 @@ func (s *Session) pendingLocked() []Request {
 			continue
 		}
 		r := Request{
+			ID:      danglingRequestID(s.header.ID, s.callEntryLocked(c.ID), c.ID),
 			Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 			Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
 			RunID: run, Quorum: s.parkQuorum(),
@@ -2216,13 +2247,20 @@ func (s *Session) alreadyDecidedLocked(d recordedDecision) bool {
 		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID {
 			continue
 		}
-		if de.Outcome == d.Kind && de.Reason == d.Reason && de.Content == d.Content && de.Who == d.Who &&
-			de.ArgsSHA256 == d.ArgsSHA256 && de.Always == (d.Always && d.Kind == OutcomeApprove) && de.KeyID == d.keyID &&
-			de.EditedArgsSHA256 == editedHash(d.Decision) && slices.Equal(de.Cosigners, d.Cosigners) {
+		if sameDecision(de, d) {
 			return true
 		}
 	}
 	return false
+}
+
+// sameDecision reports whether a recorded decision entry is d again:
+// same outcome, reason, content, decider, shown arguments, standing
+// wish, signing key, edit and cosigners.
+func sameDecision(de ApprovalDecisionEntry, d recordedDecision) bool {
+	return de.CallID == d.CallID && de.Outcome == d.Kind && de.Reason == d.Reason && de.Content == d.Content && de.Who == d.Who &&
+		de.ArgsSHA256 == d.ArgsSHA256 && de.Always == (d.Always && d.Kind == OutcomeApprove) && de.KeyID == d.keyID &&
+		de.EditedArgsSHA256 == editedHash(d.Decision) && slices.Equal(de.Cosigners, d.Cosigners)
 }
 
 // Bind returns d bound to the request it answers: the request entry's

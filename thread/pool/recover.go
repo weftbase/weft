@@ -512,7 +512,18 @@ func turnLandedSince(parent *thread.Session, receipt string) bool {
 // merely reuses the id has a request entry, and is not it.
 func callPending(parent *thread.Session, callID string) bool {
 	for _, r := range parent.Pending() {
-		if r.CallID == callID && r.Child == "" && r.ID == "" {
+		if r.CallID == callID && r.Child == "" && !requestEntry(parent, r.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestEntry reports whether id names a request entry of s — not the
+// id Pending gives a dangling call that has none.
+func requestEntry(s *thread.Session, id string) bool {
+	for _, e := range s.Entries() {
+		if re, ok := e.(thread.ApprovalRequestEntry); ok && re.ID == id {
 			return true
 		}
 	}

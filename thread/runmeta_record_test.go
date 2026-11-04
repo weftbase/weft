@@ -12,7 +12,7 @@ import (
 
 // A parked request records the run metadata its run ran under — the
 // session's (WithRunMetadata) under the Send's own — so a process that
-// reopens the session under other run metadata (another deployment,
+// reopens the session under other run metadata (another worker,
 // another version label) still reads what the parked run was started
 // with, as Request.Metadata; and the resume runs under it, the parked
 // pairs winning. Both file backends, a fresh store for the reopen.
@@ -35,7 +35,7 @@ func parkedRequestRecordsRunMetadata(t *testing.T, b durableBackend) {
 	}
 	st := b.open(t)
 	s, err := thread.Create(bg, st, shipAgent(wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "call_1", Args: `{"order_id":"1"}`})),
-		thread.WithRunMetadata(map[string]string{"weftbase.agent_version": "agv_1", "tenant": "acme", "region": "eu"}))
+		thread.WithRunMetadata(map[string]string{"app.version": "agv_1", "tenant": "acme", "region": "eu"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func parkedRequestRecordsRunMetadata(t *testing.T, b durableBackend) {
 	if _, err := turn.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"weftbase.agent_version": "agv_1", "tenant": "acme-2", "region": "eu"}
+	want := map[string]string{"app.version": "agv_1", "tenant": "acme-2", "region": "eu"}
 	if p := s.Pending(); len(p) != 1 || !maps.Equal(p[0].Metadata, want) {
 		t.Fatalf("pending = %+v, want metadata %v", p, want)
 	}
@@ -54,7 +54,7 @@ func parkedRequestRecordsRunMetadata(t *testing.T, b durableBackend) {
 
 	st = restart(t, b, st, id)
 	s2, err := thread.Open(bg, st, id, shipAgent(wefttest.Say("done")),
-		thread.WithRunMetadata(map[string]string{"weftbase.agent_version": "agv_2"}))
+		thread.WithRunMetadata(map[string]string{"app.version": "agv_2"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func parkedRequestRecordsRunMetadata(t *testing.T, b durableBackend) {
 	if _, err := rt.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if seen["weftbase.agent_version"] != "agv_1" || seen["tenant"] != "acme-2" || seen["region"] != "eu" {
+	if seen["app.version"] != "agv_1" || seen["tenant"] != "acme-2" || seen["region"] != "eu" {
 		t.Fatalf("resumed call ran under %v, want the parked run's metadata", seen)
 	}
 }

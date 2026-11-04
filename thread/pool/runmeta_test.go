@@ -16,7 +16,7 @@ import (
 func TestChildInheritsRunMetadata(t *testing.T) {
 	ctx := context.Background()
 	st := thread.Memory()
-	md := map[string]string{"weftbase.agent_version": "agv_7", "tenant": "acme"}
+	md := map[string]string{"app.version": "agv_7", "tenant": "acme"}
 	parent, err := thread.Create(ctx, st, core.New(wefttest.Script()), thread.WithRunMetadata(md))
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestChildInheritsRunMetadata(t *testing.T) {
 	if !maps.Equal(h.RunMeta, md) {
 		t.Fatalf("child header run metadata = %v, want the parent's %v", h.RunMeta, md)
 	}
-	if seen["weftbase.agent_version"] != "agv_7" || seen["tenant"] != "acme" {
+	if seen["app.version"] != "agv_7" || seen["tenant"] != "acme" {
 		t.Fatalf("child run metadata = %v, want the parent's pairs", seen)
 	}
 }

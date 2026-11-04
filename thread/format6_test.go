@@ -46,7 +46,7 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 			ArgsSHA256: "0f6d1e5c6a9f0e1d3f2a9fd0e5c8b74d5a4e6f8f2b0c4b3d0a8b6c1e9d2f7a3b", RunID: "s_1-t1",
 			Reason: "tool requires approval", RevisionOf: "e_01J8X9M2K7QW4R5N8T6V2B3C6B"}, `"type":"approval_request","v":6,`},
 		{"approval_decision_cosigners.json", thread.ApprovalDecisionEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6E", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D", Created: ts,
-			CallID: "call_1", Outcome: thread.OutcomeApprove, Who: "weftbase", Via: "signed", RunID: "s_1-t1", RequestID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D",
+			CallID: "call_1", Outcome: thread.OutcomeApprove, Who: "authority", Via: "signed", RunID: "s_1-t1", RequestID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D",
 			Cosigners: []string{"usr_alice", "usr_carol"}}, `"type":"approval_decision","v":2,`},
 		// Dispatch records (ADR 0032): a step that records its
 		// dispatches and each dispatch record carry "v":6, so a 0.21
