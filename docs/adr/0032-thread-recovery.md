@@ -55,7 +55,7 @@ child is the pool's to settle (its child session holds the outcome).
 **The cut-off run.** The last run started on the leaf's path — a
 prompt's run id, a resume's `started` audit, a recovery's continuation,
 an overflow attempt's re-run — whose turn entry is missing, or marked
-`cut_off`, and that no `recover` audit entry has handled. It is a fact of the file: `Open` is read-only and takes no
+`cut_off` (a shutdown, below), and that no `recover` audit entry has handled. It is a fact of the file: `Open` is read-only and takes no
 lock, so a turn another worker is running looks the same. A worker that
 acts on it Opens, **Claims**, then recovers: the lease decides which of
 two workers recovers, and the loser gets `ErrLocked`.
@@ -119,6 +119,15 @@ message leaves the path (it stays in the file on its own line).
 fails loudly (`ErrNewerFormat`) on such a session instead of answering
 its cut-off calls with a synthetic result. A session that never
 recovered keeps its old versions.
+
+**Shutdown.** A turn felled with the cause `thread.ErrShutdown` — the
+cause of the context a `Close` gave up on, of a context already
+canceled when given to `pool.Close`, or of the turn's own context — is
+recorded `cut_off`, not `canceled`: its calls that are
+not `ReplaySafe` and whose handler the cancellation felled (an error
+result, effect unknown) or that never got a result stay unanswered on
+`pending`, without synthetic text, and RecoverTurn handles the turn as
+any cut-off run.
 
 ## Consequences
 

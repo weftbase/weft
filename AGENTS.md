@@ -265,6 +265,8 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    One resumer: thread.OnReady(fn) hands ready work to fn (Ready{Session, Kind, RunID}: ReadyResume → s.Resume,
 //    ReadyQueued → s.Continue) instead of starting it — implies AutoResume(false), an in-process best-effort hint;
 //    s.Ready() lists it from the journal (ReadyRecover alone after a crash). Boot: Open → Claim → Ready → act.
+//    Shutdown: s.Close(ctx) with context.WithTimeoutCause(ctx, d, thread.ErrShutdown) records a felled turn cut off
+//    (TurnEntry.CutOff) for RecoverTurn, then Close again to seal; pool.Close(ctx canceled with that cause) likewise.
 //    Crash recovery (ADR 0032): a call that is not ReplaySafe starts only once its step entry is on file (else
 //    ErrNotDispatched); after a crash a cut-off turn with a call of unknown outcome refuses Send/Continue/Resume/arming
 //    (ErrRecoveryRequired) until s.RecoverTurn(ctx) — Open → Claim → RecoverTurn: ReplayKeyed calls retry with their

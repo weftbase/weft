@@ -1,6 +1,7 @@
 package thread
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -95,6 +96,19 @@ var (
 	// could ask for it again; a resume could run it again. Call
 	// Session.RecoverTurn first (ADR 0032).
 	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
+
+	// ErrShutdown is the cancellation cause of a process that is
+	// stopping. A turn whose run ends canceled with it — the cause of
+	// the context a Close (or pool.Close) gave up on, or of the turn's
+	// own context — is recorded cut off (TurnEntry.CutOff), not
+	// canceled: its calls of unknown outcome stay unanswered, without
+	// synthetic text, and the next process's RecoverTurn handles the
+	// turn (ADR 0032). It is a cancellation — errors.Is(ErrShutdown,
+	// context.Canceled) — and names itself on the run's span
+	// (weft.cancel.cause thread.shutdown). Pass it with
+	// context.WithTimeoutCause(ctx, d, thread.ErrShutdown) or
+	// context.WithCancelCause's cancel(thread.ErrShutdown).
+	ErrShutdown error = shutdownCause{}
 
 	// The approval failures (ADR 0021 §3, §5) follow, each its own
 	// error because each is its own operational answer. All are
@@ -230,3 +244,16 @@ func (e *CorruptError) Unwrap() []error {
 	}
 	return []error{ErrCorrupt, e.Err}
 }
+
+// shutdownCause is ErrShutdown's type: an error in thread's words that
+// is also a context cancellation and a named cancel cause (the
+// core.CancelCause shape: Kind, and Is context.Canceled).
+type shutdownCause struct{}
+
+func (shutdownCause) Error() string { return "thread: the process is shutting down" }
+
+// Kind names the cause on the run's span (weft.cancel.cause).
+func (shutdownCause) Kind() string { return "thread.shutdown" }
+
+// Is reports the cause as context.Canceled.
+func (shutdownCause) Is(target error) bool { return target == context.Canceled }

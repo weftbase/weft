@@ -626,6 +626,15 @@ func (p *Pool) Wait(ctx context.Context, parent *thread.Session, receiptID strin
 // ctx bounds the wait; its error returns with the drain still
 // progressing. A second Close returns nil — the drain is already done
 // or underway.
+//
+// A process that is stopping passes a ctx already canceled with the
+// cause thread.ErrShutdown (context.WithCancelCause, then
+// cancel(thread.ErrShutdown)): a running child is then not canceled
+// but cut off — its session is closed under that cause, its turn is
+// recorded cut off (thread.TurnEntry.CutOff) and its receipt stays
+// unsettled, so Recover after the restart reattaches the child and
+// recovers its turn (ADR 0032). Queued children are canceled as
+// always.
 func (p *Pool) Close(ctx context.Context) error {
 	p.mu.Lock()
 	if p.closed {
@@ -633,11 +642,21 @@ func (p *Pool) Close(ctx context.Context) error {
 		return nil
 	}
 	p.closed = true
-	p.cancel()
-	var parked []*delegate
+	// A shutdown (ctx already canceled with the cause thread.ErrShutdown)
+	// cuts the running children's turns off instead of canceling them:
+	// each child session is closed under that cause, so its turn is
+	// recorded cut off and its receipt stays unsettled for Recover.
+	shutdown := errors.Is(context.Cause(ctx), thread.ErrShutdown)
+	var parked, cut []*delegate
 	for _, d := range p.delegates {
 		switch d.phase {
-		case phaseQueued, phaseRunning:
+		case phaseRunning:
+			if shutdown && d.child != nil {
+				cut = append(cut, d)
+				continue
+			}
+			d.stopLocked()()
+		case phaseQueued:
 			d.stopLocked()()
 		case phaseParked:
 			// A parked sync child whose parent is a child of this pool
@@ -655,6 +674,10 @@ func (p *Pool) Close(ctx context.Context) error {
 		cancel()
 	}
 	p.mu.Unlock()
+	for _, d := range cut {
+		_ = d.child.Close(ctx) // fells the turn with ErrShutdown; the run records it
+	}
+	p.cancel()
 
 	// A parked child has no run to drain; closing its session lets
 	// the storage go (a writer's hold, where the backend keeps one).
@@ -1149,6 +1172,12 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 		answer := answerOf(res)
 		p.concludeRun(ctx, ledger, d, Done, answer, answer, false)
 		return outcome{answer: answer}
+	}
+	if errors.Is(err, thread.ErrShutdown) {
+		// A shutdown cut the child's turn off (TurnEntry.CutOff): the
+		// receipt is left as it stands, unsettled, so Recover after the
+		// restart reattaches the child and recovers its turn (ADR 0032).
+		return outcome{err: err}
 	}
 	canceled := p.wasCanceled(d)
 	text := d.runFailureText(err)

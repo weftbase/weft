@@ -182,6 +182,25 @@ as canceled — ends the queued turns with `ErrClosed`, and returns
 `ctx.Err()`. The canceled turn may still be writing its end: call
 `Close` again to finish sealing and releasing.
 
+**A worker that is stopping** gives Close a context whose cause is
+`thread.ErrShutdown` (ADR 0032):
+
+```go
+ctx, cancel := context.WithTimeoutCause(ctx, d, thread.ErrShutdown)
+defer cancel()
+_ = s.Close(ctx)      // drain; at the deadline the turn is felled with ErrShutdown
+_ = s.Close(graceCtx) // let its end land, seal, release
+```
+
+The same drain, but a turn still running at the deadline is recorded
+**cut off** — `TurnEntry.CutOff`, not `Canceled`; `Turn.Wait`'s error
+wraps `ErrShutdown` — and a call that is not `ReplaySafe` whose handler
+the cancellation felled (or that never got a result) stays unanswered,
+without synthetic text. The next process finds the turn
+(`s.Ready()`: `ReadyRecover`) and handles it with `s.RecoverTurn(ctx)`
+(§6). A turn whose own context is canceled with
+`cancel(thread.ErrShutdown)` gets the same record.
+
 What Close does not lose: sends still queued when it gives up keep
 their `accepted` receipts in the file, steers their `queued` ones, and
 the next `Open` restores both to the queue (§8).
@@ -197,9 +216,12 @@ A shutdown sequence that leaves nothing behind:
    a parent that settles. Close also waits, at most 30 s, for a parent
    session's turn still running a sibling call to park the delegating
    call of a child it canceled, then resolves it. Session.Close does
-   not wait for pool children.
+   not wait for pool children. A ctx already canceled with the cause
+   `thread.ErrShutdown` cuts running children off instead: their
+   turns are recorded cut off and their receipts stay unsettled for
+   `pool.Recover` after the restart.
 3. `s.Close(ctx)` for each open session, with a deadline you can
-   afford.
+   afford and the cause `thread.ErrShutdown` (above).
 4. Exit.
 
 Skipping it is survivable — that is what the crash rules are for —

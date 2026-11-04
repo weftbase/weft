@@ -444,6 +444,10 @@ type Session struct {
 	// notify delivers OnReady hints in order, off the session's lock.
 	notify notifier
 
+	// shuttingDown is set by a Close whose context ended with the
+	// cause ErrShutdown: the turn it fells is recorded cut off.
+	shuttingDown bool
+
 	closing        closeState
 	closeDone      chan struct{}
 	closeErr       error
@@ -1721,6 +1725,7 @@ func (s *Session) Close(ctx context.Context) error {
 		// flight landing, the runner taking its next item, or its exit
 		// — each a signal, none a poll.
 		t, aborted := s.inFlight, s.closing == stateAborted
+		cause := s.fellCauseLocked()
 		moved := s.runnerMovedLocked()
 		s.mu.Unlock()
 		var landed <-chan struct{}
@@ -1729,7 +1734,7 @@ func (s *Session) Close(ctx context.Context) error {
 				// A Close that gave up left the session refusing work,
 				// yet a turn is in flight: fell it too, so the wait is
 				// short.
-				t.fell()
+				t.fellWith(cause)
 			}
 			landed = t.Done()
 		}
@@ -1740,12 +1745,12 @@ func (s *Session) Close(ctx context.Context) error {
 			select {
 			case <-moved:
 			case <-ctx.Done():
-				s.abandon()
+				s.abandon(context.Cause(ctx))
 				return ctx.Err()
 			}
 		case <-moved:
 		case <-ctx.Done():
-			s.abandon()
+			s.abandon(context.Cause(ctx))
 			return ctx.Err()
 		}
 	}
@@ -1821,13 +1826,16 @@ func (s *Session) sealLocked(ctx context.Context) error {
 // session-level append lands, so that no resume can start a run
 // behind the caller's back. The felled turn's own end batch still
 // lands; a later Close seals after it.
-func (s *Session) abandon() {
+func (s *Session) abandon(cause error) {
 	s.mu.Lock()
 	if s.closing == stateSealed {
 		s.mu.Unlock()
 		return // another Close finished the job meanwhile
 	}
 	s.closing = stateAborted
+	if errors.Is(cause, ErrShutdown) {
+		s.shuttingDown = true // the felled turn is recorded cut off, not canceled
+	}
 	closed := fmt.Errorf("%w: session %s", ErrClosed, s.header.ID)
 	var ended []*Turn
 	for _, ps := range s.queue {
@@ -1849,26 +1857,38 @@ func (s *Session) abandon() {
 		}
 		ended = append(ended, rw.turn)
 	}
-	t := s.inFlight
+	t, cause := s.inFlight, s.fellCauseLocked()
 	s.mu.Unlock()
 	for _, e := range ended {
 		e.finish(nil, closed)
 	}
 	if t != nil {
-		t.fell()
+		t.fellWith(cause)
 	}
 }
 
-// fell cancels the turn's run on behalf of Close: the interrupted
+// fellCauseLocked is the cause a Close that gave up fells the running
+// turn with: ErrShutdown when that Close's context ended with it — the
+// turn is recorded cut off, for RecoverTurn — else the close cause
+// (recorded canceled). Callers hold s.mu.
+func (s *Session) fellCauseLocked() error {
+	if s.shuttingDown {
+		return ErrShutdown
+	}
+	return causeClosed
+}
+
+// fellWith cancels the turn's run on behalf of Close: the interrupted
 // mark makes a run that has not armed its cancel yet die at birth,
 // and gives the partial transcript's unanswered calls the
 // interruption text — the same mechanics as a Send under the
-// Interrupt policy, without a follow-up.
-func (t *Turn) fell() {
+// Interrupt policy, without a follow-up — except under ErrShutdown,
+// which leaves a call whose outcome is unknown unanswered.
+func (t *Turn) fellWith(c error) {
 	t.mu.Lock()
 	t.interrupted = true
 	if t.cause == nil {
-		t.cause = causeClosed
+		t.cause = c
 	}
 	cause, cancel := t.cause, t.cancel
 	t.mu.Unlock()

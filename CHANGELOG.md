@@ -23,6 +23,8 @@ module, ADR 0005).
 
 - thread: one resumer — `OnReady(fn func(Ready))` hands the session's pending work to `fn` instead of starting it (`Ready{Session, Kind, RunID}`; `ReadyResume`, `ReadyQueued`, `ReadyRecover`): a settled boundary is not resumed (it implies `AutoResume(false)`) and sends queued behind a turn are not drained; `fn` runs after the append, off the lock, in order — an in-process, best-effort hint, not a durable event. `Session.Ready()` lists the work from the journal: a cut-off turn alone (`ReadyRecover`), a boundary whose requests are all decided or lapsed (`ReadyResume`, reading only), waiting sends (`ReadyQueued`). Boot recovery is Open → Claim → Ready → act. Under `OnReady`, `Continue` starts one queued send.
 
+- thread, thread/pool: shutdown is a cause, not a method. `ErrShutdown` (a cancellation: `errors.Is(err, context.Canceled)`, named `thread.shutdown` on the run's span): a turn felled by a `Close` whose context ended with that cause (`context.WithTimeoutCause(ctx, d, thread.ErrShutdown)`), or whose own context was canceled with it, is recorded cut off (`TurnEntry.CutOff`, not `Canceled`) and its calls of unknown outcome stay unanswered without synthetic text, for `RecoverTurn`. `pool.Close` given a context already canceled with it cuts running children off and leaves their receipts unsettled for `pool.Recover`.
+
 ### Format
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.

@@ -980,7 +980,11 @@ func (s *Session) runOne(item workItem) {
 		// The caller walked away before the turn started: the prompt is
 		// kept, the turn is recorded as canceled, and the queue moves on.
 		errOut := fmt.Errorf("%w: canceled before it started: %w", ErrNotRun, err)
-		perr := s.recordTurnEnd(persist, t, turnEnd{err: errOut})
+		shutdown := errors.Is(context.Cause(ps.ctx), ErrShutdown)
+		if shutdown {
+			errOut = fmt.Errorf("%w: %w", ErrShutdown, errOut)
+		}
+		perr := s.recordTurnEnd(persist, t, turnEnd{err: errOut, shutdown: shutdown})
 		s.land(item, nil, joinErrs(errOut, perr))
 		return
 	}
@@ -1033,7 +1037,11 @@ func (s *Session) runResume(item workItem) {
 	persist := context.WithoutCancel(ctx)
 	if err := ctx.Err(); err != nil {
 		errOut := fmt.Errorf("%w: resume canceled before it started: %w", ErrNotRun, err)
-		perr := s.recordTurnEnd(persist, t, turnEnd{err: errOut})
+		shutdown := errors.Is(context.Cause(ctx), ErrShutdown)
+		if shutdown {
+			errOut = fmt.Errorf("%w: %w", ErrShutdown, errOut)
+		}
+		perr := s.recordTurnEnd(persist, t, turnEnd{err: errOut, shutdown: shutdown})
 		s.land(item, nil, joinErrs(errOut, perr))
 		return
 	}
@@ -1260,8 +1268,10 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		}
 		break
 	}
-	if t.wasInterrupted() && err != nil {
-		// The interrupted partial carries completions for its dangling
+	shutdown := err != nil && shutdownOf(ctx, t)
+	if t.wasInterrupted() && err != nil && !shutdown {
+		// (A shutdown keeps its calls of unknown outcome unanswered:
+		// RecoverTurn reads them.) The interrupted partial carries completions for its dangling
 		// calls — the golden text — before the repair sees it: the
 		// recorded transcript stays sound model input, and the model
 		// sees why a call has no answer. The completion is made on a
@@ -1284,7 +1294,10 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	if err == nil && res != nil && len(res.Pending) > 0 {
 		chain = s.runChain(persist, t, callerOpts, res.Pending)
 	}
-	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp})
+	if shutdown {
+		report = fmt.Errorf("%w: %w", ErrShutdown, report)
+	}
+	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp, shutdown: shutdown})
 	// Steers still live when the run ended defer here: the run met a
 	// StopWhen end or parked approvals without draining them, or they
 	// arrived after the last drain point. The follow-ups join the send
@@ -1607,6 +1620,9 @@ type turnEnd struct {
 	inputLen int
 	chain    *chainResult
 	sp       *stepPersist
+	// shutdown records the turn cut off (ErrShutdown) instead of
+	// canceled.
+	shutdown bool
 }
 
 // recordTurnEnd closes the turn: it appends the run's new messages
@@ -1705,7 +1721,17 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	for i, te := range tail {
 		have[i] = te.msg
 	}
-	keep, newMsgs := turnEndMessages(full, inputLen, have, err)
+	repairErr := err
+	var unsettled []core.ToolCallPart
+	if end.shutdown {
+		// A shutdown keeps every call of unknown outcome unanswered —
+		// not ReplaySafe, and without a result its handler produced in
+		// full — so RecoverTurn parks it instead of the model reading a
+		// cancellation and asking again. No repair.
+		full, unsettled = s.shutdownTranscriptLocked(full)
+		repairErr = nil
+	}
+	keep, newMsgs := turnEndMessages(full, inputLen, have, repairErr)
 	parent := s.leaf
 	if keep < len(tail) {
 		parent = startLeaf
@@ -1769,6 +1795,11 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	if report != nil {
 		te.Err = report.Error()
 		te.Canceled = errors.Is(report, context.Canceled) || errors.Is(report, context.DeadlineExceeded)
+	}
+	if end.shutdown {
+		// Not abandoned: stopped, and recoverable (RecoverTurn).
+		te.Canceled, te.CutOff = false, true
+		te.Pending = append(te.Pending, unsettled...)
 	}
 	entries = append(entries, te)
 	parent = te.ID
@@ -2083,6 +2114,15 @@ func (t *Turn) interruptCause() error {
 	return t.cause
 }
 
+// shutdownOf reports whether a turn's run was felled by a shutdown:
+// the run context's cause, or the cause the session felled it with.
+func shutdownOf(ctx context.Context, t *Turn) bool {
+	if errors.Is(context.Cause(ctx), ErrShutdown) {
+		return true
+	}
+	return t.wasInterrupted() && errors.Is(t.interruptCause(), ErrShutdown)
+}
+
 // The typed causes a session fells its running turn with (core.CancelCause):
 // an Interrupt or Rollback send, or Close.
 const (
@@ -2391,4 +2431,57 @@ func (t *Turn) failed() bool {
 func cloneMessage(m core.Message) core.Message {
 	m.Content = append([]core.Part(nil), m.Content...)
 	return m
+}
+
+// shutdownTranscriptLocked is a shut-down turn's transcript as it is
+// recorded (ADR 0032): in its last step, the result of every call that
+// is not ReplaySafe and came back as an error — the handler felled by
+// the cancellation, its effect unknown — is taken out of the tool
+// message, so the call stays unanswered for RecoverTurn; a call with no
+// result at all stays so too. The calls left unanswered return.
+// Callers hold s.mu.
+func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message, []core.ToolCallPart) {
+	ai := -1
+	for i := len(full) - 1; i >= 0 && ai < 0; i-- {
+		if full[i].Role == core.RoleAssistant && hasToolCall(full[i]) {
+			ai = i
+		}
+	}
+	if ai < 0 {
+		return full, nil
+	}
+	risky := map[string]bool{}
+	for _, p := range full[ai].Content {
+		if c, ok := p.(core.ToolCallPart); ok && s.replayOfLocked(c.Name) != core.ReplaySafe {
+			risky[c.ID] = true
+		}
+	}
+	answered := map[string]bool{}
+	var keptResults []core.Part
+	if ai+1 < len(full) && full[ai+1].Role == core.RoleTool {
+		for _, p := range full[ai+1].Content {
+			r, ok := p.(core.ToolResultPart)
+			if ok && risky[r.CallID] && r.IsError {
+				continue // felled mid-call: unknown, not failed
+			}
+			if ok {
+				answered[r.CallID] = true
+			}
+			keptResults = append(keptResults, p)
+		}
+	}
+	var unsettled []core.ToolCallPart
+	for _, p := range full[ai].Content {
+		if c, ok := p.(core.ToolCallPart); ok && !answered[c.ID] {
+			unsettled = append(unsettled, c)
+		}
+	}
+	if len(unsettled) == 0 {
+		return full, nil
+	}
+	out := append([]core.Message(nil), full[:ai+1]...)
+	if len(keptResults) > 0 {
+		out = append(out, core.Message{Role: core.RoleTool, Content: keptResults})
+	}
+	return out, unsettled
 }
