@@ -30,6 +30,7 @@ const (
 	reasonRetryKeyed     = "cut off: the call deduplicates on its idempotency key and is retried"
 	reasonSafeNotRerun   = "cut off: the call is ReplaySafe and is not run again; the model may ask for it again"
 	reasonNotStarted     = "cut off before it started: approve to run it, deny to skip it"
+	reasonDelegated      = "cut off while it delegated: the delegated work may have run; approve to delegate it again, deny to skip it"
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
@@ -507,6 +508,9 @@ func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
 	if !ok {
 		return startUnknowable
 	}
+	if s.delegationEndedLocked(entry, c.ID) {
+		return startMaybe // it delegated: the child may have run
+	}
 	if me, ok := s.order[i].(MessageEntry); !ok || !me.DispatchRecorded {
 		return startUnknowable
 	}
@@ -516,6 +520,33 @@ func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
 		}
 	}
 	return startNever
+}
+
+// delegationEndedLocked reports whether callID, a call of the step
+// entry entry, delegated to a thread/pool child whose delegation is
+// over: an acceptance receipt naming it follows the step — the
+// delegation's dispatch record, appended before the child runs — and a
+// settlement of that receipt follows too. Its call has no result: what
+// the child did is the delegation's, and the pool resolves it no more.
+// A delegation still open is the pool's to settle (ADR 0022 §7).
+// Callers hold s.mu.
+func (s *Session) delegationEndedLocked(entry, callID string) bool {
+	i, ok := s.byID[entry]
+	if !ok {
+		return false
+	}
+	receipt := ""
+	for _, e := range s.order[i+1:] {
+		pr, ok := e.(PoolReceiptEntry)
+		switch {
+		case !ok:
+		case pr.Receipt == "" && pr.Call == callID:
+			receipt = pr.ID
+		case receipt != "" && pr.Receipt == receipt && pr.Status != PoolAccepted && pr.Status != PoolRunning && pr.Status != PoolParked:
+			return true
+		}
+	}
+	return false
 }
 
 // unknownLocked returns the cut-off run's calls whose outcome is
@@ -791,6 +822,10 @@ func (s *Session) recoverContinueLocked(ctx, persist context.Context, x cutOff) 
 //     recovery request for a person, whatever the replay class —
 //     nothing automatic runs a call that may have been parked; only a
 //     system of record's "found" resolves it;
+//   - a call whose thread/pool delegation was ended unanswered (a
+//     cut-off child's, its delegations ended by the pool's Recover):
+//     a recovery request for a person, whatever its class — recovery
+//     is not built at depth;
 //   - startMaybe: the ladder — a ReplayKeyed call is retried by the
 //     session under its unchanged key ("retry" audit step, Via
 //     "recovery"), a ReplayNever one asks its Reconcile answer (rc)
@@ -827,6 +862,16 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 	case start == startUnknowable && def != nil && def.RequiresApproval():
 		// Its tool parks it before it starts: it never ran.
 		req.Recovery, req.Reason = false, parkingReason(s, c.Name)
+		return []Entry{req}
+	case s.delegationEndedLocked(s.callEntryLocked(c.ID), c.ID):
+		// It delegated to a thread/pool child, and the delegation was
+		// ended unanswered (thread/pool's Recover ends a cut-off
+		// child's delegations): what the child did is not known, and
+		// recovery is not built at depth. Nothing automatic runs it
+		// again — no keyed retry, no Reconcile, whatever its tool's
+		// class: a person approves (it delegates again) or denies (it
+		// reads as an unknown outcome not to repeat).
+		req.Reason = reasonDelegated
 		return []Entry{req}
 	case policy == core.ReplayKeyed && start == startMaybe && s.autoRetriesLocked(c.ID) >= maxAutoRetries:
 		// Bounded (R12): the session's own retries are spent — a

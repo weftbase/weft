@@ -523,7 +523,13 @@ not the numbers themselves.
   request (approve retries it with its same key, deny skips it); a
   `weft.ReplayKeyed` one is retried under its key, at most 3 times
   across restarts, then a person decides; otherwise the child runs on
-  to its answer. A child
+  to its answer. A child cut off while it was itself delegating is not
+  recovered at depth: its own delegations are ended first (a cut-off
+  grandchild settles `canceled`, never `failed`), and its delegating
+  call — which may have run — reaches the parent as a recovery request
+  (`cut off while it delegated: …`): approve delegates again, deny
+  skips it and the child's model reads `OUTCOME_UNKNOWN … do not
+  repeat it`. A child
   whose agent the pool does not hold is reported (`pool.ErrNoAgent`)
   and left for a later call. Limits: a finished child's answer is read
   back as its last assistant text (a structured `Output` answer is not

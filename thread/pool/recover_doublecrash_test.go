@@ -356,3 +356,129 @@ func TestRecoverCrashInsideAnApprovedChildResume(t *testing.T) {
 		})
 	}
 }
+
+// delegatingChild is a child agent whose first step delegates to a
+// grandchild through the wrap "level2" (call "d"); answer is its
+// answer after that.
+func delegatingChild(p *pool.Pool, grandchild *core.Agent, first bool) *core.Agent {
+	var turns []wefttest.Turn
+	if first {
+		turns = append(turns, wefttest.ToolCalls(wefttest.Call{Name: "level2", ID: "d",
+			Args: wefttest.Args(struct{ Prompt string }{"go"})}))
+	}
+	turns = append(turns, wefttest.Say("level1 done"))
+	return core.New(wefttest.Script(turns...), p.MustWrap("level2", "the next level", grandchild))
+}
+
+// resultOf is the result the session holds for callID, "" when none.
+func resultOf(t *testing.T, st thread.Storage, id, callID string) string {
+	t.Helper()
+	_, entries, _, err := st.Load(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := ""
+	for _, e := range entries {
+		me, ok := e.(thread.MessageEntry)
+		if !ok {
+			continue
+		}
+		for _, part := range me.Message.Content {
+			if r, ok := part.(core.ToolResultPart); ok && r.CallID == callID {
+				out = r.Content
+			}
+		}
+	}
+	return out
+}
+
+// P1-c: a child cut off while it was itself delegating is never
+// settled failed — what its delegation did is not known, and a parent
+// told "failed" may delegate the work again. Recovery is not built at
+// depth: the child's own delegations are ended depth first, and its
+// delegating call of unknown outcome goes to a person, mirrored onto
+// the parent as a recovery request, whatever its tool's replay class.
+// Deny skips it — the child's model reads OUTCOME_UNKNOWN ("may have
+// run … do not repeat it") and goes on; approve runs the delegating
+// call again (a new grandchild).
+func TestRecoverCutOffDelegatingChildAsksAPerson(t *testing.T) {
+	for _, approve := range []bool{false, true} {
+		name := "deny"
+		if approve {
+			name = "approve"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			st := thread.Memory()
+			parent, err := thread.Create(ctx, st, core.New(wefttest.Script()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := make(chan struct{})
+			p := pool.New(2)
+			r, err := p.Submit(ctx, parent, delegatingChild(p, core.New(blockModel{Model: wefttest.Script(), in: in}), true), "go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-in // the grandchild runs: the child is in its delegating call
+			_, entries, _, err := st.Load(ctx, r.Child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			grand := ""
+			for _, e := range entries {
+				if pr, ok := e.(thread.PoolReceiptEntry); ok && pr.Child != "" {
+					grand = pr.Child
+				}
+			}
+			image := crashImage(t, st, p, parent.ID(), r.Child, grand)
+
+			parent2, err := thread.Open(ctx, image, parent.ID(), core.New(wefttest.Script()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p2 := pool.New(2)
+			defer func() { _ = p2.Close(ctx) }()
+			grandchild := core.New(wefttest.Script(wefttest.Say("level2 done")))
+			if err := p2.Register(r.Child, delegatingChild(p2, grandchild, false)); err != nil {
+				t.Fatal(err)
+			}
+			if err := p2.Recover(ctx, parent2); err != nil {
+				t.Fatalf("Recover = %v", err)
+			}
+			if rc := receiptOf(parent2, r.ID); rc.Settled() {
+				t.Fatalf("receipt = %+v: a child cut off while delegating is never settled", rc)
+			}
+			pend := waitPending(t, parent2)
+			if len(pend) != 1 || pend[0].Child != r.Child || !pend[0].Recovery || pend[0].Tool != "level2" ||
+				!strings.Contains(pend[0].Reason, "delegated work may have run") {
+				t.Fatalf("parent Pending = %+v, want the child's delegating call as a recovery request", pend)
+			}
+			if rs := pool.Receipts(readOnly(t, image, r.Child)); len(rs) != 1 || !rs[0].Settled() {
+				t.Fatalf("the child's receipts = %+v, want its delegation ended", rs)
+			}
+			d := thread.Deny(pend[0].CallID, "checked by hand")
+			if approve {
+				d = thread.Approve(pend[0].CallID)
+			}
+			if err := p2.Decide(ctx, parent2, bound(parent2, d)); err != nil {
+				t.Fatal(err)
+			}
+			rc := waitFor(t, p2, parent2, r.ID, pool.Done)
+			if rc.Stop != "level1 done" {
+				t.Fatalf("receipt = %+v, want the child's answer", rc)
+			}
+			got := resultOf(t, image, r.Child, "d")
+			if approve {
+				if got != "level2 done" {
+					t.Fatalf("the re-run delegation's result = %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, "OUTCOME_UNKNOWN") || !strings.Contains(got, "may have run") ||
+				!strings.Contains(got, "do not repeat") || !strings.Contains(got, "checked by hand") {
+				t.Fatalf("the skipped delegation reads %q", got)
+			}
+		})
+	}
+}

@@ -187,13 +187,17 @@ func readOnly(t *testing.T, st thread.Storage, id string) *thread.Session {
 }
 
 // F1 (torture tier): a kill while L1's run is in flight — L2 parked
-// and mirrored into L1, L1's own park not yet written. Recover settled
-// L1 failed ("no turn was recorded") and left L1's delegation to L2
-// running, L2's request undecidable: the top no longer offered it.
-// Settling a child as over now ends its own sync delegations first,
-// as Cancel and Close do: L2 is canceled at its boundary and settles
-// canceled in L1's ledger, its mirror in L1 denied.
-func TestRecoverEndsAFailedChildsSubtree(t *testing.T) {
+// and mirrored into L1, L1's own park not yet written. Recover once
+// settled L1 failed ("no turn was recorded") and left L1's delegation
+// to L2 running, L2's request undecidable: the top no longer offered
+// it. L1's own delegations are still ended first, as Cancel and Close
+// do: L2 is canceled at its boundary and settles canceled in L1's
+// ledger, its mirror in L1 denied. But L1 is cut off, not failed
+// (review 3 P1-c: "failed" would tell the top nothing ran, over the
+// effects L2 may have had): its delegating call parks for a person,
+// mirrored onto the top as a recovery request, and the receipt stays
+// open; the person's skip lets L1 run on to its answer.
+func TestRecoverEndsACutOffChildsSubtree(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	gated := []bool{false, false, true} // only L2 parks
@@ -221,19 +225,22 @@ func TestRecoverEndsAFailedChildsSubtree(t *testing.T) {
 		t.Fatalf("Recover: %v", err)
 	}
 	rs := pool.Receipts(s)
-	if len(rs) != 1 || rs[0].State != pool.Failed || !strings.Contains(rs[0].Stop, "did not survive a restart") {
-		t.Fatalf("top receipts = %+v, want L1 settled failed", rs)
+	if len(rs) != 1 || rs[0].Settled() {
+		t.Fatalf("top receipts = %+v, want L1's delegation open", rs)
 	}
-	if pend := s.Pending(); len(pend) != 0 {
-		t.Errorf("the top offers %+v", pend)
+	pend := waitPending(t, s)
+	if len(pend) != 1 || pend[0].Child != l1 || !pend[0].Recovery || pend[0].Tool != "level2" {
+		t.Fatalf("the top offers %+v, want L1's delegating call as a recovery request", pend)
 	}
 	l1s := readOnly(t, st, l1)
 	sub := pool.Receipts(l1s)
 	if len(sub) != 1 || sub[0].Child != l2 || sub[0].State != pool.Canceled {
 		t.Fatalf("L1's receipts = %+v, want its delegation to L2 settled canceled", sub)
 	}
-	if pend := l1s.Pending(); len(pend) != 0 {
-		t.Errorf("L1 still offers L2's request: %+v", pend)
+	for _, r := range l1s.Pending() {
+		if r.Child == l2 {
+			t.Errorf("L1 still offers L2's request: %+v", r)
+		}
 	}
 	l2s := readOnly(t, st, l2)
 	if pend := l2s.Pending(); len(pend) != 0 {
@@ -249,6 +256,13 @@ func TestRecoverEndsAFailedChildsSubtree(t *testing.T) {
 	}
 	if again := len(readOnlyFresh(t, st, l1).Entries()); again != before {
 		t.Errorf("a second Recover wrote to L1: %d entries, were %d", again, before)
+	}
+	// A person skips the delegation: L1 runs on to its answer.
+	if err := p.Decide(ctx, s, bound(s, thread.Deny(pend[0].CallID, "checked by hand"))); err != nil {
+		t.Fatal(err)
+	}
+	if rc := waitFor(t, p, s, rs[0].ID, pool.Done); rc.Stop != "level1 done" {
+		t.Errorf("receipt = %+v, want L1's answer", rc)
 	}
 }
 
@@ -330,9 +344,11 @@ func TestRecoverOrphanedDelegatingCallResumesTheChild(t *testing.T) {
 
 // F1 at depth: L1 and L2 both cut mid-run (each through the mirror of
 // its child's request, before its own park), L3 parked. Recover ends
-// the subtree depth first: L3 canceled at its boundary in L2's
-// ledger, L2 settled failed in L1's, L1 failed in the top's.
-func TestRecoverEndsAFailedChildsSubtreeDeep(t *testing.T) {
+// L1's subtree depth first: L3 canceled at its boundary in L2's
+// ledger, L2 — cut off too — canceled in L1's, never failed (review 3
+// P1-c). L1 is not settled: its delegating call parks for a person,
+// mirrored onto the top.
+func TestRecoverEndsACutOffChildsSubtreeDeep(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	gated := []bool{false, false, false, true} // only L3 parks
@@ -362,7 +378,7 @@ func TestRecoverEndsAFailedChildsSubtreeDeep(t *testing.T) {
 	want := []struct {
 		session, child string
 		state          pool.State
-	}{{top, l1, pool.Failed}, {l1, l2, pool.Failed}, {l2, l3, pool.Canceled}}
+	}{{top, l1, pool.Running}, {l1, l2, pool.Canceled}, {l2, l3, pool.Canceled}}
 	for _, w := range want {
 		var rs []pool.Receipt
 		if w.session == top {
@@ -376,6 +392,9 @@ func TestRecoverEndsAFailedChildsSubtreeDeep(t *testing.T) {
 	}
 	if pend := readOnly(t, st, l3).Pending(); len(pend) != 0 {
 		t.Errorf("L3 still holds %d undecidable request(s)", len(pend))
+	}
+	if pend := waitPending(t, s); len(pend) != 1 || pend[0].Child != l1 || !pend[0].Recovery {
+		t.Errorf("the top offers %+v, want L1's delegating call as a recovery request", pend)
 	}
 	if len(ran.snapshot()) != 0 {
 		t.Error("the gated call ran")
@@ -413,21 +432,21 @@ func TestRecoverEndsASubtreeCutMidCascade(t *testing.T) {
 		if err := p.Recover(ctx, s); err != nil {
 			t.Fatalf("Recover: %v", err)
 		}
+		waitPending(t, s) // L1 recovered and parked: Close leaves it parked
 		_ = p.Close(ctx)
 		_ = s.Close(ctx)
 	}
 	recoverOnce()
 	// The crash image of a kill right after L3's canceled receipt in L2:
-	// L2 through that receipt, L1 and the top before their settlements.
+	// L2 through that receipt, L1 before L2's settlement (and its own
+	// recovery after it), the top before the mirror of L1's request.
 	cutBefore(t, filepath.Join(dir, l2+".jsonl"), after(func(l crashLine) bool {
 		return l.kind == "pool_receipt" && strings.Contains(l.raw, `"status":"canceled"`)
 	}))
 	cutBefore(t, filepath.Join(dir, l1+".jsonl"), func(l crashLine) bool {
-		return l.kind == "pool_receipt" && strings.Contains(l.raw, `"status":"failed"`)
+		return l.kind == "pool_receipt" && strings.Contains(l.raw, `"status":"canceled"`)
 	})
-	cutBefore(t, filepath.Join(dir, top+".jsonl"), func(l crashLine) bool {
-		return l.kind == "pool_receipt" && strings.Contains(l.raw, `"status":"failed"`)
-	})
+	cutBefore(t, filepath.Join(dir, top+".jsonl"), kind("approval_request"))
 	if len(readOnlyFresh(t, st, l2).Pending()) == 0 {
 		t.Fatal("the image is not the window: L2 offers nothing")
 	}
@@ -435,7 +454,10 @@ func TestRecoverEndsASubtreeCutMidCascade(t *testing.T) {
 	if pend := readOnlyFresh(t, st, l2).Pending(); len(pend) != 0 {
 		t.Errorf("L2 still offers %+v", pend)
 	}
-	if rs := pool.Receipts(readOnlyFresh(t, st, l1)); len(rs) != 1 || rs[0].State != pool.Failed {
+	if rs := pool.Receipts(readOnlyFresh(t, st, l1)); len(rs) != 1 || rs[0].State != pool.Canceled {
 		t.Errorf("L1's receipts = %+v", rs)
+	}
+	if pend := readOnlyFresh(t, st, top).Pending(); len(pend) != 1 || pend[0].Child != l1 || !pend[0].Recovery {
+		t.Errorf("the top offers %+v, want L1's delegating call as a recovery request", pend)
 	}
 }

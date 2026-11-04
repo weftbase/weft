@@ -1705,6 +1705,12 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 			if e.Child != "" && e.Wrapper != "" {
 				w.wrappers[e.Wrapper] = e.Child
 			}
+			if e.Child == "" && e.Recovery {
+				// A recovery request of its own: the call's delegation
+				// is over (RecoverTurn parks a delegating call only
+				// then) and a person decides it, not the pool.
+				delete(w.wrappers, e.CallID)
+			}
 		case ApprovalDecisionEntry:
 			if spent[e.ID] {
 				continue

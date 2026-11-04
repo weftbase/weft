@@ -47,15 +47,21 @@ import (
 //     session's own keyed retry started: the approved call is never
 //     re-run blind and never left parked with nothing to decide. The
 //     same holds at any depth: a grandchild whose approved call was
-//     running parks through its parent's recovered delegation. A
-//     cut-off child that was itself delegating (an open receipt or
-//     mirror of its own) is ended depth first as below.
+//     running parks through its parent's recovered delegation.
+//     Recovery is not built at depth: a cut-off child that was itself
+//     delegating (an open receipt or mirror of its own) has its own
+//     delegations ended first, depth first as below, and its
+//     delegating call — whose outcome is the ended delegation's, not
+//     known — parks for a person whatever its tool's replay class: the
+//     parent offers it as a mirrored recovery request, approve runs the
+//     call again (a new delegation), deny skips it and the child's
+//     model reads OUTCOME_UNKNOWN ("may have run … do not repeat it").
 //   - the child finished its run: the receipt settles from the child's
 //     own ledger — done with its final text, failed, capped or
 //     canceled with its recorded cause — with the child's usage.
-//   - the child never started its run (queued when the process died),
-//     or was cut off while delegating: the receipt settles failed,
-//     saying so, its own delegations ended first.
+//   - the child never started its run (queued when the process died):
+//     the receipt settles failed, saying so, its own delegations ended
+//     first.
 //   - the child session is gone: the receipt settles failed.
 //
 // A child settled as over that is itself a parent ends its own
@@ -148,15 +154,23 @@ func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receip
 		// working it now: its Recover recovers it, never this pool's.
 		return nil
 	}
-	if cutOff(entries) && !hasLoose(entries) {
+	if cutOff(entries) {
 		// A crash or a shutdown cut the child's run off: what it did is
 		// not known, so it is never settled failed — the parent could
 		// delegate the work again over an effect the child had. The
 		// child recovers on its own ladder (RecoverTurn) and the
 		// delegation stays open: it parks (its calls of unknown outcome
-		// mirrored for a person) or runs on to its answer. A cut-off
-		// child that was itself delegating is ended depth first, as
-		// before: its delegations are canceled at their boundaries.
+		// mirrored for a person) or runs on to its answer. Recovery is
+		// not built at depth: a cut-off child that was itself
+		// delegating ends its own delegations first, depth first (as
+		// below), and its delegating call — its outcome the ended
+		// delegation's, not known — parks for a person (RecoverTurn's
+		// rule for a call that delegated to a pool child).
+		if hasLoose(entries) {
+			if err := p.endSubtree(ctx, parent, rc.Child); err != nil {
+				return err
+			}
+		}
 		return p.recoverCutOff(ctx, parent, rc)
 	}
 	state, stop, usage, parked := classify(entries)
@@ -261,9 +275,10 @@ func (p *Pool) endDelegations(ctx context.Context, s *thread.Session) error {
 // from the delegated child's file, depth first: a parked sync child is
 // canceled at its boundary — its own delegations ended first, then its
 // pending calls denied in its own session, never to run on a later
-// approval — and settles canceled; a child whose run is over settles
-// as classify reads it, its own delegations ended first; a gone one
-// settles failed. Its requests still offered in s are denied. A parked
+// approval — and settles canceled; a cut-off child settles canceled,
+// never failed (what it did is not known), its own delegations ended
+// first; a child whose run is over settles as classify reads it, its
+// own delegations ended first; a gone one settles failed. Its requests still offered in s are denied. A parked
 // async child is left parked: async delegations are independent of
 // the run that made them (D4), and a Recover of s reattaches it.
 // Nothing is resolved: s's delegating calls were never parked, and s
@@ -277,6 +292,18 @@ func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error 
 		return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, err)
 	}
 	state, stop, usage, parked := classify(entries)
+	if cutOff(entries) {
+		// Cut off too: what it did is not known — never "failed". It is
+		// ended (nothing will resume it under a run that is over) and
+		// its own delegations first; the call that delegated to it goes
+		// to a person in s (RecoverTurn), its work possibly done.
+		if hasLoose(entries) {
+			if err := p.endSubtree(ctx, s, rc.Child); err != nil {
+				return err
+			}
+		}
+		return p.recordEnded(ctx, s, rc, Canceled, cutOffCanceledStop, usage)
+	}
 	switch {
 	case parked:
 		if !syncDelegation(s, rc) {
@@ -301,6 +328,11 @@ func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error 
 	}
 	return p.recordEnded(ctx, s, rc, state, stop, usage)
 }
+
+// cutOffCanceledStop is the stop of a cut-off child Recover ends
+// because the run that delegated to it was cut off too: it is not known
+// what it did.
+const cutOffCanceledStop = "canceled after a restart cut it off while the run that delegated to it was cut off too: what it did is not known"
 
 // orphanCanceledStop is the stop of a parked sync child Recover ends
 // because the run that delegated to it did not survive a restart.

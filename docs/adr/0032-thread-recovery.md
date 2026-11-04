@@ -197,11 +197,30 @@ never ended, or a turn recorded `cut_off` that no recovery closed) is
 now reattached and recovered on its own ladder (`RecoverTurn`, on a
 pool goroutine): its calls of unknown outcome park and are mirrored
 onto the parent as recovery requests, or it continues to its answer,
-which settles the receipt; the receipt stays open meanwhile. A cut-off
-child that was itself delegating (an open receipt or mirror of its
-own) is still ended depth first and settled failed, its delegations
-canceled at their boundaries — the residual case, where the cut-off
-step's outcome is the grandchildren's.
+which settles the receipt; the receipt stays open meanwhile. A run is
+started from its start record — a prompt, a resume's `started` audit,
+a recovery's continuation (its `recover` audit's Detail) — until its own
+turn entry lands, the session's own rule: a continuation or a keyed
+retry cut off by a second crash is cut off too (review 3 P1-a, P1-b),
+never read as the first cut-off turn's failure or as a park with
+nothing to decide.
+
+**A child cut off while delegating asks a person (review 3 P1-c).**
+Recovery is not built at depth. A cut-off child that was itself
+delegating (an open receipt or mirror of its own) has its own
+delegations ended depth first, as before — a parked one canceled at its
+boundary, a cut-off one settled `canceled` (never `failed`: what it did
+is not known), a finished one from its file — and is then recovered like
+any cut-off child, never settled `failed`. Its delegating call has no
+result and its delegation is over: the acceptance receipt naming the
+call is the delegation's dispatch record, so the call may have run.
+`RecoverTurn` parks it for a person whatever its tool's class (no keyed
+retry, no `Reconcile`), as a recovery request with the pinned reason
+`cut off while it delegated: the delegated work may have run; approve to
+delegate it again, deny to skip it`, mirrored onto the parent. Approve
+runs the call again (a new delegation); deny skips it, and the child's
+model reads `OUTCOME_UNKNOWN: tool "X" may have run; it was skipped, not
+retried: do not repeat it`.
 
 ## Consequences
 
