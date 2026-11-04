@@ -45,7 +45,7 @@ lookup := weft.Tool("lookup_order", "Look up an order by ID.",
 // weft.PromptSnippet("…"), weft.Replay(weft.ReplaySafe) (the side-effect class for
 // re-runs: unannotated counts as never — substitute-or-park, never silently re-fired),
 // weft.WrapTools(mw...).
-// agt.CallTool(ctx, weft.ToolCallPart{…}) dispatches one call by hand through the tool chain;
+// agt.CallTool(ctx, weft.ToolCallPart{…}) dispatches one call by hand through the tool chain (inside a run, under its park rule);
 // outside a run it records nothing (no run, event or span — Studio cannot show it).
 
 // 1b. Tools defined outside Go source: explicit schema, raw args.

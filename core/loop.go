@@ -1357,6 +1357,9 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			if parkUnknown {
 				callCtx = withParkUnknown(callCtx)
 			}
+			// A CallTool from inside the handler dispatches under the
+			// same park rule as the loop (WR-7): approval never fails open.
+			callCtx = withParkRule(callCtx, parkSet)
 			// The tool call's own reporting: one execute_tool span, on the
 			// handler's context — a span the handler starts is its child,
 			// and a child run's invoke_agent hangs under it — ended with
@@ -1715,7 +1718,9 @@ func deniedResult(reason string) string {
 // is its own: CallFromContext in its handler reports its id and name
 // (the run and step stay the dispatching call's), and an approval the
 // dispatching call ran under does not carry over — a RequireApproval
-// tool still returns ErrApprovalRequired.
+// tool still returns ErrApprovalRequired, and so does a tool the run's
+// park rule names (ParkOn, ParkAllExcept, an agent ParkSource): the run
+// parks it for the loop, and it parks it for the handler too.
 func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error) {
 	tools, err := a.dispatchTools()
 	if err != nil {
@@ -1735,7 +1740,25 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	if outer, ok := CallFromContext(ctx); ok {
 		ctx = withCall(ctx, Call{RunID: outer.RunID, Step: outer.Step, CallID: call.ID, Name: call.Name})
 	}
-	return a.chain(def, strict, nil, nil, nil)(ctx, call)
+	// The run's park rule (ParkOn, ParkAllExcept, ParkSource) holds for
+	// a call dispatched from inside a handler as it does for the loop's
+	// own: a parked inner call returns an error wrapping
+	// ErrApprovalRequired to the handler, never runs unasked (WR-7).
+	return a.chain(def, strict, parkRuleFrom(ctx), nil, nil)(ctx, call)
+}
+
+type parkRuleKey struct{}
+
+func withParkRule(ctx context.Context, p *parkRule) context.Context {
+	if p == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, parkRuleKey{}, p)
+}
+
+func parkRuleFrom(ctx context.Context) *parkRule {
+	p, _ := ctx.Value(parkRuleKey{}).(*parkRule)
+	return p
 }
 
 // chain builds the tool-call chain for one call: agent middleware

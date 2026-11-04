@@ -133,6 +133,41 @@ func TestBeforeDispatchGate(t *testing.T) {
 	}
 }
 
+// WR-7: a handler's CallTool dispatches under the run's park rule. A
+// tool the run's ParkOn names returns ErrApprovalRequired to the
+// handler and never runs unasked; a tool the rule does not name runs.
+func TestCallToolHonoursTheParkRule(t *testing.T) {
+	var refunded, looked int
+	var inner error
+	refund := core.Tool("refund", "Refund.", func(ctx context.Context, _ struct{}) (string, error) {
+		refunded++
+		return "refunded", nil
+	})
+	look := core.Tool("look", "Look.", func(ctx context.Context, _ struct{}) (string, error) {
+		looked++
+		return "seen", nil
+	})
+	var agent *core.Agent
+	outer := core.Tool("outer", "Dispatch by hand.", func(ctx context.Context, _ struct{}) (string, error) {
+		_, inner = agent.CallTool(ctx, core.ToolCallPart{ID: "in1", Name: "refund", Args: []byte(`{}`)})
+		_, _ = agent.CallTool(ctx, core.ToolCallPart{ID: "in2", Name: "look", Args: []byte(`{}`)})
+		return "done", nil
+	})
+	agent = core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "outer", ID: "c1", Args: `{}`}),
+		wefttest.Say("ok"),
+	), refund, look, outer)
+	if _, err := agent.Generate(context.Background(), core.Prompt("go"), core.ParkOn("refund")); err != nil {
+		t.Fatal(err)
+	}
+	if refunded != 0 || !errors.Is(inner, core.ErrApprovalRequired) {
+		t.Fatalf("refunded %d times, inner err %v: want 0 and ErrApprovalRequired", refunded, inner)
+	}
+	if looked != 1 {
+		t.Fatalf("looked %d times, want 1", looked)
+	}
+}
+
 // WR-6: a call with an effect whose handler outlives its Timeout has
 // an unknown outcome: the result says so (OUTCOME_UNKNOWN), never
 // "timed out" as if it had not happened — the abandoned handler may

@@ -29,6 +29,8 @@ module, ADR 0005).
 - thread: every turn carries `core.ParkUnknown()`: a call of unknown outcome — a timeout, an Interrupt or Rollback send, a canceled turn — goes down the recovery ladder at the turn's end (a `ReplayKeyed` call retried with its same key, a `ReplayNever` call as a recovery request), never answered "interrupted"; the step's other results are kept. A turn a `Close` fells with such a call is recorded cut off, for `RecoverTurn`.
 - thread: the self-fence (WR-4) — `Fencer` (`Fence(ctx, session) error`), an optional Storage capability, implemented by jsonl (the locked file is still the session's) and sqlite (one read of the lock row). Before every call that is not `ReplaySafe` the gate checks the writer still holds the session; a writer whose lock was broken, released or taken over starts no side effect (`ErrNotDispatched`).
 
+- core: `Agent.CallTool` from inside a tool handler dispatches under the run's park rule (`ParkOn`, `ParkAllExcept`, an agent `ParkSource`): a call the rule parks returns an error wrapping `ErrApprovalRequired` to the handler instead of running unasked (WR-7: approval no longer fails open through a hand dispatch).
+
 ### Format
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.
