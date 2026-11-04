@@ -284,7 +284,10 @@ func ApproveAlways(callID string) Decision {
 }
 
 // Deny returns a Decision that resolves the call without running it:
-// the model sees "DENIED: <reason>" and the loop continues.
+// the model sees "DENIED: <reason>" and the loop continues. On a
+// recovery request (Request.Recovery) it skips a call that may have
+// run: the model reads an OUTCOME_UNKNOWN result saying not to repeat
+// it, the reason appended (ADR 0032).
 func Deny(callID, reason string) Decision {
 	return Decision{CallID: callID, Kind: OutcomeDeny, Reason: reason}
 }
@@ -1072,11 +1075,14 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		if sp.wasStarted(s, c.ID) {
 			// Its handler started and gave no answer (core.ParkUnknown):
 			// the outcome is unknown, and the recovery ladder decides it
-			// (ADR 0032) — a keyed retry, the tool's Reconcile, a person.
+			// (ADR 0032) — a keyed retry (bounded), or a person. Not the
+			// tool's Reconcile: the abandoned handler may still be
+			// running (its Timeout passed, a cancel it ignores), and a
+			// system of record asked now could answer "missing" for an
+			// effect about to land — the rerun would be a second one.
 			var es []Entry
 			s.locked(func() {
-				rc := s.reconcileLocked(ctx, []core.ToolCallPart{c})
-				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, rc)
+				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, nil)
 			})
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {
@@ -2096,6 +2102,12 @@ func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) [
 			}
 			opts = append(opts, core.ApproveBy(c.ID, by, grant))
 		case OutcomeDeny:
+			if walk.requests[c.ID].Recovery {
+				// A skipped recovery request: the call may have run, so
+				// the model never reads "DENIED" — it would ask again.
+				opts = append(opts, core.ResolveError(c.ID, skippedResult(c.Name, d.Reason)))
+				continue
+			}
 			// A deny grant's refusal names its grant on the call's
 			// denied span (weft.tool.denied_by grant, weft.grant.id):
 			// reporting only, the denial is Deny's.

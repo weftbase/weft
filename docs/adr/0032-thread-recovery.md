@@ -133,7 +133,25 @@ its result after checking by hand. An edit is refused (`ErrInvalidDecision`):
 the call may have run with the original arguments, and different
 arguments under the same key would be rejected or deduplicated by the
 receiver. `ApproveAlways` is refused: a standing approval would let the
-call run again unasked.
+call run again unasked. A skip never reads "DENIED" to the model — that
+invites the model to ask again, and the call may have run (review
+P1-3): a denied recovery request resolves the call with the pinned
+error result `OUTCOME_UNKNOWN: tool "X" may have run; it was skipped,
+not retried: do not repeat it (skipped: <reason>)` (the parenthesis
+only when the decider gave a reason; an expiry's or an interrupt's
+denial reads the same way).
+
+**Bounded keyed retries (review P1-2).** The session's own retries of
+one call occurrence are capped at 3 — counted from the `recover`/`retry`
+audit steps after the step entry holding it, so the cap survives a
+restart — and a resume that carries the n-th (n ≥ 2) waits 100 ms ·
+2^(n-2) first (an interrupt cuts the wait short). Past the cap the call
+parks as a recovery request for a person, reason `outcome unknown: the
+session's automatic retries are spent; approve to retry it with the
+same idempotency key, deny to skip it`; a person's retry that ends
+unknown again comes straight back to a person. Without the cap a
+`Timeout` shorter than the provider looped (timeout → park → retry →
+timeout).
 
 **Rule E — audited like any decision.** The session's own retries are
 decision entries with a `recover` audit step (Outcome `retry`, Detail
@@ -222,8 +240,11 @@ carries it — such a call parks instead (no result; span
 `weft.tool.pending.source = outcome_unknown`) and the run ends at that
 boundary after its step, the step's other results kept. The session
 sends it down the ladder at the turn's end, in the turn's own append: a
-`ReplayKeyed` call is retried by the session under its same key, a
-`ReplayNever` call parks as a recovery request — an Interrupt's
+`ReplayKeyed` call is retried by the session under its same key (up to
+the bound above), a `ReplayNever` call parks as a recovery request —
+never reconciled here: the abandoned handler may still be running, and
+a system of record asked before it lands answers "missing" for an
+effect about to happen (review P1-1) — an Interrupt's
 follow-up waits behind it. A turn a Close fells is recorded cut off
 (for `RecoverTurn` in whichever process opens the session next), as a
 shutdown's is. A `ReplaySafe` call keeps the old texts: it can be run
@@ -267,9 +288,11 @@ The ladder is: keyed retry, then reconcile with the system of record,
 then a person (R4). A tool declares the second rung with
 `core.Reconcile(fn)`, `fn(ctx, key) (found bool, result string, err
 error)` — weft holds no store; the function is the tool's, and the same
-name serves the flow tier. It is asked for a `ReplayNever` call of
-unknown outcome only (a `ReplayKeyed` call retries first; a
-`ReplaySafe` one needs nothing), with the call's own idempotency key,
+name serves the flow tier. It is asked by `RecoverTurn` — after a
+crash or a shutdown, never for a handler this process abandoned and
+that may still be running — for a `ReplayNever` call of unknown outcome
+only (a `ReplayKeyed` call retries first; a `ReplaySafe` one needs
+nothing), with the call's own idempotency key,
 while the writer still holds the session's lock (`Fencer`), with the
 session's lock released, under a 30 s bound:
 

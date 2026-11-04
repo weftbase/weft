@@ -30,6 +30,7 @@ const (
 	reasonRetryKeyed     = "cut off: the call deduplicates on its idempotency key and is retried"
 	reasonSafeNotRerun   = "cut off: the call is ReplaySafe and is not run again; the model may ask for it again"
 	reasonNotStarted     = "cut off before it started: approve to run it, deny to skip it"
+	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
@@ -51,6 +52,64 @@ const (
 func safeNotRerunResult(tool string) string {
 	return fmt.Sprintf("tool call %s was cut off before it answered and was not run again; call it again if you still need its result", tool)
 }
+
+// skippedResult is the model-visible result of a recovery request a
+// person skipped (Deny): the call may have run, so it reads as an
+// unknown outcome not to repeat, with the decider's reason (pinned
+// bytes, ADR 0032).
+func skippedResult(tool, reason string) string {
+	out := fmt.Sprintf("%s: tool %q may have run; it was skipped, not retried: do not repeat it", core.CodeOutcomeUnknown, tool)
+	if reason != "" {
+		out += " (skipped: " + reason + ")"
+	}
+	return out
+}
+
+// maxAutoRetries bounds the session's own keyed retries of one call
+// occurrence (R12); past it the call waits for a person. The count is
+// the "retry" audit steps on file, so it survives a restart.
+const maxAutoRetries = 3
+
+// autoRetriesLocked counts the session's own retries of c's current
+// occurrence: the StepRecover "retry" audit entries for it after the
+// assistant entry holding it. Callers hold s.mu.
+func (s *Session) autoRetriesLocked(callID string) int {
+	i, ok := s.byID[s.callEntryLocked(callID)]
+	if !ok {
+		return 0
+	}
+	n := 0
+	for _, e := range s.order[i+1:] {
+		if a, ok := e.(ApprovalAuditEntry); ok && a.Step == StepRecover && a.Outcome == recoverRetry && a.CallID == callID {
+			n++
+		}
+	}
+	return n
+}
+
+// retryBackoffLocked is how long a resume waits before it runs: the
+// session's n-th automatic retry of a call (n ≥ 2) waits
+// retryBackoffBase·2^(n-2) — the first runs at once. Callers hold
+// s.mu.
+func (s *Session) retryBackoffLocked() time.Duration {
+	var wait time.Duration
+	walk := s.approvalWalkLocked()
+	for _, c := range s.danglingCallsLocked() {
+		_, ds := walk.occurrence(c.ID)
+		d, ok := effectiveDecision(ds, s.quorumOf(walk.requests[c.ID]))
+		if !ok || d.Outcome != OutcomeApprove || d.Via != viaRecovery {
+			continue
+		}
+		if n := s.autoRetriesLocked(c.ID); n >= 2 {
+			wait = max(wait, retryBackoffBase<<(n-2))
+		}
+	}
+	return wait
+}
+
+// retryBackoffBase is the first backoff between the session's own
+// keyed retries of one call.
+const retryBackoffBase = 100 * time.Millisecond
 
 // reconciled is what a tool's Reconcile said of one call (ADR 0032,
 // the ladder's second rung): found with its result, missing, or err.
@@ -751,6 +810,11 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 	case start == startUnknowable && def != nil && def.RequiresApproval():
 		// Its tool parks it before it starts: it never ran.
 		req.Recovery, req.Reason = false, parkingReason(s, c.Name)
+		return []Entry{req}
+	case policy == core.ReplayKeyed && start == startMaybe && s.autoRetriesLocked(c.ID) >= maxAutoRetries:
+		// Bounded (R12): the session's own retries are spent — a
+		// timeout shorter than the provider would loop for ever.
+		req.Reason = reasonRetriesSpent
 		return []Entry{req}
 	case policy == core.ReplayKeyed && start == startMaybe:
 		req.Reason = reasonRetryKeyed

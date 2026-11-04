@@ -305,7 +305,12 @@ turn never starts; and a call whose handler started but gave
 no answer — its `Timeout` passed, or an Interrupt, Rollback or cancel
 felled it — is never recorded "timed out" or "interrupted": it parks
 for the same ladder at the turn's end (keyed retry, or a recovery
-request), the step's other results kept.
+request — never a `Reconcile`, since the abandoned handler may still be
+running), the step's other results kept. The session's own keyed
+retries of one call are capped at 3 (on file, with a backoff); then a
+person decides. Skipping a recovery request (`Deny`) shows the model
+`OUTCOME_UNKNOWN: … it was skipped, not retried: do not repeat it`,
+never `DENIED`.
 
 A `Send`'s own run options are not on file: a continuation or a
 recovery resume runs under the session's run metadata and the

@@ -1106,6 +1106,19 @@ func (s *Session) runResume(item workItem) {
 	if t.wasInterrupted() {
 		cancel(t.interruptCause())
 	}
+	// The session's own repeated keyed retry of a call backs off
+	// (R12); an interrupt or a cancel cuts the wait short, and the run
+	// then starts nothing.
+	var backoff time.Duration
+	s.locked(func() { backoff = s.retryBackoffLocked() })
+	if backoff > 0 {
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-rctx.Done():
+			timer.Stop()
+		}
+	}
 	s.runTurn(persist, rctx, item, opts)
 }
 
