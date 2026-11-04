@@ -146,3 +146,37 @@ any cut-off run.
   `BreakLock`.
 - `ReplayKeyed` holds for a session's own calls; inside a `Subagent`,
   the `Subagent` tool's class decides (ADR 0031).
+
+## Amendment (2026-11-04 — never guess at dispatch: WR-4, WR-6)
+
+**The self-fence (WR-4).** Rule A's gate also asks the storage, with
+no write, whether this writer still holds the session's lock — before
+every call that is not `ReplaySafe`, not once per step: the optional
+`Fencer` capability (`Fence(ctx, session) error`). sqlite re-reads the
+lock row (one read); jsonl checks the locked file is still the
+session's file; the in-process lease is checked from memory. A writer
+whose lock was broken (`sqlite.BreakLock`), released or taken over
+since its step landed starts no side effect: the call fails closed with
+`ErrNotDispatched`.
+
+**Outcome unknown in a live process (WR-6).** A crash is not the only
+way to lose a call's answer. A call of a tool that is not `ReplaySafe`
+whose handler started and gave no answer of its own — its `Timeout`
+passed and the abandoned handler may still complete, or the run was
+canceled under it (an Interrupt or Rollback send, the turn's own
+context, a Close) — has an unknown outcome too. The core never states
+otherwise: without a caller's ladder its result is the pinned error
+`OUTCOME_UNKNOWN: tool "X" did not answer within D; it may still
+complete; outcome unknown` (or `… was cut off before it answered; it
+may have run; outcome unknown`), never "timed out", "context canceled"
+or "interrupted". Under `core.ParkUnknown()` — every session turn
+carries it — such a call parks instead (no result; span
+`weft.tool.pending.source = outcome_unknown`) and the run ends at that
+boundary after its step, the step's other results kept. The session
+sends it down the ladder at the turn's end, in the turn's own append: a
+`ReplayKeyed` call is retried by the session under its same key, a
+`ReplayNever` call parks as a recovery request — an Interrupt's
+follow-up waits behind it. A turn a Close fells is recorded cut off
+(for `RecoverTurn` in whichever process opens the session next), as a
+shutdown's is. A `ReplaySafe` call keeps the old texts: it can be run
+again.

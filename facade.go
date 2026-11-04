@@ -682,6 +682,14 @@ const CodeRetry = core.CodeRetry
 // sees the code through the chain, not who returned it.
 func ModelRetry(hint string) error { return core.ModelRetry(hint) }
 
+// CodeOutcomeUnknown is the code a call's result starts with when its
+// outcome is unknown (ADR 0032): a tool that is not ReplaySafe started
+// and gave no answer of its own — its Timeout passed and the abandoned
+// handler may still complete, or the run was canceled under it. The
+// result never says the call failed, timed out or was interrupted as
+// if that were known.
+const CodeOutcomeUnknown = core.CodeOutcomeUnknown
+
 // Event is the sealed set of run progress events, yielded by Run.Events in
 // emission order. New event types may be added additively; external types
 // cannot join, so switches over events stay exhaustively lintable.
@@ -1627,6 +1635,19 @@ type DispatchFunc = core.DispatchFunc
 // a Subagent's child run nor a CallTool from inside the handler
 // inherits it. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return core.BeforeDispatch(fn) }
+
+// ParkUnknown returns the RunOption that parks a call whose outcome is
+// unknown instead of answering it (ADR 0032): a call of a tool that is
+// not ReplaySafe whose handler started and gave no answer of its own —
+// its Timeout passed, or the run was canceled under it. Without it the
+// call's result is the pinned error "OUTCOME_UNKNOWN: …" (Code
+// CodeOutcomeUnknown) the model reads; with it the call lands on
+// RunResult.Pending with no result (weft.tool.pending.source
+// outcome_unknown), and the run ends at that boundary after its step,
+// the other calls' results kept — for a caller that resolves it by a
+// ladder (weft/thread: a keyed retry, the tool's Reconcile, a person).
+// A Subagent's child run does not inherit it.
+func ParkUnknown() RunOption { return core.ParkUnknown() }
 
 // Prompt adds a user message to the run's input.
 func Prompt(text string) RunOption { return core.Prompt(text) }

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/core/wefttest"
@@ -128,5 +130,49 @@ func TestBeforeDispatchGate(t *testing.T) {
 	}
 	if refused == nil || !refused.IsError || !strings.Contains(refused.Content, "step not durable") {
 		t.Fatalf("refused call's result = %+v", refused)
+	}
+}
+
+// WR-6: a call with an effect whose handler outlives its Timeout has
+// an unknown outcome: the result says so (OUTCOME_UNKNOWN), never
+// "timed out" as if it had not happened — the abandoned handler may
+// still complete. A ReplaySafe tool keeps the timeout text. Under
+// ParkUnknown the risky call parks instead, the others' results kept.
+func TestTimeoutIsAnUnknownOutcome(t *testing.T) {
+	var done atomic.Int32
+	slow := func(name string, opts ...core.ToolOption) *core.ToolDef {
+		return core.Tool(name, "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+			time.Sleep(60 * time.Millisecond) // ignores ctx: the effect lands after the deadline
+			done.Add(1)
+			return "ok", nil
+		}, append(opts, core.Timeout(10*time.Millisecond))...)
+	}
+	script := func() core.Model {
+		return wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{}`}, wefttest.Call{Name: "read", ID: "c2", Args: `{}`}),
+			wefttest.Say("next"),
+		)
+	}
+	agent := core.New(script(), slow("pay"), slow("read", core.Replay(core.ReplaySafe)))
+	res, err := agent.Generate(context.Background(), core.Prompt("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := res.Steps[0].Results[0]; !r.IsError || !strings.HasPrefix(r.Content, core.CodeOutcomeUnknown+`: tool "pay" did not answer within 10ms`) {
+		t.Fatalf("risky result = %+v", r)
+	}
+	if r := res.Steps[0].Results[1]; !strings.Contains(r.Content, "timed out after 10ms") {
+		t.Fatalf("safe result = %+v", r)
+	}
+	res, err = core.New(script(), slow("pay"), slow("read", core.Replay(core.ReplaySafe))).Generate(context.Background(), core.Prompt("go"), core.ParkUnknown())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Pending) != 1 || res.Pending[0].ID != "c1" {
+		t.Fatalf("under ParkUnknown: pending %+v", res.Pending)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if done.Load() != 4 {
+		t.Fatalf("handlers completed %d times, want 4 (each one, late)", done.Load())
 	}
 }

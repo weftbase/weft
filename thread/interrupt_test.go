@@ -6,6 +6,7 @@ import (
 	"iter"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -393,7 +394,7 @@ func TestInterruptDuringCtxIgnoringTool(t *testing.T) {
 	hang := core.Tool("hang", "", func(_ context.Context, _ struct{}) (string, error) {
 		<-make(chan struct{}) // ignores ctx outright
 		return "never", nil
-	}, core.Timeout(50*time.Millisecond))
+	}, core.Timeout(50*time.Millisecond), core.Replay(core.ReplaySafe)) // a risky one parks for recovery: TestInterruptDuringARiskyCall
 	model := wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "hang"}),
 		wefttest.Say("through"),
@@ -823,7 +824,7 @@ func TestInterruptCancelsWithTypedCause(t *testing.T) {
 				<-ctx.Done()
 				causes <- context.Cause(ctx)
 				return "", ctx.Err()
-			})
+			}, core.Replay(core.ReplaySafe)) // a cause probe; a risky call parks for recovery (TestInterruptDuringARiskyCall)
 			model := wefttest.Script(wefttest.ToolCalls(wefttest.Call{Name: "wait"}), wefttest.Say("next"))
 			s, err := thread.Create(ctx, thread.Memory(), core.New(model, wait), thread.BusyPolicy(tc.policy))
 			if err != nil {
@@ -859,5 +860,73 @@ func TestInterruptCancelsWithTypedCause(t *testing.T) {
 				t.Errorf("context.Cause = %v, want kind %s", cause, tc.want)
 			}
 		})
+	}
+}
+
+// WR-6: an Interrupt felling a call with an effect whose handler gave
+// no answer does not record it "interrupted" as if it had not run: its
+// outcome is unknown, so it parks as a recovery request (approve to
+// retry with the same key, deny to skip) and the follow-up waits
+// behind that boundary; the turn's other results are kept. A
+// ReplayKeyed call is retried by the session on its own.
+func TestInterruptDuringARiskyCall(t *testing.T) {
+	ctx := context.Background()
+	inPay := make(chan struct{})
+	var paid atomic.Int32
+	pay := core.Tool("pay", "", func(ctx context.Context, _ struct{}) (string, error) {
+		paid.Add(1)
+		close(inPay)
+		<-ctx.Done() // paid; waiting on the network
+		return "", ctx.Err()
+	})
+	read := core.Tool("read", "", func(context.Context, struct{}) (string, error) { return "read", nil }, core.Replay(core.ReplaySafe))
+	model := wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "read", ID: "r1"}, wefttest.Call{Name: "pay", ID: "p1"}),
+		wefttest.Say("skipped the payment"),
+		wefttest.Say("the follow-up"),
+	)
+	s, err := thread.Create(ctx, thread.Memory(), core.New(model, read, pay), thread.BusyPolicy(thread.Interrupt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1, err := s.Send(ctx, core.User("pay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-inPay
+	t2, err := s.Send(ctx, core.User("stop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := t1.Wait(); err == nil {
+		t.Fatal("the interrupted turn reported success")
+	}
+	p := s.Pending()
+	if len(p) != 1 || p[0].CallID != "p1" || !p[0].Recovery {
+		t.Fatalf("Pending = %+v, want the payment as a recovery request", p)
+	}
+	path, err := s.Path(s.Leaf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range path {
+		me, ok := e.(thread.MessageEntry)
+		if !ok {
+			continue
+		}
+		for _, part := range me.Message.Content {
+			if r, ok := part.(core.ToolResultPart); ok && r.CallID == "p1" {
+				t.Fatalf("the payment's result was recorded: %q", r.Content)
+			}
+		}
+	}
+	if _, err := s.Decide(ctx, thread.Deny("p1", "checked: not charged")); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := t2.Wait(); err != nil || res.Text() != "the follow-up" {
+		t.Fatalf("follow-up = %v, %v", res, err)
+	}
+	if paid.Load() != 1 {
+		t.Fatalf("paid %d times", paid.Load())
 	}
 }

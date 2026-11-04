@@ -271,7 +271,7 @@ func ExampleTimeout() {
 	fmt.Println(res.Steps[0].Results[0].Content)
 	fmt.Println(res.Text())
 	// Output:
-	// tool "slow" timed out after 10ms
+	// OUTCOME_UNKNOWN: tool "slow" did not answer within 10ms; it may still complete; outcome unknown
 	// It did not answer in time.
 }
 

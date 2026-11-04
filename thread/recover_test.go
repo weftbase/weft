@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -669,6 +670,86 @@ func TestZombieWorkerAgainstRecovery(t *testing.T) {
 				t.Fatalf("the zombie's handler ran %d times", n)
 			}
 			_ = bs2.Close(bg)
+		})
+	}
+}
+
+// WR-6 under a session: a call with an effect whose handler outlives
+// its Timeout has an unknown outcome. The session does not hand the
+// model a guess: a ReplayNever call parks as a recovery request (the
+// turn ends at that boundary, the step's other results kept), and a
+// ReplayKeyed one is retried at once under its same key. Both
+// backends, the recovery request across a restart.
+func TestTimeoutParksForRecovery(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			var mu sync.Mutex
+			keys := map[string][]string{}
+			slow := func(name string, opts ...core.ToolOption) *core.ToolDef {
+				return core.Tool(name, "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+					c, _ := core.CallFromContext(ctx)
+					mu.Lock()
+					keys[name] = append(keys[name], c.IdempotencyKey)
+					n := len(keys[name])
+					mu.Unlock()
+					if n == 1 {
+						<-ctx.Done() // the first attempt never answers in time
+						return "", ctx.Err()
+					}
+					return name + " ok", nil
+				}, append(opts, core.Timeout(20*time.Millisecond))...)
+			}
+			tools := func() []core.Option {
+				return []core.Option{slow("pay"), slow("ship", core.Replay(core.ReplayKeyed)),
+					core.Tool("read", "Read.", func(context.Context, struct{}) (string, error) { return "read ok", nil }, core.Replay(core.ReplaySafe))}
+			}
+			st := b.open(t)
+			s, err := thread.Create(bg, st, core.New(wefttest.Script(
+				wefttest.ToolCalls(
+					wefttest.Call{Name: "read", ID: "r", Args: `{}`},
+					wefttest.Call{Name: "pay", ID: "p", Args: `{}`},
+					wefttest.Call{Name: "ship", ID: "s", Args: `{}`},
+				),
+			), tools()...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn, err := s.Send(bg, core.User("go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := turn.Wait()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if toolResult(res, "r") != "read ok" {
+				t.Fatalf("the safe call's result was not kept: %+v", res.Messages)
+			}
+			p := s.Pending()
+			if len(p) != 1 || p[0].CallID != "p" || !p[0].Recovery {
+				t.Fatalf("Pending = %+v, want the payment as a recovery request", p)
+			}
+			id := s.ID()
+			st = restart(t, b, st, id)
+			s2, err := thread.Open(bg, st, id, core.New(wefttest.Script(wefttest.Say("done")), tools()...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s2.Close(bg) }()
+			rt, err := s2.Decide(bg, thread.Approve("p"))
+			if err != nil || rt == nil {
+				t.Fatalf("Decide = %v, %v", rt, err)
+			}
+			if res, err := rt.Wait(); err != nil || res.Text() != "done" {
+				t.Fatalf("resume = %v, %v", res, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, name := range []string{"pay", "ship"} {
+				if k := keys[name]; len(k) != 2 || k[0] != k[1] {
+					t.Fatalf("%s keys = %v, want one key twice", name, k)
+				}
+			}
 		})
 	}
 }

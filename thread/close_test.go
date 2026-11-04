@@ -279,11 +279,13 @@ func TestCloseContextEndCancelsTheTurn(t *testing.T) {
 	if n := st.released.Load(); n != 1 {
 		t.Errorf("Release calls = %d, want 1", n)
 	}
-	// The canceled turn is on the record, the queued prompt is not,
-	// and the model was called exactly once.
+	// The felled turn is on the record — cut off, not canceled: its
+	// tool is not ReplaySafe and its handler gave no answer, so its
+	// outcome is unknown (ADR 0032) — the queued prompt is not, and
+	// the model was called exactly once.
 	var canceled int
 	for _, e := range s.Entries() {
-		if te, ok := e.(thread.TurnEntry); ok && te.Canceled {
+		if te, ok := e.(thread.TurnEntry); ok && te.CutOff && !te.Canceled {
 			canceled++
 		}
 	}

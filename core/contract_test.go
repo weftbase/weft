@@ -3077,7 +3077,7 @@ func TestSubagentTimeoutClosesNesting(t *testing.T) {
 			}
 		case core.ToolFinish:
 			finishIdx = i
-			if want := `tool "research" timed out after 50ms`; e.Content != want {
+			if want := `OUTCOME_UNKNOWN: tool "research" did not answer within 50ms; it may still complete; outcome unknown`; e.Content != want {
 				t.Errorf("content = %q, want %q", e.Content, want)
 			}
 		}
@@ -6896,8 +6896,8 @@ func TestToolTimeoutReadsTheDeadlineFirst(t *testing.T) {
 		fails("mw_is", errors.New("handler's")),
 	}
 	cases := []struct{ tool, want, errType, layer string }{
-		{"park_and_deadline", `tool "park_and_deadline" timed out after 20ms`, "timeout", ""},
-		{"deadline_msg_panics", `tool "deadline_msg_panics" timed out after 20ms`, "timeout", ""},
+		{"park_and_deadline", `OUTCOME_UNKNOWN: tool "park_and_deadline" did not answer within 20ms; it may still complete; outcome unknown`, "timeout", ""},
+		{"deadline_msg_panics", `OUTCOME_UNKNOWN: tool "deadline_msg_panics" did not answer within 20ms; it may still complete; outcome unknown`, "timeout", ""},
 		{"msg_panics", `tool "msg_panics" panicked: panicMsgErr.Error`, "panic", "handler"},
 		{"is_panics", `tool "is_panics" panicked: panicIsErr.Is`, "panic", "handler"},
 		{"mw_is", `tool "mw_is" panicked: panicIsErr.Is`, "panic", "middleware"},

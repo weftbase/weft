@@ -7,6 +7,7 @@ import (
 	"iter"
 	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -1178,6 +1179,10 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		// Rule A (ADR 0032): a call that is not ReplaySafe starts only
 		// once the step entry holding it is durable.
 		runOpts = append(runOpts, s.dispatchGate(persist, sp))
+		// A started call with an effect that gives no answer parks
+		// instead of reading as failed (ADR 0032, WR-6): the recovery
+		// ladder decides it at the turn's end.
+		runOpts = append(runOpts, core.ParkUnknown())
 		// The session's identity rides every run (ADR 0024 S5), appended
 		// after the caller's options and before the transcript — a later
 		// core.Metadata wins (S1.1), so the session's keys win over a
@@ -1269,6 +1274,19 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		break
 	}
 	shutdown := err != nil && shutdownOf(ctx, t)
+	// A run that ended under a cancellation — an interrupt, its own
+	// context, a Close — with calls the gate let start and that gave no
+	// answer: their outcome is unknown. Under a Close the session is
+	// going away, so the turn is recorded cut off for RecoverTurn, as a
+	// shutdown's; otherwise the ladder decides them now (the chain
+	// below), and the turn's other results are kept.
+	var unknown []core.ToolCallPart
+	if err != nil {
+		unknown = s.startedUnanswered(err, sp)
+		if len(unknown) > 0 && !shutdown && closedOf(t) {
+			shutdown = true
+		}
+	}
 	if t.wasInterrupted() && err != nil && !shutdown {
 		// (A shutdown keeps its calls of unknown outcome unanswered:
 		// RecoverTurn reads them.) The interrupted partial carries completions for its dangling
@@ -1277,7 +1295,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		// sees why a call has no answer. The completion is made on a
 		// copy: the core's own RunError and its Result belong to the
 		// run — its observers may still hold them.
-		err = withInterruptedPartial(err)
+		err = withInterruptedPartial(err, unknown)
 	}
 	// The transcript recorded is the last attempt's; the error reported
 	// names both attempts when the re-run failed too.
@@ -1292,12 +1310,19 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// and the request is not.
 	var chain *chainResult
 	if err == nil && res != nil && len(res.Pending) > 0 {
-		chain = s.runChain(persist, t, callerOpts, res.Pending)
+		chain = s.runChain(persist, t, callerOpts, res.Pending, sp)
 	}
-	if shutdown {
+	if err != nil && !shutdown && len(unknown) > 0 {
+		chain = s.runChain(persist, t, callerOpts, unknown, sp)
+	}
+	if shutdown && shutdownOf(ctx, t) {
 		report = fmt.Errorf("%w: %w", ErrShutdown, report)
 	}
-	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp, shutdown: shutdown})
+	var keep []core.ToolCallPart // unanswered on the line, for the chain
+	if !shutdown {
+		keep = unknown
+	}
+	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp, shutdown: shutdown, unknown: keep})
 	// Steers still live when the run ended defer here: the run met a
 	// StopWhen end or parked approvals without draining them, or they
 	// arrived after the last drain point. The follow-ups join the send
@@ -1400,13 +1425,13 @@ func (s *Session) recordAttemptLocked(ctx context.Context, t *Turn, overflow err
 // transcript completed for an interrupted turn — every dangling call
 // answered with the interruption text — on a copy: the *core.RunError
 // the core returned and its Result are left as the run made them.
-func withInterruptedPartial(err error) error {
+func withInterruptedPartial(err error, keep []core.ToolCallPart) error {
 	var runErr *core.RunError
 	if !errors.As(err, &runErr) || error(runErr) != err || runErr.Result == nil {
 		return err
 	}
 	res := *runErr.Result
-	res.Messages = withInterruptedResults(runErr.Result.Messages)
+	res.Messages = withInterruptedResults(runErr.Result.Messages, keep)
 	return &core.RunError{Step: runErr.Step, Err: runErr.Err, Result: &res}
 }
 
@@ -1623,6 +1648,9 @@ type turnEnd struct {
 	// shutdown records the turn cut off (ErrShutdown) instead of
 	// canceled.
 	shutdown bool
+	// unknown are the calls of unknown outcome the chain parks for
+	// recovery: left unanswered on the line, on the turn's Pending.
+	unknown []core.ToolCallPart
 }
 
 // recordTurnEnd closes the turn: it appends the run's new messages
@@ -1723,6 +1751,14 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	}
 	repairErr := err
 	var unsettled []core.ToolCallPart
+	if len(end.unknown) > 0 && err != nil {
+		// The calls of unknown outcome stay unanswered for the
+		// recovery requests the chain writes; every other call the
+		// run left without a result reads interrupted, as before.
+		full = withInterruptedResults(full, end.unknown)
+		repairErr = nil
+		unsettled = slices.Clone(end.unknown)
+	}
 	if end.shutdown {
 		// A shutdown keeps every call of unknown outcome unanswered —
 		// not ReplaySafe, and without a result its handler produced in
@@ -1799,6 +1835,8 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	if end.shutdown {
 		// Not abandoned: stopped, and recoverable (RecoverTurn).
 		te.Canceled, te.CutOff = false, true
+		te.Pending = append(te.Pending, unsettled...)
+	} else if len(end.unknown) > 0 {
 		te.Pending = append(te.Pending, unsettled...)
 	}
 	entries = append(entries, te)
@@ -2484,4 +2522,44 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 		out = append(out, core.Message{Role: core.RoleTool, Content: keptResults})
 	}
 	return out, unsettled
+}
+
+// startedUnanswered returns the calls of a failed run's last step that
+// the dispatch gate let start and that have no result of their own:
+// parked by core.ParkUnknown, their outcome unknown (ADR 0032, WR-6).
+func (s *Session) startedUnanswered(err error, sp *stepPersist) []core.ToolCallPart {
+	var runErr *core.RunError
+	if sp == nil || !errors.As(err, &runErr) || runErr.Result == nil {
+		return nil
+	}
+	msgs := runErr.Result.Messages
+	ai := -1
+	for i := len(msgs) - 1; i >= 0 && ai < 0; i-- {
+		if msgs[i].Role == core.RoleAssistant && hasToolCall(msgs[i]) {
+			ai = i
+		}
+	}
+	if ai < 0 {
+		return nil
+	}
+	answered := map[string]bool{}
+	for j := ai + 1; j < len(msgs) && msgs[j].Role == core.RoleTool; j++ {
+		for _, p := range msgs[j].Content {
+			if r, ok := p.(core.ToolResultPart); ok {
+				answered[r.CallID] = true
+			}
+		}
+	}
+	var out []core.ToolCallPart
+	for _, p := range msgs[ai].Content {
+		if c, ok := p.(core.ToolCallPart); ok && !answered[c.ID] && sp.wasStarted(s, c.ID) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// closedOf reports whether the session's Close felled the turn.
+func closedOf(t *Turn) bool {
+	return t.wasInterrupted() && errors.Is(t.interruptCause(), causeClosed)
 }

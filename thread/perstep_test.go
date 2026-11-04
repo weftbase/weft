@@ -244,7 +244,7 @@ func TestPerStepFailedTailRewritten(t *testing.T) {
 		hang := core.Tool("hang", "Block until canceled.", func(ctx context.Context, _ struct{}) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err() // the bare cancellation noise
-		})
+		}, core.Replay(core.ReplaySafe)) // the golden text is a safe call's; a risky one parks for recovery
 		started := make(chan struct{})
 		var once sync.Once
 		agent := core.New(m, hang, core.Tap(func(_ context.Context, ev core.Event) {

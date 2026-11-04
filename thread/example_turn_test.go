@@ -27,7 +27,7 @@ func slowTool(name string) (tool *weft.ToolDef, started, release chan struct{}) 
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
-	})
+	}, weft.Replay(weft.ReplaySafe))
 	return tool, started, release
 }
 

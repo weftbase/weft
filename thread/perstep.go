@@ -70,13 +70,30 @@ type stepPersist struct {
 	// idempotency key and dispatch marker name only an entry from here
 	// — never an older message that reused the call id.
 	calls map[string]string
+	// started holds the calls the dispatch gate let start — not
+	// ReplaySafe, their step on file: a started call with no answer of
+	// its own has an unknown outcome (ADR 0032). Keyed by the entry
+	// holding the call and the call id — one occurrence, never a later
+	// call that reuses the id. Guarded by s.mu.
+	started map[string]bool
+}
+
+// wasStarted reports whether the gate let callID start in this
+// attempt. A nil sp started nothing.
+func (sp *stepPersist) wasStarted(s *Session, callID string) bool {
+	if sp == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sp.started[sp.calls[callID]+"\x00"+callID]
 }
 
 // newStepPersistLocked starts an attempt's per-step state at the leaf;
 // a resume attempt knows its boundary's calls from the start. Callers
 // hold s.mu.
 func (s *Session) newStepPersistLocked(resume bool) *stepPersist {
-	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}}
+	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}}
 	if resume {
 		for _, c := range s.danglingCallsLocked() {
 			if e := s.callEntryLocked(c.ID); e != "" {

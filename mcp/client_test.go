@@ -374,7 +374,7 @@ func TestToolsAppliesPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Messages[len(res.Messages)-2].Content[0].(core.ToolResultPart).Content, `tool "slow" timed out after`) {
+	if !strings.Contains(res.Messages[len(res.Messages)-2].Content[0].(core.ToolResultPart).Content, `OUTCOME_UNKNOWN: tool "slow" did not answer within`) {
 		t.Errorf("timeout result = %+v", res.Messages[len(res.Messages)-2].Content[0])
 	}
 

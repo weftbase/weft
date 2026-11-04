@@ -1988,6 +1988,22 @@ func (w *leased) Append(ctx context.Context, session string, entries ...Entry) e
 	return nil
 }
 
+// Fence is the writer's self-fence (Fencer): its lease, from memory —
+// another Session on this Storage value, or a session written behind
+// its view — then the backend's own lock, read now when the backend
+// offers Fencer.
+func (w *leased) Fence(ctx context.Context, session string) error {
+	if session == w.session {
+		if err := w.acquire(ctx); err != nil {
+			return err
+		}
+	}
+	if f, ok := w.Storage.(Fencer); ok {
+		return f.Fence(ctx, session)
+	}
+	return nil
+}
+
 // Flush passes the Flusher capability through the lease: the append
 // sites find it on s.st by type assertion. A storage without it has
 // nothing to flush.

@@ -51,7 +51,7 @@ func TestToolTimeout(t *testing.T) {
 		if !results[i].IsError {
 			t.Errorf("result %d should be a timeout error, got %q", i, results[i].Content)
 		}
-		if want := `timed out after 20ms`; !strings.Contains(results[i].Content, want) {
+		if want := `did not answer within 20ms; it may still complete; outcome unknown`; !strings.Contains(results[i].Content, want) {
 			t.Errorf("result %d = %q, want it to contain %q", i, results[i].Content, want)
 		}
 	}
@@ -85,7 +85,7 @@ func TestAgentTimeoutIsTheDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := res.Steps[0].Results
-	if !results[0].IsError || !strings.Contains(results[0].Content, "timed out after 10ms") {
+	if !results[0].IsError || !strings.Contains(results[0].Content, "OUTCOME_UNKNOWN: tool \"inherits\" did not answer within 10ms") {
 		t.Errorf("tool under the agent default = %+v", results[0])
 	}
 	if results[1].IsError || results[1].Content != "done" {
@@ -119,7 +119,7 @@ func TestTimeoutZeroOnToolLiftsAgentDefault(t *testing.T) {
 	if results[0].IsError || results[0].Content != "done" {
 		t.Errorf("Timeout(0) tool = %+v, want it exempt from the agent default", results[0])
 	}
-	if !results[1].IsError || !strings.Contains(results[1].Content, "timed out after 20ms") {
+	if !results[1].IsError || !strings.Contains(results[1].Content, "OUTCOME_UNKNOWN: tool \"inherits\" did not answer within 20ms") {
 		t.Errorf("tool without its own timeout = %+v, want the agent default", results[1])
 	}
 	// The manifest records the explicit lift, like max_result_bytes: 0.

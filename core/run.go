@@ -54,6 +54,9 @@ type runConfig struct {
 	// dispatch is BeforeDispatch's gate; nil on an ordinary run, never
 	// inherited by a child run.
 	dispatch DispatchFunc
+	// parkUnknown parks a call whose outcome is unknown instead of
+	// answering it (ParkUnknown); never inherited by a child run.
+	parkUnknown bool
 	// metadata is the run's own caller pairs, merged across its Metadata
 	// options (later key winning); execute overlays it on the context's
 	// inherited metadata before any span starts (metadata.go).
@@ -464,6 +467,7 @@ const (
 	parkBySource     = "park_source"     // an agent ParkSource (a breakpoint)
 	parkByParkAll    = "park_all_except" // ParkAllExcept, the run's or inherited
 	parkByMiddleware = "middleware"      // ErrApprovalRequired from a tool middleware or the handler
+	parkByUnknown    = "outcome_unknown" // ParkUnknown: a started call with an effect gave no answer
 )
 
 // parkedBy names why the rule parks a call to the named tool, "" when
@@ -662,6 +666,23 @@ func (o dispatchOption) applyRun(c *runConfig) {
 // a Subagent's child run nor a CallTool from inside the handler
 // inherits it. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return dispatchOption{fn} }
+
+type parkUnknownOption struct{}
+
+func (parkUnknownOption) applyRun(c *runConfig) { c.parkUnknown = true }
+
+// ParkUnknown returns the RunOption that parks a call whose outcome is
+// unknown instead of answering it (ADR 0032): a call of a tool that is
+// not ReplaySafe whose handler started and gave no answer of its own —
+// its Timeout passed, or the run was canceled under it. Without it the
+// call's result is the pinned error "OUTCOME_UNKNOWN: …" (Code
+// CodeOutcomeUnknown) the model reads; with it the call lands on
+// RunResult.Pending with no result (weft.tool.pending.source
+// outcome_unknown), and the run ends at that boundary after its step,
+// the other calls' results kept — for a caller that resolves it by a
+// ladder (weft/thread: a keyed retry, the tool's Reconcile, a person).
+// A Subagent's child run does not inherit it.
+func ParkUnknown() RunOption { return parkUnknownOption{} }
 
 type dispatchKey struct{}
 

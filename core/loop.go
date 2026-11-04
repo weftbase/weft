@@ -751,7 +751,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 			}
 		default:
 			var retried []string
-			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch)
+			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch, cfg.parkUnknown)
 			for _, name := range retried {
 				state.retries[name]++
 			}
@@ -1225,7 +1225,7 @@ func (a *Agent) modelInfo() ModelInfo { return InfoOf(a.model) }
 // rec is the run's recorder, told each call's truncation before its
 // ToolFinish is emitted (the tool_finish record's
 // weft.tool.truncated_bytes); nil records nothing.
-func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
+func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc, parkUnknown bool) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
 	outcomes := make([]ToolResultPart, len(calls))
 	parked := make([]bool, len(calls))
 	sem := make(chan struct{}, parallelism)
@@ -1354,6 +1354,9 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			if dispatch != nil {
 				callCtx = withDispatch(callCtx, dispatch)
 			}
+			if parkUnknown {
+				callCtx = withParkUnknown(callCtx)
+			}
 			// The tool call's own reporting: one execute_tool span, on the
 			// handler's context — a span the handler starts is its child,
 			// and a child run's invoke_agent hangs under it — ended with
@@ -1464,7 +1467,7 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 			approved = append(approved, c)
 		}
 	}
-	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch)
+	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch, cfg.parkUnknown)
 	byID := make(map[string]ToolResultPart, len(ran))
 	for _, r := range ran {
 		byID[r.CallID] = r
@@ -1797,6 +1800,7 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 				panic(p)
 			}
 		}()
+		mark.enter()
 		out, err := def.invoke(ctx, call.Args, strict)
 		mark.returning(err)
 		return out, err
@@ -1878,6 +1882,19 @@ func (a *Agent) callTool(ctx context.Context, call ToolCallPart, def *ToolDef, p
 				park = parkByMiddleware
 			}
 			return res, park, false, 0, toolFailure{}
+		}
+		if text, unknown := outcomeUnknown(ctx, call, def, fail, mark, timeout); unknown {
+			// A call with an effect whose handler started and gave no
+			// answer of its own: its outcome is unknown, and the result
+			// says exactly that (ADR 0032, WR-6) — or, under
+			// ParkUnknown, the call parks for its caller's ladder.
+			if parkUnknownFrom(ctx) {
+				return res, parkByUnknown, false, 0, toolFailure{}
+			}
+			fail.text = text
+			res.IsError = true
+			res.Content = text
+			return res, "", false, 0, fail
 		}
 		res.IsError = true
 		res.Content = fail.text
@@ -2085,6 +2102,10 @@ type handlerMark struct {
 	// err is the error the handler last returned (nil: none, or it
 	// never returned).
 	err error
+	// entered: the call passed every middleware, the approval check
+	// and the dispatch gate, and its handler was called — it may have
+	// taken effect.
+	entered bool
 	// wantStack, when set, is asked once a panic is recovered: true
 	// under the development detail level with content on, and the
 	// containment keeps the panicking goroutine's stack (the
@@ -2097,6 +2118,18 @@ func (m *handlerMark) note(p any) {
 	m.mu.Lock()
 	m.panicked, m.value = true, p
 	m.mu.Unlock()
+}
+
+func (m *handlerMark) enter() {
+	m.mu.Lock()
+	m.entered = true
+	m.mu.Unlock()
+}
+
+func (m *handlerMark) wasEntered() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.entered
 }
 
 func (m *handlerMark) park(by string) {
@@ -2240,4 +2273,35 @@ func capResultN(s string, resultCap int) (string, int) {
 		cut--
 	}
 	return s[:cut] + fmt.Sprintf("\n…[truncated %d bytes]", len(s)-cut), len(s) - cut
+}
+
+// outcomeUnknown reports whether a failed call's outcome is unknown,
+// and the pinned text the model reads for it (ADR 0032, WR-6): a tool
+// that is not ReplaySafe whose handler started and gave no answer of
+// its own — its Timeout passed (the handler is abandoned and may still
+// complete), or the run was canceled under it (a cancel, an interrupt,
+// a close). A failure the handler returned while the run was live is
+// its own answer and keeps its words.
+func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail toolFailure, mark *handlerMark, timeout time.Duration) (string, bool) {
+	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
+		return "", false
+	}
+	if _, ok := errors.AsType[*toolTimeoutError](fail.err); ok {
+		return fmt.Sprintf("%s: tool %q did not answer within %s; it may still complete; outcome unknown", CodeOutcomeUnknown, call.Name, timeout), true
+	}
+	if ctx.Err() != nil {
+		return fmt.Sprintf("%s: tool %q was cut off before it answered; it may have run; outcome unknown", CodeOutcomeUnknown, call.Name), true
+	}
+	return "", false
+}
+
+type parkUnknownKey struct{}
+
+func withParkUnknown(ctx context.Context) context.Context {
+	return context.WithValue(ctx, parkUnknownKey{}, true)
+}
+
+func parkUnknownFrom(ctx context.Context) bool {
+	on, _ := ctx.Value(parkUnknownKey{}).(bool)
+	return on
 }

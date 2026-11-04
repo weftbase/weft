@@ -289,6 +289,16 @@ leave it). `s.RecoverTurn(ctx)` then handles the turn once:
 | during a resume, before its results landed | its approved calls of unknown outcome park again the same way; the rest keep their decisions |
 | after its final answer, before its end | writes the end; runs nothing |
 
+The same never-guess rule holds while the process lives (ADR 0032,
+WR-4 and WR-6): before each call that is not `ReplaySafe` the writer
+checks it still holds the session's lock (`thread.Fencer`: sqlite reads
+the lock row, jsonl checks its file) and starts nothing after a
+`BreakLock` or a takeover; and a call whose handler started but gave
+no answer — its `Timeout` passed, or an Interrupt, Rollback or cancel
+felled it — is never recorded "timed out" or "interrupted": it parks
+for the same ladder at the turn's end (keyed retry, or a recovery
+request), the step's other results kept.
+
 A `Send`'s own run options are not on file: a continuation or a
 recovery resume runs under the session's run metadata and the
 boundary's recorded settings. A gate that must hold after a crash

@@ -137,6 +137,20 @@ type Releaser interface {
 	Release(ctx context.Context, session string) error
 }
 
+// Fencer is the optional Storage capability a writer asks, with no
+// write, whether it still holds a session's lock — read from the
+// backend's lock state now, not from memory (ADR 0032, rule A; WR-4).
+// A Session asks it before every call that is not core.ReplaySafe: a
+// writer whose lock another process broke or took over starts no side
+// effect. Fence returns nil while this Storage value holds the session,
+// ErrLocked once another holder has it, ErrNotFound for a session
+// deleted since. sqlite re-reads the lock row (one read); jsonl checks
+// the locked file is still the session's file; a backend without the
+// capability has no lock to lose beyond its lease.
+type Fencer interface {
+	Fence(ctx context.Context, session string) error
+}
+
 // Leaser is the optional Storage capability that makes the one-writer
 // rule hold between Session values sharing one Storage value — the
 // same small-interface rule. The backend's own lock tells Storage

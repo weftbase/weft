@@ -68,11 +68,22 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist) core.RunOpt
 		if entry == "" {
 			return fmt.Errorf("call %q is not in this run's recorded steps", c.CallID)
 		}
+		// The self-fence (WR-4): the writer still holds the session's
+		// lock, read now — a writer whose lock was broken or taken over
+		// since its step landed starts nothing.
+		if f, ok := s.st.(Fencer); ok {
+			if err := f.Fence(ctx, s.header.ID); err != nil {
+				s.agent.Logger().Warn("thread: this writer no longer holds the session; the call is not run",
+					"session", s.header.ID, "run", c.RunID, "call", c.CallID, "err", err)
+				return fmt.Errorf("the session's lock is not held: %w", err)
+			}
+		}
 		if c.IdempotencyKey != IdempotencyKey(s.header.ID, entry, c.CallID) {
 			// The loop named the call before its step was durable: its
 			// key is run-scoped, not the session's.
 			return fmt.Errorf("call %q carries no recovery-stable key", c.CallID)
 		}
+		sp.started[entry+"\x00"+c.CallID] = true
 		return nil
 	})
 }

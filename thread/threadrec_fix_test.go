@@ -732,14 +732,14 @@ func runBusyGolden(t *testing.T, opts ...core.Option) string {
 			return "", ctx.Err()
 		}
 		return in.Name + " ok", nil
-	})
+	}, core.Replay(core.ReplaySafe))
 	analysis := core.Tool("run_analysis", "A slow analysis.", func(ctx context.Context, _ struct {
 		Dataset string `json:"dataset"`
 	}) (string, error) {
 		entered <- struct{}{}
 		<-ctx.Done()
 		return "", ctx.Err()
-	})
+	}, core.Replay(core.ReplaySafe))
 	agt := core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "check_metric", ID: "m1", Args: `{"name":"rps"}`}),
 		wefttest.Say("EU only: rps 4120."),

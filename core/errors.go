@@ -218,3 +218,11 @@ const CodeRetry = "RETRY"
 func ModelRetry(hint string) error {
 	return &ToolError{Code: CodeRetry, Message: hint}
 }
+
+// CodeOutcomeUnknown is the code a call's result starts with when its
+// outcome is unknown (ADR 0032): a tool that is not ReplaySafe started
+// and gave no answer of its own — its Timeout passed and the abandoned
+// handler may still complete, or the run was canceled under it. The
+// result never says the call failed, timed out or was interrupted as
+// if that were known.
+const CodeOutcomeUnknown = "OUTCOME_UNKNOWN"

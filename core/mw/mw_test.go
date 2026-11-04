@@ -542,7 +542,7 @@ func TestMapErrorsPassesLoopErrorsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := res.Steps[0].Results[0]; !strings.Contains(r.Content, "timed out after 20ms") {
+	if r := res.Steps[0].Results[0]; !strings.Contains(r.Content, "did not answer within 20ms") {
 		t.Errorf("timeout through MapErrors = %+v", r)
 	}
 	if len(res.Pending) != 1 {

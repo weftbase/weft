@@ -546,14 +546,14 @@ func TestThreadRecordsWarroomBusy(t *testing.T) {
 			return "", ctx.Err()
 		}
 		return in.Name + " ok", nil
-	})
+	}, core.Replay(core.ReplaySafe))
 	analysis := core.Tool("run_analysis", "A slow analysis.", func(ctx context.Context, _ struct {
 		Dataset string `json:"dataset"`
 	}) (string, error) {
 		entered <- "analysis"
 		<-ctx.Done()
 		return "", ctx.Err()
-	})
+	}, core.Replay(core.ReplaySafe))
 	agt := rp.agent("warroom", wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "check_metric", Args: `{"name":"rps"}`}),
 		wefttest.Say("EU only: rps 4120."),

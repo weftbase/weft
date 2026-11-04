@@ -196,7 +196,11 @@ func (s *Session) rollbackLocked(t *Turn) {
 // transcript stays sound model input (the pairing invariant; the
 // repair that follows has nothing left to synthesise). The tool
 // message is rebuilt in the assistant's call order.
-func withInterruptedResults(msgs []core.Message) []core.Message {
+func withInterruptedResults(msgs []core.Message, keep []core.ToolCallPart) []core.Message {
+	skip := make(map[string]bool, len(keep))
+	for _, c := range keep {
+		skip[c.ID] = true
+	}
 	i := -1
 	for j := len(msgs) - 1; j >= 0; j-- {
 		if msgs[j].Role != core.RoleAssistant {
@@ -229,6 +233,9 @@ func withInterruptedResults(msgs []core.Message) []core.Message {
 		if r, ok := served[c.ID]; ok && !isCancellationNoise(r.Content) {
 			parts = append(parts, r)
 			continue
+		}
+		if skip[c.ID] {
+			continue // its outcome is unknown: left for the recovery ladder
 		}
 		// No result at all, or the bare cancellation noise a handler
 		// returned as the run died under it — the model sees the golden

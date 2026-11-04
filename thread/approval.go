@@ -942,7 +942,7 @@ type chainResult struct {
 // carries the expiry, the notification and the challenge the
 // remaining decisions answer, so the first approval is recorded
 // beside it, not instead of it.
-func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, calls []core.ToolCallPart) *chainResult {
+func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, calls []core.ToolCallPart, sp *stepPersist) *chainResult {
 	cr := &chainResult{opts: opts, awaitCtx: ctx, runID: t.runID}
 	// What the parked run ran under, as data: a resume after a restart
 	// has lost opts and ctx, and puts this back (runResume).
@@ -965,6 +965,18 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	var wrappers map[string]string
 	s.locked(func() { wrappers = s.approvalWalkLocked().wrappers })
 	for _, c := range calls {
+		if sp.wasStarted(s, c.ID) {
+			// Its handler started and gave no answer (core.ParkUnknown):
+			// the outcome is unknown, and the recovery ladder decides it
+			// (ADR 0032) — a keyed retry, the tool's Reconcile, a person.
+			var es []Entry
+			s.locked(func() { es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), false) })
+			cr.entries = append(cr.entries, es...)
+			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {
+				cr.parkedCalls = append(cr.parkedCalls, c)
+			}
+			continue
+		}
 		// steps are this call's chain entries in order; resolved says
 		// they hold the call's effective verdict.
 		var steps []Entry
