@@ -29,13 +29,95 @@ const (
 	reasonOutcomeUnknown = "cut off: the call may have run; approve to retry it with the same idempotency key, deny to skip it"
 	reasonRetryKeyed     = "cut off: the call deduplicates on its idempotency key and is retried"
 	reasonRetrySafe      = "cut off: the call is ReplaySafe and runs again"
+	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
+	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
 	recoverContinued     = "continued"
 	recoverParked        = "parked"
 	recoverResumed       = "resumed"
 	recoverClosed        = "closed"
 	recoverRetry         = "retry"
+	reconcileFound       = "reconcile_found"
+	reconcileMissing     = "reconcile_missing"
+	reconcileError       = "reconcile_error"
+	viaReconcile         = "reconcile"
+	reconcileTimeout     = 30 * time.Second
 )
+
+// reconciled is what a tool's Reconcile said of one call (ADR 0032,
+// the ladder's second rung): found with its result, missing, or err.
+type reconciled struct {
+	found  bool
+	result string
+	err    error
+}
+
+// reconcileLocked asks each call's tool Reconcile, for the calls of
+// unknown outcome that are ReplayNever and have one — the keyed ones
+// retry first, the safe ones need nothing — and returns its answers by
+// call id. It runs with s.mu released (fn is the tool's code, bounded
+// by reconcileTimeout) and only while the writer still holds the
+// session's lock (Fencer): a writer that lost it asks nothing, and the
+// calls go to a person. A crash during it writes nothing, so the next
+// recovery asks again; the tool never runs on its account. Callers
+// hold s.mu; it is released and re-taken.
+func (s *Session) reconcileLocked(ctx context.Context, calls []core.ToolCallPart) map[string]reconciled {
+	type ask struct {
+		call core.ToolCallPart
+		fn   core.ReconcileFunc
+		key  string
+	}
+	var asks []ask
+	for _, c := range calls {
+		def := s.toolLocked(c.Name)
+		if def == nil || def.ReplayPolicy() != core.ReplayNever || def.Reconciler() == nil {
+			continue
+		}
+		entry := s.callEntryLocked(c.ID)
+		if entry == "" {
+			continue
+		}
+		asks = append(asks, ask{call: c, fn: def.Reconciler(), key: IdempotencyKey(s.header.ID, entry, c.ID)})
+	}
+	if len(asks) == 0 {
+		return nil
+	}
+	out := make(map[string]reconciled, len(asks))
+	if f, ok := s.st.(Fencer); ok {
+		if err := f.Fence(ctx, s.header.ID); err != nil {
+			for _, a := range asks {
+				out[a.call.ID] = reconciled{err: fmt.Errorf("not asked: the session's lock is not held: %w", err)}
+			}
+			return out
+		}
+	}
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	for _, a := range asks {
+		out[a.call.ID] = runReconcile(ctx, a.fn, a.key)
+	}
+	return out
+}
+
+// runReconcile calls fn under the rung's bound, a panic contained as
+// its error.
+func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r reconciled) {
+	rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+	defer cancel()
+	defer func() {
+		if p := recover(); p != nil {
+			r = reconciled{err: fmt.Errorf("reconcile panicked: %v", p)}
+		}
+	}()
+	found, result, err := fn(rctx, key)
+	if err == nil && rctx.Err() != nil {
+		err = rctx.Err()
+	}
+	if err != nil {
+		return reconciled{err: err}
+	}
+	return reconciled{found: found, result: result}
+}
 
 // dispatchGate is rule A, the core.BeforeDispatch gate every turn
 // carries: a call that is not ReplaySafe starts only when the step
@@ -348,16 +430,36 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 		return nil, fmt.Errorf("%w: no cut-off turn in session %s", ErrNotPending, s.header.ID)
 	}
 	persist := context.WithoutCancel(ctx)
+	// The ladder's second rung, before anything is written: the
+	// unknown calls whose tool can ask the system of record do.
+	if unknown := s.unknownLocked(x); len(unknown) > 0 {
+		run := x.run
+		rc := s.reconcileLocked(ctx, unknown)
+		// The lock was released: the session must still be as found.
+		if s.running {
+			return nil, fmt.Errorf("%w: session %s", ErrBusy, s.header.ID)
+		}
+		if y, ok := s.cutOffLocked(); !ok || y.run != run {
+			return nil, fmt.Errorf("%w: the cut-off turn of session %s changed while it was reconciled", ErrNotPending, s.header.ID)
+		}
+		return s.recoverWithLocked(ctx, persist, x, rc)
+	}
+	return s.recoverWithLocked(ctx, persist, x, nil)
+}
+
+// recoverWithLocked is RecoverTurn's crash matrix over the cut-off run,
+// with the Reconcile answers rc. Callers hold s.mu.
+func (s *Session) recoverWithLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {
 	switch {
 	case len(x.calls) > 0 && !x.own:
-		return s.recoverResumeLocked(ctx, persist, x)
+		return s.recoverResumeLocked(ctx, persist, x, rc)
 	case len(x.calls) > 0:
 		allSafe := true
 		for _, c := range x.calls {
 			allSafe = allSafe && s.replayOfLocked(c.Name) == core.ReplaySafe
 		}
 		if !allSafe {
-			return s.recoverParkLocked(ctx, persist, x)
+			return s.recoverParkLocked(ctx, persist, x, rc)
 		}
 		// Only ReplaySafe calls were cut off: drop the step and ask
 		// the model again.
@@ -459,7 +561,7 @@ func (s *Session) recoverContinueLocked(ctx, persist context.Context, x cutOff) 
 // call runs on; quorum the approvals a person's retry needs; ownStep
 // says the call is the cut-off run's own step's, not an approved
 // boundary call a resume was running. Callers hold s.mu.
-func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, ownStep bool) []Entry {
+func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, ownStep bool, rc map[string]reconciled) []Entry {
 	def := s.toolLocked(c.Name)
 	policy := core.ReplayNever
 	if def != nil {
@@ -480,6 +582,29 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 	case policy == core.ReplayKeyed:
 		req.Reason = reasonRetryKeyed
 	default:
+		r, asked := rc[c.ID]
+		switch {
+		case asked && r.err == nil && r.found:
+			// The system of record knows: its result is the call's.
+			req.Reason = reasonReconcileFound
+			return []Entry{req,
+				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileFound, RunID: run},
+				ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeResolve, Content: r.result, Who: "thread", Via: viaReconcile,
+					RunID: run, ArgsSHA256: hashArgs(args)},
+			}
+		case asked && r.err == nil:
+			req.Reason = reasonReconcileMiss
+			return []Entry{req,
+				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
+				ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
+					RunID: run, ArgsSHA256: hashArgs(args)},
+			}
+		case asked:
+			req.Reason = reasonOutcomeUnknown
+			return []Entry{req,
+				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileError, Detail: r.err.Error(), RunID: run},
+			}
+		}
 		req.Reason = reasonOutcomeUnknown
 		return []Entry{req}
 	}
@@ -493,10 +618,10 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 // recoverParkLocked parks the cut-off run's own unanswered calls
 // (recoveryEntries) and starts the resume when that decided every
 // call. Callers hold s.mu.
-func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff) (*Turn, error) {
+func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {
 	var extra []Entry
 	for _, c := range x.calls {
-		extra = append(extra, s.recoveryEntries(c, x.run, c.Args, nil, s.parkQuorum(), true)...)
+		extra = append(extra, s.recoveryEntries(c, x.run, c.Args, nil, s.parkQuorum(), true, rc)...)
 	}
 	if err := s.recordRecoverLocked(persist, x, recoverParked, "", x.calls, extra...); err != nil {
 		return nil, err
@@ -510,7 +635,7 @@ func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff) (*Tu
 // ran on, under the quorum its approval needed — and every other call
 // keeps its decision. The resume starts again when all are decided.
 // Callers hold s.mu.
-func (s *Session) recoverResumeLocked(ctx, persist context.Context, x cutOff) (*Turn, error) {
+func (s *Session) recoverResumeLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {
 	unknown := s.unknownLocked(x)
 	outcome := recoverResumed
 	var extra []Entry
@@ -524,7 +649,7 @@ func (s *Session) recoverResumeLocked(ctx, persist context.Context, x cutOff) (*
 			if len(re.Args) > 0 {
 				args = re.Args
 			}
-			extra = append(extra, s.recoveryEntries(c, x.run, args, settings, max(s.parkQuorum(), re.Quorum), false)...)
+			extra = append(extra, s.recoveryEntries(c, x.run, args, settings, max(s.parkQuorum(), re.Quorum), false, rc)...)
 		}
 	}
 	if err := s.recordRecoverLocked(persist, x, outcome, "", unknown, extra...); err != nil {

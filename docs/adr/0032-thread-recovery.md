@@ -195,3 +195,31 @@ the model reads. When that turn has started a call that is not
 as if it had not happened: the send is accepted as an `Interrupt`
 instead (recorded as one), and `Send` returns its `Turn` beside an error
 wrapping `ErrRollbackRefused`.
+
+## Amendment (2026-11-04 — the ladder's second rung: Reconcile)
+
+The ladder is: keyed retry, then reconcile with the system of record,
+then a person (R4). A tool declares the second rung with
+`core.Reconcile(fn)`, `fn(ctx, key) (found bool, result string, err
+error)` — weft holds no store; the function is the tool's, and the same
+name serves the flow tier. It is asked for a `ReplayNever` call of
+unknown outcome only (a `ReplayKeyed` call retries first; a
+`ReplaySafe` one needs nothing), with the call's own idempotency key,
+while the writer still holds the session's lock (`Fencer`), with the
+session's lock released, under a 30 s bound:
+
+- found → a recovery request, a `recover` audit step
+  `reconcile_found`, and the session's resolve (Via `reconcile`) with
+  the recorded result: the tool does not run, the model reads the real
+  result;
+- missing → `reconcile_missing` and the session's own approval (Via
+  `recovery`): the call runs again under the same key;
+- an error, a panic or the bound → `reconcile_error` (Detail the error)
+  and a recovery request for a person. Never "assume missing".
+
+The answers are recorded in the same append as the rest of the
+recovery, before anything acts on them; a crash while asking writes
+nothing, so the next recovery asks again and the tool never runs on
+its account. Pinned reasons: `cut off: the system of record reports
+the call took effect; its result is recorded`, `cut off: the system of
+record has no such call; it runs again with the same idempotency key`.

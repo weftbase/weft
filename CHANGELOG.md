@@ -35,6 +35,8 @@ module, ADR 0005).
 
 - thread: a Rollback never hides an effect (WR-35). A `Send` under `Rollback` whose running turn has started a call that is not `ReplaySafe` is accepted as an `Interrupt` instead — the felled turn's entries and results stay on the line — and returns its `Turn` with an error wrapping the new `ErrRollbackRefused`.
 
+- core, thread: the ladder's second rung — `core.Reconcile(fn)` (`ReconcileFunc`, `(*ToolDef).Reconciler()`): a tool that can ask its system of record whether a call with a given idempotency key took effect. For a `ReplayNever` call of unknown outcome the session asks it (under the session's lock, 30 s bound) before a person: found → its result is recorded as the call's (Via `reconcile`) and the tool does not run; missing → the call runs again under the same key; an error → a recovery request. Audited (`recover` steps `reconcile_found`, `reconcile_missing`, `reconcile_error`). Facade: `weft.Reconcile`, `weft.ReconcileFunc`.
+
 ### Format
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.

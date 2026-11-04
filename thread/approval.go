@@ -970,7 +970,10 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			// the outcome is unknown, and the recovery ladder decides it
 			// (ADR 0032) — a keyed retry, the tool's Reconcile, a person.
 			var es []Entry
-			s.locked(func() { es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), false) })
+			s.locked(func() {
+				rc := s.reconcileLocked(ctx, []core.ToolCallPart{c})
+				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), false, rc)
+			})
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {
 				cr.parkedCalls = append(cr.parkedCalls, c)

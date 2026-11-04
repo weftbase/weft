@@ -2067,6 +2067,25 @@ const (
 // records the class.
 func Replay(p ReplayPolicy) ToolOption { return core.Replay(p) }
 
+// ReconcileFunc asks the system of record whether a call with this
+// idempotency key took effect: found with its result when it did,
+// not found when it did not, an error when the system cannot tell.
+type ReconcileFunc = core.ReconcileFunc
+
+// Reconcile gives the tool a way to settle a call whose outcome is
+// unknown by asking the system that knows (ADR 0032, the second rung of
+// the recovery ladder): fn looks the call up by its Call.IdempotencyKey.
+// weft/thread asks it — for a ReplayNever call that a crash, a
+// shutdown, a timeout or an interrupt left without an answer, while the
+// session's lock is held, under a 30 s bound — and acts on the answer:
+// found, the result is recorded as the call's and the tool does not
+// run; not found, the call runs again under the same key; an error or
+// a timeout leaves the call to a person (a recovery request). A
+// ReplayKeyed call is retried before it is reconciled; a ReplaySafe one
+// never needs it. weft holds no store: fn is the tool's. A nil fn
+// removes it.
+func Reconcile(fn ReconcileFunc) ToolOption { return core.Reconcile(fn) }
+
 // Call identifies the tool invocation a handler is serving. Retrieve it
 // with CallFromContext — for audit logs, per-call idempotency keys, or
 // progress reporting that must name its call.

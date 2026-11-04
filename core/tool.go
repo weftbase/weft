@@ -64,6 +64,7 @@ type ToolDef struct {
 	sequential bool // barrier: runs alone in its step
 	approval   bool // RequireApproval: never runs unapproved
 	replay     ReplayPolicy
+	reconcile  ReconcileFunc
 	snippet    string // PromptSnippet: composed into the system prompt
 	mw         []ToolMiddleware
 
@@ -778,6 +779,33 @@ func (t *ToolDef) ReplayPolicy() ReplayPolicy {
 	}
 	return ReplayNever
 }
+
+// ReconcileFunc asks the system of record whether a call with this
+// idempotency key took effect: found with its result when it did,
+// not found when it did not, an error when the system cannot tell.
+type ReconcileFunc func(ctx context.Context, key string) (found bool, result string, err error)
+
+type reconcileOption struct{ fn ReconcileFunc }
+
+func (o reconcileOption) applyTool(t *ToolDef) { t.reconcile = o.fn }
+
+// Reconcile gives the tool a way to settle a call whose outcome is
+// unknown by asking the system that knows (ADR 0032, the second rung of
+// the recovery ladder): fn looks the call up by its Call.IdempotencyKey.
+// weft/thread asks it — for a ReplayNever call that a crash, a
+// shutdown, a timeout or an interrupt left without an answer, while the
+// session's lock is held, under a 30 s bound — and acts on the answer:
+// found, the result is recorded as the call's and the tool does not
+// run; not found, the call runs again under the same key; an error or
+// a timeout leaves the call to a person (a recovery request). A
+// ReplayKeyed call is retried before it is reconciled; a ReplaySafe one
+// never needs it. weft holds no store: fn is the tool's. A nil fn
+// removes it.
+func Reconcile(fn ReconcileFunc) ToolOption { return reconcileOption{fn} }
+
+// Reconciler returns the tool's Reconcile function, nil when it has
+// none.
+func (t *ToolDef) Reconciler() ReconcileFunc { return t.reconcile }
 
 // Call identifies the tool invocation a handler is serving. Retrieve it
 // with CallFromContext — for audit logs, per-call idempotency keys, or
