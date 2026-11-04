@@ -753,3 +753,47 @@ func TestTimeoutParksForRecovery(t *testing.T) {
 		})
 	}
 }
+
+// WR-5: a turn whose step ran a call with effects and then overflowed
+// the context is not re-run from its start — the re-run would not see
+// the effect and could repeat it. The turn ends with the overflow, the
+// call ran once, and its result stays on the line. Both backends.
+func TestOverflowNeverRepeatsEffects(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			pay := &sideEffect{name: "pay"}
+			s, err := thread.Create(bg, b.open(t), core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "p1", Args: `{"order_id":"1"}`}),
+				wefttest.Fail(core.ErrContextOverflow),
+				wefttest.Say("a summary"),
+				wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "p2", Args: `{"order_id":"1"}`}), // a re-run would pay again
+				wefttest.Say("re-run answer"),
+			), pay.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn, err := s.Send(bg, core.User("pay"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := turn.Wait(); !errors.Is(err, core.ErrContextOverflow) {
+				t.Fatalf("turn = %v, want the overflow", err)
+			}
+			if n := len(pay.ran()); n != 1 {
+				t.Fatalf("pay ran %d times, want once", n)
+			}
+			found := false
+			for _, m := range s.Context() {
+				for _, p := range m.Content {
+					if r, ok := p.(core.ToolResultPart); ok && r.CallID == "p1" && r.Content == "pay 1" {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatal("the call's result left the line")
+			}
+			_ = s.Close(bg)
+		})
+	}
+}

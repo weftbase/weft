@@ -31,6 +31,8 @@ module, ADR 0005).
 
 - core: `Agent.CallTool` from inside a tool handler dispatches under the run's park rule (`ParkOn`, `ParkAllExcept`, an agent `ParkSource`): a call the rule parks returns an error wrapping `ErrApprovalRequired` to the handler instead of running unasked (WR-7: approval no longer fails open through a hand dispatch).
 
+- thread: a turn that overflows the context after starting a call with effects is not re-run from its start (WR-5): the re-run would not see the effect and could repeat it. The turn ends with `ErrContextOverflow`, its steps and results kept on the line; a turn whose calls were all `ReplaySafe` re-runs as before.
+
 ### Format
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.

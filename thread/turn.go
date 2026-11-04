@@ -1212,7 +1212,19 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		// says nothing about where the run's own messages start. What
 		// the run added is exactly what the observer was handed.
 		s.locked(func() { inputLen = max(len(runMessages(res, err))-sp.observed, 0) })
-		if attempt == 0 && errors.Is(err, core.ErrContextOverflow) && s.cfg.reRunOnOverflow && !t.overflowRetried {
+		effects := false
+		s.locked(func() { effects = len(sp.started) > 0 })
+		if attempt == 0 && errors.Is(err, core.ErrContextOverflow) && s.cfg.reRunOnOverflow && !t.overflowRetried && effects {
+			// WR-5: the attempt started calls with effects. A re-run from
+			// the turn's start would not see them — its path leaves the
+			// attempt's steps behind — and could run them again. No
+			// re-run: the turn ends with the overflow, the attempt's
+			// steps and results kept on the line.
+			s.agent.Logger().Warn("thread: overflow re-run skipped; the attempt started calls with effects",
+				"session", s.header.ID, "run", t.RunID())
+			err = fmt.Errorf("%w (no re-run: the turn started calls with effects; their results are kept)", err)
+		}
+		if attempt == 0 && errors.Is(err, core.ErrContextOverflow) && s.cfg.reRunOnOverflow && !t.overflowRetried && !effects {
 			firstOverflow = err
 			t.overflowRetried = true
 			// Branch back before compacting: the compaction must walk the

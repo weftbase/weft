@@ -324,7 +324,7 @@ func TestPerStepOverflowAttemptsKeepTheirOwnLines(t *testing.T) {
 			Text string `json:"text"`
 		}) (string, error) {
 			return "noted: " + in.Text, nil
-		})
+		}, core.Replay(core.ReplaySafe)) // a call with effects ends the turn instead: TestOverflowNeverRepeatsEffects
 		s, err := thread.Create(ctx, st, core.New(model, note), thread.KeepRecent(1))
 		if err != nil {
 			t.Fatal(err)

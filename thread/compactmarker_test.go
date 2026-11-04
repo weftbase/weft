@@ -252,7 +252,7 @@ func TestCompactionMarkerManual(t *testing.T) {
 func TestCompactionMarkerOverflowReRun(t *testing.T) {
 	echo := core.Tool("echo", "", func(_ context.Context, _ struct{}) (string, error) {
 		return "ok", nil
-	})
+	}, core.Replay(core.ReplaySafe)) // a call with effects ends an overflowed turn instead (WR-5)
 	for _, tc := range []struct {
 		name    string
 		attempt []wefttest.Turn

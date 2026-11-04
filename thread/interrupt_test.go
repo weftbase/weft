@@ -297,7 +297,7 @@ func TestOverflowSecondFailureJoins(t *testing.T) {
 		wefttest.Say("the summary"),                                   // the compaction's summarizer
 		wefttest.Fail(core.ErrContextOverflow),                        // the re-run overflows at once
 	)
-	note := core.Tool("note", "", func(context.Context, struct{}) (string, error) { return "noted", nil })
+	note := core.Tool("note", "", func(context.Context, struct{}) (string, error) { return "noted", nil }, core.Replay(core.ReplaySafe))
 	s, err := thread.Create(ctx, thread.Memory(), core.New(model, note), thread.KeepRecent(1))
 	if err != nil {
 		t.Fatal(err)

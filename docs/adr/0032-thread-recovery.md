@@ -180,3 +180,10 @@ follow-up waits behind it. A turn a Close fells is recorded cut off
 (for `RecoverTurn` in whichever process opens the session next), as a
 shutdown's is. A `ReplaySafe` call keeps the old texts: it can be run
 again.
+
+**No re-run over effects (WR-5).** ADR 0020 §5's overflow re-run
+starts the turn again from its start on a compacted path that leaves the
+failed attempt's steps behind. When that attempt started a call with
+effects (one the gate let through), the re-run is skipped: the turn ends
+with `ErrContextOverflow`, the attempt's steps and results kept on the
+line, so the effect is never repeated and never hidden from the model.

@@ -790,7 +790,7 @@ func TestOverflowReRunRedeliversHandedSteers(t *testing.T) {
 	ctx := context.Background()
 	echo := core.Tool("echo", "", func(_ context.Context, _ struct{}) (string, error) {
 		return "ok", nil
-	})
+	}, core.Replay(core.ReplaySafe)) // a call with effects ends an overflowed turn instead (WR-5)
 	model := wefttest.Script(
 		wefttest.Say("a first answer"),                  // a prior turn, so the compaction has a cut
 		wefttest.ToolCalls(wefttest.Call{Name: "echo"}), // attempt 1: a batch to drain the steer after
