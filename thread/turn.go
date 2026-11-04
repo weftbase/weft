@@ -66,7 +66,10 @@ const (
 	// Rollback is an Interrupt that also branches the leaf back to
 	// before the interrupted turn's receipt entry: the follow-up runs
 	// as though the interrupted turn never happened, while its
-	// entries keep their own line of the tree (nothing lost).
+	// entries keep their own line of the tree (nothing lost). It never
+	// hides an effect: when the turn has started a call that is not
+	// core.ReplaySafe the send is accepted as an Interrupt instead, and
+	// Send returns its Turn with an error wrapping ErrRollbackRefused.
 	Rollback
 )
 
@@ -1178,7 +1181,7 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		runOpts = append(runOpts, s.idempotencyKeys(sp))
 		// Rule A (ADR 0032): a call that is not ReplaySafe starts only
 		// once the step entry holding it is durable.
-		runOpts = append(runOpts, s.dispatchGate(persist, sp))
+		runOpts = append(runOpts, s.dispatchGate(persist, sp, t))
 		// A started call with an effect that gives no answer parks
 		// instead of reading as failed (ADR 0032, WR-6): the recovery
 		// ladder decides it at the turn's end.
@@ -2062,6 +2065,9 @@ type Turn struct {
 	interrupted bool
 	rollback    bool
 	preTurn     string
+	// effects is set once the dispatch gate let a call with effects
+	// start in this turn: a Rollback past it would hide what ran.
+	effects bool
 	// overflowRetried marks the turn that already spent its one
 	// overflow re-run (ADR 0020 §5), reRan the turn whose re-run
 	// actually started. Runner-goroutine only.

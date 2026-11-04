@@ -187,3 +187,11 @@ failed attempt's steps behind. When that attempt started a call with
 effects (one the gate let through), the re-run is skipped: the turn ends
 with `ErrContextOverflow`, the attempt's steps and results kept on the
 line, so the effect is never repeated and never hidden from the model.
+
+**A rollback never hides an effect.** The `Rollback` busy policy
+(ADR 0019) moves the leaf back before the felled turn, off the line
+the model reads. When that turn has started a call that is not
+`ReplaySafe`, the move would let the model ask for the effect again
+as if it had not happened: the send is accepted as an `Interrupt`
+instead (recorded as one), and `Send` returns its `Turn` beside an error
+wrapping `ErrRollbackRefused`.

@@ -797,3 +797,70 @@ func TestOverflowNeverRepeatsEffects(t *testing.T) {
 		})
 	}
 }
+
+// A Rollback never hides an effect: a running turn that already ran a
+// call with effects is not rolled back off the line. The Send is
+// accepted as an Interrupt instead and says so (ErrRollbackRefused,
+// beside its Turn): the follow-up runs, and the paid call and its
+// result stay in the context the model reads. Both backends.
+func TestRollbackPastAnEffectIsRefused(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			pay := &sideEffect{name: "pay"}
+			m := &hangOnce{Model: wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "p1", Args: `{"order_id":"1"}`}),
+				wefttest.Say("the follow-up"),
+			), inCall: make(chan struct{})}
+			s, err := thread.Create(bg, b.open(t), core.New(m, pay.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(bg) }()
+			t1, err := s.Send(bg, core.User("pay"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-m.inCall // the payment ran; the second model call hangs
+			t2, err := s.Send(bg, core.User("never mind"), thread.As(thread.Rollback))
+			if !errors.Is(err, thread.ErrRollbackRefused) || t2 == nil {
+				t.Fatalf("Send under Rollback = %v, %v; want its Turn and ErrRollbackRefused", t2, err)
+			}
+			if _, err := t1.Wait(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("the felled turn = %v", err)
+			}
+			if _, err := t2.Wait(); err != nil {
+				t.Fatalf("the follow-up = %v", err)
+			}
+			found := false
+			for _, msg := range s.Context() {
+				for _, p := range msg.Content {
+					if r, ok := p.(core.ToolResultPart); ok && r.CallID == "p1" && r.Content == "pay 1" {
+						found = true
+					}
+				}
+			}
+			if !found || len(pay.ran()) != 1 {
+				t.Fatalf("the payment left the line (found %v) or ran %d times", found, len(pay.ran()))
+			}
+		})
+	}
+}
+
+// hangOnce's second call blocks until its context ends; every other
+// call goes to the script.
+type hangOnce struct {
+	core.Model
+	calls  atomic.Int32
+	inCall chan struct{}
+}
+
+func (m *hangOnce) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[core.ModelEvent, error] {
+	if m.calls.Add(1) != 2 {
+		return m.Model.Stream(ctx, req)
+	}
+	return func(yield func(core.ModelEvent, error) bool) {
+		close(m.inCall)
+		<-ctx.Done()
+		yield(nil, ctx.Err())
+	}
+}

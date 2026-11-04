@@ -53,6 +53,16 @@ func (s *Session) interruptSendLocked(ctx context.Context, msg core.Message, opt
 			it.cause = causeInterrupted
 		}
 		cause := it.cause
+		var refused error
+		if policy == Rollback && it.effects {
+			// A rollback never hides an effect: the turn started a call
+			// with effects, and moving the leaf before it would let the
+			// model ask for it again. It is downgraded to an Interrupt —
+			// the turn's entries stay on the line — and the Send says so.
+			policy = Interrupt
+			t.policy = Interrupt
+			refused = fmt.Errorf("%w: turn %s started a call with effects; the send runs as an Interrupt instead", ErrRollbackRefused, it.runID)
+		}
 		if policy == Rollback {
 			it.rollback = true
 			if i, ok := s.byID[it.id]; ok {
@@ -85,7 +95,7 @@ func (s *Session) interruptSendLocked(ctx context.Context, msg core.Message, opt
 			// the run's span (weft.cancel.cause).
 			cancel(cause)
 		}
-		return t, nil
+		return t, refused
 	}
 	// Only a boundary holds the session: deny its parked calls so the
 	// follow-up is not queued behind it.

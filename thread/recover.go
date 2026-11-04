@@ -49,7 +49,7 @@ const (
 // side effect the file does not show was asked for is never started.
 // ctx is the turn's persistence window. How durable "appended" is,
 // is the backend's (FsyncOnFlush for jsonl).
-func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist) core.RunOption {
+func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) core.RunOption {
 	return core.BeforeDispatch(func(_ context.Context, c core.Call, def *core.ToolDef) error {
 		if def == nil || def.ReplayPolicy() == core.ReplaySafe {
 			return nil
@@ -84,6 +84,9 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist) core.RunOpt
 			return fmt.Errorf("call %q carries no recovery-stable key", c.CallID)
 		}
 		sp.started[entry+"\x00"+c.CallID] = true
+		t.mu.Lock()
+		t.effects = true
+		t.mu.Unlock()
 		return nil
 	})
 }

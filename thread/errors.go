@@ -97,6 +97,15 @@ var (
 	// Session.RecoverTurn first (ADR 0032).
 	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
 
+	// ErrRollbackRefused is returned beside a Turn by a Send under the
+	// Rollback policy whose running turn has started a call that is not
+	// core.ReplaySafe: a rollback would move that call off the line the
+	// model reads and let it be asked for again, so the send is
+	// accepted as an Interrupt instead — the Turn runs, the felled
+	// turn's entries stay on the line. Never pretend an effect was
+	// undone.
+	ErrRollbackRefused = errors.New("thread: rollback refused: the turn ran a call with effects")
+
 	// ErrShutdown is the cancellation cause of a process that is
 	// stopping. A turn whose run ends canceled with it — the cause of
 	// the context a Close (or pool.Close) gave up on, or of the turn's

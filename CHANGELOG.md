@@ -33,6 +33,8 @@ module, ADR 0005).
 
 - thread: a turn that overflows the context after starting a call with effects is not re-run from its start (WR-5): the re-run would not see the effect and could repeat it. The turn ends with `ErrContextOverflow`, its steps and results kept on the line; a turn whose calls were all `ReplaySafe` re-runs as before.
 
+- thread: a Rollback never hides an effect (WR-35). A `Send` under `Rollback` whose running turn has started a call that is not `ReplaySafe` is accepted as an `Interrupt` instead — the felled turn's entries and results stay on the line — and returns its `Turn` with an error wrapping the new `ErrRollbackRefused`.
+
 ### Format
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.
