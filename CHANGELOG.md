@@ -49,6 +49,9 @@ module, ADR 0005).
 
 ### Changed (breaking)
 
+- thread: `Decision` and `ApprovalDecisionEntry` are no longer comparable with `==` (they carry `EditedArgs` and `Cosigners`); compare the fields you need.
+- thread: `IdempotencyKey(sessionID, entryID, callID, editedArgsSHA256)` takes the edited arguments' hash ("" for a call that was not edited).
+- core: a call of a tool that is not `ReplaySafe` whose handler outlived its `Timeout`, or was cut off by a cancel, reads `OUTCOME_UNKNOWN: …` instead of `tool "X" timed out after D` / the cancellation's text (model-visible; ADR 0032). Mark read-only tools `Replay(ReplaySafe)` to keep the old texts.
 - thread: every `Decide` decision is bound to the request it answers — `RequestID` and `ArgsSHA256`, set with the new `Decision.Bind(r Request)`; an unbound one is `ErrInvalidDecision` (WR-12; pool's `Decide` included). Write `s.Decide(ctx, thread.Approve(r.CallID).Bind(r))` with `r` from `Pending()`. Signed decisions are bound by their challenge already.
 
 ### Changed
