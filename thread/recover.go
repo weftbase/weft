@@ -33,6 +33,7 @@ const (
 	reasonDelegated      = "cut off while it delegated: the delegated work may have run; approve to delegate it again, deny to skip it"
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
 	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key once it has returned, deny to skip it"
+	reasonDelegationOpen = "delegated: its thread/pool delegation is still open and the pool settles it; an approval, which would delegate again, is refused until it settles"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
@@ -570,16 +571,25 @@ func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
 // delegationEndedLocked reports whether callID, a call of the step
 // entry entry, delegated to a thread/pool child whose delegation is
 // over: an acceptance receipt naming it follows the step, and a
-// settlement of that receipt follows too. Its call has no result: what
-// the child did is the delegation's, and the pool resolves it no more.
-// A delegation still open is the pool's to settle (ADR 0022 §7). Whether
-// the call started is its dispatch record's to say, as for any call: a
-// delegation runs where its handler would, past the gate. Callers hold
-// s.mu.
+// settlement of the latest such receipt follows too. Its call has no
+// result: what the child did is the delegation's, and the pool resolves
+// it no more. A delegation still open is the pool's to settle (ADR 0022
+// §7). Whether the call started is its dispatch record's to say, as for
+// any call: a delegation runs where its handler would, past the gate.
+// Callers hold s.mu.
 func (s *Session) delegationEndedLocked(entry, callID string) bool {
+	accepted, ended := s.delegationStateLocked(entry, callID)
+	return accepted && ended
+}
+
+// delegationStateLocked reads the durable state of callID's latest
+// delegation after the step entry entry: whether an acceptance receipt
+// names it, and whether a settlement of that receipt follows. Callers
+// hold s.mu.
+func (s *Session) delegationStateLocked(entry, callID string) (accepted, ended bool) {
 	i, ok := s.byID[entry]
 	if !ok {
-		return false
+		return false, false
 	}
 	receipt := ""
 	for _, e := range s.order[i+1:] {
@@ -587,21 +597,38 @@ func (s *Session) delegationEndedLocked(entry, callID string) bool {
 		switch {
 		case !ok:
 		case pr.Receipt == "" && pr.Call == callID:
-			receipt = pr.ID
+			receipt, ended = pr.ID, false
 		case receipt != "" && pr.Receipt == receipt && pr.Status != PoolAccepted && pr.Status != PoolRunning && pr.Status != PoolParked:
-			return true
+			ended = true
 		}
 	}
-	return false
+	return receipt != "", ended
+}
+
+// delegationOpenLocked reports whether callID's latest thread/pool
+// delegation is accepted and not settled (delegationStateLocked): the
+// pool's to settle, whether or not a mirror of the child's request is
+// on file yet. Callers hold s.mu.
+func (s *Session) delegationOpenLocked(callID string) bool {
+	accepted, ended := s.delegationStateLocked(s.callEntryLocked(callID), callID)
+	return accepted && !ended
 }
 
 // liveDelegationLocked reports whether callID delegates to a
-// thread/pool child that is still the pool's to settle: a mirrored
-// child request names it as its wrapper, and its delegation is not
-// over (delegationEndedLocked — a delegation ended unanswered is a
-// person's to decide, recoveryEntries' reasonDelegated). Callers hold
-// s.mu.
+// thread/pool child that is still the pool's to settle: its delegation
+// is not over (delegationEndedLocked — a delegation ended unanswered is
+// a person's to decide, recoveryEntries' reasonDelegated), and a
+// mirrored child request names it as its wrapper or the pool's
+// acceptance receipt names it (delegationOpenLocked). The receipt is the
+// durable record, there before any mirror, so the answer does not hang
+// on whether the pool's Recover ran first. The call stays offered as
+// its boundary's own dangling call until the pool resolves it, and an
+// approval of it is refused while the delegation is open
+// (reasonDelegationOpen). Callers hold s.mu.
 func (s *Session) liveDelegationLocked(walk approvalWalk, callID string) bool {
+	if s.delegationOpenLocked(callID) {
+		return true
+	}
 	return walk.wrappers[callID] != "" && !s.delegationEndedLocked(s.callEntryLocked(callID), callID)
 }
 
@@ -624,10 +651,10 @@ func (s *Session) unknownLocked(x cutOff) []core.ToolCallPart {
 		if s.replayAtDispatchLocked(c, x.run) == core.ReplaySafe {
 			continue
 		}
-		if walk.wrappers[c.ID] != "" {
-			// A call delegating to a thread/pool child: the child
-			// session holds its outcome, and the pool's Recover
-			// settles it (ADR 0022 §7).
+		if walk.wrappers[c.ID] != "" || s.delegationOpenLocked(c.ID) {
+			// A call delegating to a thread/pool child (mirrored, or
+			// accepted and not settled): the child session holds its
+			// outcome, and the pool's Recover settles it (ADR 0022 §7).
 			continue
 		}
 		start := s.callStartLocked(x, c)
@@ -1020,7 +1047,8 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 // recoverParkLocked parks the cut-off run's own unanswered calls
 // (recoveryEntries) and starts the resume when that decided every
 // call. A call delegating to a live thread/pool child (its parked
-// request is mirrored here) is left to the pool, as unknownLocked
+// request mirrored here, or its acceptance receipt not settled — the
+// mirror may not be on file yet) is left to the pool, as unknownLocked
 // leaves it: parking it too would offer the delegation twice, and
 // approving both would delegate twice. Callers hold s.mu.
 func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {

@@ -660,6 +660,13 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q (request %s): approving retries it; approve again once its handler has returned",
 				ErrStillRunning, d.CallID, req.ID)
 		}
+		if d.Kind == OutcomeApprove && req.Child == "" && s.delegationOpenLocked(d.CallID) {
+			// Its thread/pool delegation is still open (a cut-off
+			// turn's delegating call, left to the pool): approving
+			// would delegate a second time beside the first.
+			return fmt.Errorf("%w: call %q (request %s): its thread/pool delegation is still open; the pool settles it, approve again only once it has settled",
+				ErrStillRunning, d.CallID, req.ID)
+		}
 		if d.Kind == OutcomeEdit {
 			if _, err := canonicalArgs(d.EditedArgs); err != nil || !jsonObject(d.EditedArgs) {
 				return fmt.Errorf("%w: the edit of call %q carries no JSON object of arguments", ErrInvalidDecision, d.CallID)
@@ -1976,6 +1983,9 @@ func (s *Session) pendingLocked() []Request {
 			Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 			Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
 			RunID: run, Quorum: s.parkQuorum(),
+		}
+		if s.delegationOpenLocked(c.ID) {
+			r.Reason = reasonDelegationOpen // the pool's to settle; an approval is refused
 		}
 		s.requestKeyLocked(&r)
 		out = append(out, r)

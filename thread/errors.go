@@ -118,7 +118,10 @@ var (
 	// opened again in the same process refuses the approval the same
 	// way, and thread/pool's Decide refuses it on the parent before
 	// recording anything (AbandonedHandler). A restart ends the handler
-	// with the process.
+	// with the process. It is returned too for an approval of a
+	// delegating call whose thread/pool delegation is still open (an
+	// acceptance receipt with no settlement): approving would delegate
+	// a second time beside the first; the pool resolves the call.
 	ErrStillRunning = errors.New("thread: the call's abandoned handler is still running")
 
 	// ErrRollbackRefused is returned beside a Turn by a Send under the

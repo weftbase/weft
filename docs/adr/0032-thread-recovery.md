@@ -622,6 +622,23 @@ recovered call waits for the handler. A `Fork` of a session carries a
 still-running request with its original run id; the fork's approval is
 refused the same way (P2-1).
 
+**A live delegation is read from the ledger, not the mirror (release
+gate, last round).** `RecoverTurn` left a delegating call to the pool
+only when a mirrored child request named it. After a `Close` that gave
+up on a sync delegation, `RecoverTurn` run before the pool's `Recover`
+found no mirror yet and parked the call as a plain "approve to retry"
+recovery request; the pool then mirrored the child's still-running
+call beside it, and approving the first delegated twice. The durable
+record of a live delegation is the pool's acceptance receipt with no
+settlement: `RecoverTurn` (and `unknownLocked`) now leave a call so
+accepted to the pool as they leave a mirrored one, so both orders end
+the same. Until the delegation settles the call stays offered as its
+boundary's own call, its reason saying the delegation is open, and an
+approval of it is refused with `ErrStillRunning` — the pool resolves
+it, or, when the pool still holds an ending delegate and takes nothing
+up, a later `Recover` does. A delegation ended unanswered still parks
+for a person (`reasonDelegated`).
+
 Tests: `TestInterruptedResumeLeavesItsRecoveryRequestForAPerson`,
 `TestNoArmingPathSettlesAnUndecidedRecoveryRequest`,
 `TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest`,
@@ -634,4 +651,5 @@ Tests: `TestInterruptedResumeLeavesItsRecoveryRequestForAPerson`,
 `TestPumpWhenReturnedKeepsOneWaiterPerHandler`,
 `TestPoolDecideRefusesApprovingAStillRunningChildCall`,
 `TestRefusedChildReplayKeepsTheDelegationParked`,
-`TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest` (thread/pool).
+`TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest`,
+`TestCloseGiveUpSyncDelegationIsNotOfferedAsARetry` (thread/pool).
