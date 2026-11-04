@@ -65,3 +65,38 @@ func TestCallToolDoesNotInheritApproval(t *testing.T) {
 		t.Errorf("nested handler saw %+v (ok=%v), want its own call inner2/peek in run r, unapproved", innerCall, innerOK)
 	}
 }
+
+// P2-3 (final review): a handler that returns the park of a call it
+// dispatched with CallTool does not park its own call. The approval
+// would name the outer call only — the inner call never inherits it
+// (above) — so a rerun would park again, for ever. The outer call
+// fails instead, with a result naming the inner tool; the handler
+// still reads ErrApprovalRequired from CallTool.
+func TestCallToolParkReturnedByTheHandlerFailsTheOuterCall(t *testing.T) {
+	var agt *core.Agent
+	var innerErr error
+	pay := core.Tool("pay", "Pays.", func(context.Context, struct{}) (string, error) {
+		return "paid", nil
+	}, core.RequireApproval())
+	checkout := core.Tool("checkout", "Checks out.", func(ctx context.Context, _ struct{}) (string, error) {
+		out, err := agt.CallTool(ctx, core.ToolCallPart{ID: "inner", Name: "pay", Args: []byte(`{}`)})
+		innerErr = err
+		return out, err
+	})
+	agt = core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "checkout", ID: "c1", Args: `{}`}),
+		wefttest.Say("done"),
+	), pay, checkout)
+	res, err := agt.Generate(context.Background(), core.Prompt("x"))
+	if err != nil || len(res.Pending) != 0 || res.Text() != "done" {
+		t.Fatalf("Generate = %+v, %v; want the run to answer, nothing pending", res, err)
+	}
+	if !errors.Is(innerErr, core.ErrApprovalRequired) {
+		t.Fatalf("CallTool err = %v, want ErrApprovalRequired", innerErr)
+	}
+	r := res.Steps[0].Results[0]
+	const want = `tool "pay", dispatched by this call's handler, requires approval and did not run: a dispatched call is never parked for one`
+	if !r.IsError || r.Content != want {
+		t.Fatalf("checkout's result = %+v\nwant the error %q", r, want)
+	}
+}

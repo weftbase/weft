@@ -1733,7 +1733,12 @@ func deniedResult(reason string) string {
 // dispatching call ran under does not carry over — a RequireApproval
 // tool still returns ErrApprovalRequired, and so does a tool the run's
 // park rule names (ParkOn, ParkAllExcept, an agent ParkSource): the run
-// parks it for the loop, and it parks it for the handler too. It is a
+// parks it for the loop, and it parks it for the handler too. That park
+// is the handler's to read, not its call's: returned by the handler
+// (wrapped or not), it fails the dispatching call — the model reads
+// that the inner tool requires approval and did not run — instead of
+// parking it, for an approval of the dispatching call would not carry
+// to the inner one and its rerun would park again. It is a
 // call with effects like the loop's own: it carries an IdempotencyKey
 // derived from the dispatching call's key and its position among that
 // handler's CallTool calls (the same on a retry that dispatches in the
@@ -1759,7 +1764,8 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	// handler goes on to do), and its handler sees its own id and name,
 	// in the same run and step. Outside the loop there is no Call, and
 	// none is invented.
-	if outer, ok := CallFromContext(ctx); ok {
+	outer, nested := CallFromContext(ctx)
+	if nested {
 		inner := Call{RunID: outer.RunID, Step: outer.Step, CallID: call.ID, Name: call.Name, Outer: outer.CallID}
 		if in := innerFrom(ctx); in != nil && in.outer.CallID == outer.CallID {
 			// Keyed from the outer call and its position, and gated like
@@ -1787,8 +1793,30 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 		// it answered: its effect is unknown, never a plain failure.
 		err = fmt.Errorf("%w: tool %q was cut off before it answered: %w", ErrOutcomeUnknown, call.Name, err)
 	}
+	if err != nil && nested && errors.Is(err, ErrApprovalRequired) {
+		// Parked for the handler: it reads ErrApprovalRequired. Returned
+		// by the handler, it fails the outer call rather than parking
+		// it — an approval names the outer call only, never the calls
+		// its handler dispatches, so a rerun would park again for ever.
+		err = &dispatchedParkError{tool: call.Name, err: err}
+	}
 	return out, err
 }
+
+// dispatchedParkError is the park of a call a handler dispatched with
+// CallTool: it matches ErrApprovalRequired for the handler, and the
+// loop reads it as the handler's failure, never as its own call's park
+// (readToolError). Its text is model-visible (pinned bytes).
+type dispatchedParkError struct {
+	tool string
+	err  error
+}
+
+func (e *dispatchedParkError) Error() string {
+	return fmt.Sprintf("tool %q, dispatched by this call's handler, requires approval and did not run: a dispatched call is never parked for one", e.tool)
+}
+
+func (e *dispatchedParkError) Unwrap() error { return e.err }
 
 type parkRuleKey struct{}
 
@@ -2087,7 +2115,8 @@ func settleToolError(name string, err error, mark *handlerMark, expired func() b
 // stack (errors.As would box one per target on the heap: an untraced
 // failed call reads every fact too).
 func readToolError(err error) toolFailure {
-	f := toolFailure{err: err, park: errors.Is(err, ErrApprovalRequired)}
+	_, dispatched := errors.AsType[*dispatchedParkError](err)
+	f := toolFailure{err: err, park: errors.Is(err, ErrApprovalRequired) && !dispatched}
 	if f.park {
 		return f
 	}

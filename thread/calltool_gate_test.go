@@ -140,3 +140,51 @@ func TestCallToolNestedUnderTheSessionGate(t *testing.T) {
 		})
 	}
 }
+
+// P2-3 (final review), under a session: a handler that returns the
+// park of a call it dispatched (CallTool on a RequireApproval tool)
+// was offered as an unknown outcome — "may have run" — and approving
+// it reran the handler, which parked again, for ever. The outer call
+// now fails with a result naming the inner tool: nothing parks, the
+// turn answers, the inner tool never runs. Both backends.
+func TestCallToolParkReturnedByTheHandlerDoesNotPark(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			paid := 0
+			pay := core.Tool("pay", "Pay.", func(context.Context, struct{}) (string, error) {
+				paid++
+				return "paid", nil
+			}, core.RequireApproval())
+			var agent *core.Agent
+			outer := core.Tool("checkout", "Checkout.", func(ctx context.Context, _ struct{}) (string, error) {
+				return agent.CallTool(ctx, core.ToolCallPart{ID: "inner-1", Name: "pay", Args: []byte(`{}`)})
+			})
+			agent = core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "checkout", ID: "c1", Args: `{}`}),
+				wefttest.Say("ok"),
+			), pay, outer)
+			s, err := thread.Create(bg, b.open(t), agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(bg) }()
+			turn, err := s.Send(bg, core.User("go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := turn.Wait()
+			if err != nil || res.Text() != "ok" {
+				t.Fatalf("turn = %v, %v; want it to answer", res, err)
+			}
+			if p := s.Pending(); len(p) != 0 {
+				t.Fatalf("Pending = %+v, want nothing parked", p)
+			}
+			if got := toolResultFor(s.Context(), "c1"); got != `tool "pay", dispatched by this call's handler, requires approval and did not run: a dispatched call is never parked for one` {
+				t.Fatalf("checkout's result = %q", got)
+			}
+			if paid != 0 {
+				t.Fatalf("pay ran %d times, want 0", paid)
+			}
+		})
+	}
+}
