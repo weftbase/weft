@@ -244,7 +244,7 @@ func crashInKeyedChild(t *testing.T, charge *keyedCharge, crashes int) (string, 
 		}
 		select {
 		case <-in:
-		case <-time.After(5 * time.Second):
+		case <-time.After(20 * time.Second): // the retry backs off 1 s, 2 s, 4 s
 			t.Fatalf("process %d: the keyed retry never ran (pending %+v)", i+1, next.Pending())
 		}
 		image = crashImage(t, image, pi, parent.ID(), r.Child)

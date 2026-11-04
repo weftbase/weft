@@ -350,7 +350,12 @@ session's lock released, under a 30 s bound:
   the recorded result: the tool does not run, the model reads the real
   result;
 - missing → `reconcile_missing` and the session's own approval (Via
-  `recovery`): the call runs again under the same key;
+  `recovery`): the call runs again under the same key — one of the
+  session's automatic retries, with a `retry` audit step beside it, so
+  the cap of 3 holds (review 3 P2-3: a handler that takes the process
+  down every time looped across restarts); past the cap,
+  `reconcile_missing` and a recovery request for a person (the retries
+  spent);
 - an error, a panic or the bound → `reconcile_error` (Detail the error)
   and a recovery request for a person. Never "assume missing".
 

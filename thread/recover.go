@@ -916,10 +916,21 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeResolve, Content: r.result, Who: "thread", Via: viaReconcile,
 				RunID: run, ArgsSHA256: hashArgs(args)},
 		}
+	case asked && r.err == nil && start == startMaybe && policy == core.ReplayNever && s.autoRetriesLocked(c.ID) >= maxAutoRetries:
+		// Missing again, and the session's own reruns are spent (R12):
+		// a handler that takes the process down every time it runs
+		// would otherwise loop across restarts.
+		req.Reason = reasonRetriesSpent
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
+		}
 	case asked && r.err == nil && start == startMaybe && policy == core.ReplayNever:
+		// The rerun is the session's own retry: counted toward the cap
+		// like a keyed one (the "retry" audit step).
 		req.Reason = reasonReconcileMiss
 		return []Entry{req,
 			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: recoverRetry, Detail: string(policy), RunID: run},
 			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
 				RunID: run, ArgsSHA256: hashArgs(args)},
 		}

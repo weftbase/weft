@@ -3,6 +3,7 @@ package thread_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -76,7 +77,7 @@ func TestReconcileRung(t *testing.T) {
 				}
 				audit := ""
 				for _, e := range s.Audit() {
-					if a, ok := e.(thread.ApprovalAuditEntry); ok && a.Step == thread.StepRecover && a.CallID == "call_1" {
+					if a, ok := e.(thread.ApprovalAuditEntry); ok && a.Step == thread.StepRecover && a.CallID == "call_1" && a.Outcome != "retry" {
 						audit = a.Outcome
 					}
 				}
@@ -116,5 +117,52 @@ func TestReconcileRung(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Review 3 P2-3: a "missing" answer's rerun is the session's own retry
+// and counts toward the cap. A handler that takes the process down
+// every time it runs, under a Reconcile that always answers missing,
+// does not loop across restarts: three reruns, each with a "retry"
+// audit step beside "reconcile_missing", then a person decides. Both
+// backends.
+func TestReconcileMissingCountsTowardTheRetryCap(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			pay := &sideEffect{name: "pay"}
+			reconcile := core.Reconcile(func(context.Context, string) (bool, string, error) { return false, "", nil })
+			id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+				pay.crash = cs
+				return core.New(wefttest.Script(charged("pay")), pay.def(reconcile))
+			}, nil)
+			for restarts := 1; ; restarts++ {
+				if restarts > 6 {
+					t.Fatalf("still rerunning after %d restarts: pay ran %d times", restarts, len(pay.ran()))
+				}
+				st = restart(t, b, st, id)
+				cs := &crashStore{Storage: st}
+				pay.crash = cs
+				s, err := thread.Open(bg, cs, id, core.New(wefttest.Script(wefttest.Say("x")), pay.def(reconcile)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				rt, err := s.RecoverTurn(bg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rt == nil {
+					p := s.Pending()
+					if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "retries are spent") {
+						t.Fatalf("pending %+v, want a person once the retries are spent", p)
+					}
+					break
+				}
+				_, _ = rt.Wait() // the rerun takes the process down
+				_ = s.WaitIdle(bg)
+			}
+			if n := len(pay.ran()); n != 4 {
+				t.Fatalf("pay ran %d times, want 4: the first run and 3 reruns", n)
+			}
+		})
 	}
 }
