@@ -32,7 +32,7 @@ const (
 	reasonNotStarted     = "cut off before it started: approve to run it, deny to skip it"
 	reasonDelegated      = "cut off while it delegated: the delegated work may have run; approve to delegate it again, deny to skip it"
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
-	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key, deny to skip it"
+	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key once it has returned, deny to skip it"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"

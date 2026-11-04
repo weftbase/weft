@@ -136,25 +136,46 @@ func (s *Session) afterDispatch(sp *stepPersist) core.RunOption {
 	})
 }
 
-// returned waits, at most bound, for every handler of callID the gate
-// let start in this attempt to return; it reports whether they did. A
-// keyed retry never starts while the handler it retries may still be
-// running (review 3 P2-2).
-func (sp *stepPersist) returned(s *Session, callID string, bound time.Duration) bool {
+// stillRunning waits, under one shared deadline bound, for every
+// handler of the calls ids the gate let start in this attempt to
+// return; it returns, by call id, the done channel of each that is
+// still running past it. The waits overlap: N calls hold the turn's
+// end at most bound, not N times bound.
+func (sp *stepPersist) stillRunning(s *Session, ids []string, bound time.Duration) map[string]<-chan struct{} {
+	if sp == nil || len(ids) == 0 {
+		return nil
+	}
 	s.mu.Lock()
-	h := sp.running[sp.calls[callID]+"\x00"+callID]
+	waits := map[string]<-chan struct{}{}
+	for _, id := range ids {
+		if h := sp.running[sp.calls[id]+"\x00"+id]; h != nil {
+			waits[id] = h.done
+		}
+	}
 	s.mu.Unlock()
-	if h == nil {
-		return true
+	if len(waits) == 0 {
+		return nil
 	}
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
-	select {
-	case <-h.done:
-		return true
-	case <-timer.C:
-		return false
+	expired := false
+	out := map[string]<-chan struct{}{}
+	for id, done := range waits {
+		if !expired {
+			select {
+			case <-done:
+				continue
+			case <-timer.C:
+				expired = true
+			}
+		}
+		select {
+		case <-done:
+		default:
+			out[id] = done
+		}
 	}
+	return out
 }
 
 // newStepPersistLocked starts an attempt's per-step state at the leaf;

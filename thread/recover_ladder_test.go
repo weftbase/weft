@@ -2,6 +2,7 @@ package thread_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -311,5 +312,172 @@ func TestKeyedRetryOfAStillRunningHandlerAsksAPerson(t *testing.T) {
 	defer mu.Unlock()
 	if invoked != 1 {
 		t.Fatalf("ship ran %d times, want 1", invoked)
+	}
+}
+
+// abandonedTool is a tool whose first handler ignores its 10 ms
+// Timeout and runs until release closes — abandoned by the loop, still
+// running — and whose later handlers answer at once. It counts the
+// handlers and the most that ever ran at once.
+type abandonedTool struct {
+	mu      sync.Mutex
+	invoked int
+	active  int
+	most    int
+	release chan struct{}
+}
+
+func (a *abandonedTool) def(policy core.ReplayPolicy) *core.ToolDef {
+	return core.Tool("ship", "Ship.", func(ctx context.Context, _ struct{}) (string, error) {
+		a.mu.Lock()
+		a.invoked++
+		first := a.invoked == 1
+		a.active++
+		a.most = max(a.most, a.active)
+		a.mu.Unlock()
+		defer func() {
+			a.mu.Lock()
+			a.active--
+			a.mu.Unlock()
+		}()
+		if first {
+			<-a.release
+		}
+		return "shipped", nil
+	}, core.Replay(policy), core.Timeout(10*time.Millisecond))
+}
+
+func (a *abandonedTool) counts() (invoked, most int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.invoked, a.most
+}
+
+// P2-1 (final review): a ReplayNever call abandoned at its Timeout is
+// not offered as a recovery request while its handler may still run —
+// the end of the turn waits for it (bounded, as for a keyed retry) —
+// so a person's fast approval never starts a second handler beside
+// the first.
+func TestNeverRetryWaitsForTheAbandonedHandler(t *testing.T) {
+	ship := &abandonedTool{release: make(chan struct{})}
+	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+		wefttest.Say("done"),
+	), ship.def(core.ReplayNever)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, err := s.Send(bg, core.User("ship it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		close(ship.release)
+	}()
+	_, _ = turn.Wait()
+	p := s.Pending()
+	if len(p) != 1 || !p[0].Recovery || strings.Contains(p[0].Reason, "still running") {
+		t.Fatalf("Pending = %+v, want one recovery request, its handler returned", p)
+	}
+	rt, err := s.Decide(bg, thread.Approve("s1").Bind(p[0]))
+	if err != nil || rt == nil {
+		t.Fatalf("Decide = %v, %v", rt, err)
+	}
+	if res, err := rt.Wait(); err != nil || res.Text() != "done" {
+		t.Fatalf("resume = %v, %v", res, err)
+	}
+	if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+		t.Fatalf("ship ran %d times, at most %d at once: want the retry after the first returned", invoked, most)
+	}
+}
+
+// P2-1 (final review): past the bound, the request says the handler is
+// still running, and an approval — the retry — is refused with
+// ErrStillRunning until the handler returns; then it is taken, and the
+// retry runs alone. ReplayNever and ReplayKeyed alike.
+func TestApprovalWaitsForAStillRunningHandler(t *testing.T) {
+	for _, policy := range []core.ReplayPolicy{core.ReplayNever, core.ReplayKeyed} {
+		t.Run(string(policy), func(t *testing.T) {
+			ship := &abandonedTool{release: make(chan struct{})}
+			s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+				wefttest.Say("done"),
+			), ship.def(policy)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(bg) }()
+			turn, err := s.Send(bg, core.User("ship it"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = turn.Wait()
+			p := s.Pending()
+			if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "still running") {
+				t.Fatalf("Pending = %+v, want a recovery request saying the handler still runs", p)
+			}
+			if rt, err := s.Decide(bg, thread.Approve("s1").Bind(p[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
+				t.Fatalf("Decide while the handler runs = %v, %v; want ErrStillRunning", rt, err)
+			}
+			close(ship.release)
+			var rt *thread.Turn
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				rt, err = s.Decide(bg, thread.Approve("s1").Bind(p[0]))
+				if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err != nil || rt == nil {
+				t.Fatalf("Decide after the handler returned = %v, %v", rt, err)
+			}
+			if res, err := rt.Wait(); err != nil || res.Text() != "done" {
+				t.Fatalf("resume = %v, %v", res, err)
+			}
+			if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+				t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
+			}
+		})
+	}
+}
+
+// P2-4 (final review): the end of a turn waits for its abandoned
+// handlers in parallel, under one shared deadline — two still running
+// past the bound (2 s in this package's tests) hold the turn about 2 s,
+// not 2 s each.
+func TestAbandonedHandlersShareOneDeadline(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	slow := func(name string) *core.ToolDef {
+		return core.Tool(name, "Slow.", func(context.Context, struct{}) (string, error) {
+			<-release
+			return "ok", nil
+		}, core.Replay(core.ReplayKeyed), core.Timeout(10*time.Millisecond))
+	}
+	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+		wefttest.ToolCalls(
+			wefttest.Call{Name: "a", ID: "a1", Args: `{}`},
+			wefttest.Call{Name: "b", ID: "b1", Args: `{}`},
+			wefttest.Call{Name: "c", ID: "c1", Args: `{}`},
+		),
+	), slow("a"), slow("b"), slow("c")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	start := time.Now()
+	turn, err := s.Send(bg, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = turn.Wait()
+	if d := time.Since(start); d > 4*time.Second {
+		t.Fatalf("the turn ended after %v: its abandoned handlers were waited for one after another", d)
+	}
+	if p := s.Pending(); len(p) != 3 {
+		t.Fatalf("Pending = %+v, want the three calls for a person", p)
 	}
 }

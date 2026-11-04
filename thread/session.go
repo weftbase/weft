@@ -424,6 +424,13 @@ type Session struct {
 	steerMint     *Turn
 	out           outbox
 
+	// stillRunning holds, by run and call id, the handlers a turn's end
+	// left running past abandonedWait: their call parked for a person,
+	// and an approval — the retry — is refused (ErrStillRunning) until
+	// the channel closes, the handler returned. In-process only: a
+	// restart ends the handler with the process. Guarded by mu.
+	stillRunning map[string]<-chan struct{}
+
 	// The compaction trigger's state (ADR 0020 §2): lastInput is the
 	// provider-reported input of the last model step the session ran,
 	// lastMeasureLeaf the entry that step's request covered up to (the

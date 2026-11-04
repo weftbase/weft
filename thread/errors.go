@@ -100,6 +100,16 @@ var (
 	// call that may have run — decide it (approve retries, deny skips).
 	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
 
+	// ErrStillRunning is returned by Decide, DecideSigned and the pool's
+	// replay for an approval of a recovery request whose call's handler
+	// — abandoned by its run at its Timeout or a cancellation it
+	// ignored — is still running past the bound the end of its turn
+	// waited for it (the request's Reason says so). The approval retries
+	// the call, and a second handler beside the first could repeat its
+	// effect: approve again once the handler has returned. A deny or a
+	// resolve is taken. Retryable; nothing was recorded.
+	ErrStillRunning = errors.New("thread: the call's abandoned handler is still running")
+
 	// ErrRollbackRefused is returned beside a Turn by a Send under the
 	// Rollback policy whose running turn has started a call that is not
 	// core.ReplaySafe: a rollback would move that call off the line the

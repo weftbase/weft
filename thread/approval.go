@@ -655,6 +655,10 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		if err := recoveryDecisionErr(req, d.Decision); err != nil {
 			return err
 		}
+		if d.Kind == OutcomeApprove && req.Recovery && s.handlerRunningLocked(req) {
+			return fmt.Errorf("%w: call %q (request %s): approving retries it; approve again once its handler has returned",
+				ErrStillRunning, d.CallID, req.ID)
+		}
 		if d.Kind == OutcomeEdit {
 			if _, err := canonicalArgs(d.EditedArgs); err != nil || !jsonObject(d.EditedArgs) {
 				return fmt.Errorf("%w: the edit of call %q carries no JSON object of arguments", ErrInvalidDecision, d.CallID)
@@ -767,6 +771,24 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		}
 	}
 	return nil
+}
+
+// handlerRunningLocked reports whether req's call has a handler a
+// turn's end left running past its bound that has not returned yet
+// (stillRunning); one that has is forgotten. Callers hold s.mu.
+func (s *Session) handlerRunningLocked(req Request) bool {
+	key := req.RunID + "\x00" + req.CallID
+	done, ok := s.stillRunning[key]
+	if !ok {
+		return false
+	}
+	select {
+	case <-done:
+		delete(s.stillRunning, key)
+		return false
+	default:
+		return true
+	}
 }
 
 // anyAlways reports whether some approval among ds asked for the
@@ -1102,30 +1124,51 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	// abandon a child that is still parked.
 	var wrappers map[string]string
 	s.locked(func() { wrappers = s.approvalWalkLocked().wrappers })
+	// The calls whose handler started and gave no answer
+	// (core.ParkUnknown): the outcome is unknown, and the recovery
+	// ladder decides it (ADR 0032) — a keyed retry (bounded), or a
+	// person. (A delegating call passed the gate too — the delegation
+	// is its handler — but its child parked, mirrored: it parks below,
+	// for the child's answer.) Not the tool's Reconcile: the abandoned
+	// handler may still be running (its Timeout passed, a cancel it
+	// ignores), and a system of record asked now could answer
+	// "missing" for an effect about to land — the rerun would be a
+	// second one.
+	unknown := map[string][]Entry{}
+	var waitFor []string
 	for _, c := range calls {
-		if wrappers[c.ID] == "" && sp.wasStarted(s, c.ID) {
-			// (A delegating call passed the gate too — the delegation is
-			// its handler — but its child parked, mirrored: it parks
-			// below, for the child's answer.)
-			// Its handler started and gave no answer (core.ParkUnknown):
-			// the outcome is unknown, and the recovery ladder decides it
-			// (ADR 0032) — a keyed retry (bounded), or a person. Not the
-			// tool's Reconcile: the abandoned handler may still be
-			// running (its Timeout passed, a cancel it ignores), and a
-			// system of record asked now could answer "missing" for an
-			// effect about to land — the rerun would be a second one.
-			var es []Entry
-			s.locked(func() {
-				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, nil)
-			})
-			if d, ok := es[len(es)-1].(ApprovalDecisionEntry); ok && d.Outcome == OutcomeApprove && !sp.returned(s, c.ID, abandonedWait) {
-				// A keyed retry never starts while the abandoned
-				// handler may still be running: it waits for it to
-				// return, bounded; still running past the bound, the
-				// call goes to a person instead (review 3 P2-2).
+		if wrappers[c.ID] != "" || !sp.wasStarted(s, c.ID) {
+			continue
+		}
+		var es []Entry
+		s.locked(func() {
+			es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, nil)
+		})
+		unknown[c.ID] = es
+		if d, ok := es[len(es)-1].(ApprovalDecisionEntry); !ok || d.Outcome == OutcomeApprove {
+			// A retry — the session's own, or a person's — never starts
+			// while the abandoned handler may still be running: the
+			// request is not offered until it returns, bounded (review 3
+			// P2-2, final review P2-1). A call resolved without a run
+			// (ReplaySafe) waits for nothing.
+			waitFor = append(waitFor, c.ID)
+		}
+	}
+	running := sp.stillRunning(s, waitFor, abandonedWait)
+	for _, c := range calls {
+		if es, ok := unknown[c.ID]; ok {
+			if done, still := running[c.ID]; still {
+				// Still running past the bound: a person decides, and
+				// an approval waits for the handler (ErrStillRunning).
 				req := es[0].(ApprovalRequestEntry)
 				req.Reason = reasonStillRunning
 				es = []Entry{req}
+				s.locked(func() {
+					if s.stillRunning == nil {
+						s.stillRunning = map[string]<-chan struct{}{}
+					}
+					s.stillRunning[t.runID+"\x00"+c.ID] = done
+				})
 			}
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {
