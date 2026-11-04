@@ -219,7 +219,10 @@ A shutdown sequence that leaves nothing behind:
    not wait for pool children. A ctx already canceled with the cause
    `thread.ErrShutdown` cuts running children off instead: their
    turns are recorded cut off and their receipts stay unsettled for
-   `pool.Recover` after the restart.
+   `pool.Recover` after the restart, which recovers each such child
+   on its own ladder (`RecoverTurn`) rather than settling it failed:
+   its calls of unknown outcome reach the parent as mirrored recovery
+   requests, or it runs on to its answer.
 3. `s.Close(ctx)` for each open session, with a deadline you can
    afford and the cause `thread.ErrShutdown` (above).
 4. Exit.

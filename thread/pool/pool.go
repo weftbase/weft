@@ -1173,10 +1173,13 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 		p.concludeRun(ctx, ledger, d, Done, answer, answer, false)
 		return outcome{answer: answer}
 	}
-	if errors.Is(err, thread.ErrShutdown) {
+	if errors.Is(err, thread.ErrShutdown) || errors.Is(err, thread.ErrLocked) {
 		// A shutdown cut the child's turn off (TurnEntry.CutOff): the
 		// receipt is left as it stands, unsettled, so Recover after the
 		// restart reattaches the child and recovers its turn (ADR 0032).
+		// Another writer holds the child (a recovery that found it
+		// running elsewhere): its outcome is that writer's, and the
+		// receipt is not settled on a guess either.
 		return outcome{err: err}
 	}
 	canceled := p.wasCanceled(d)

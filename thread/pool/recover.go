@@ -47,10 +47,19 @@ import (
 //   - the child finished its run: the receipt settles from the child's
 //     own ledger — done with its final text, failed, capped or
 //     canceled with its recorded cause — with the child's usage.
-//   - the child never finished its first run — queued, or mid-run
-//     when the process died with no approval boundary on file: the
-//     receipt settles failed, saying so. That run is not started
-//     again: what it had done, it had done.
+//   - a crash or a shutdown cut the child's run off (ADR 0032: a run
+//     started and never ended, or a turn recorded cut off): it is not
+//     settled failed — what it did is not known, and a parent told
+//     "failed" may delegate the work again over an effect the child
+//     had. The child is reattached and recovered on its own ladder
+//     (thread.Session.RecoverTurn), the receipt left open: its calls
+//     of unknown outcome park — mirrored onto the parent as recovery
+//     requests — or it continues to its answer, which settles the
+//     receipt. A cut-off child that was itself delegating (an open
+//     receipt or mirror of its own) is ended depth first as below.
+//   - the child never started its run (queued when the process died),
+//     or was cut off while delegating: the receipt settles failed,
+//     saying so, its own delegations ended first.
 //   - the child session is gone: the receipt settles failed.
 //
 // A child settled as over that is itself a parent ends its own
@@ -142,6 +151,17 @@ func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receip
 		// Another pool watching the parent holds this child — it may be
 		// working it now: its Recover recovers it, never this pool's.
 		return nil
+	}
+	if cutOff(entries) && !hasLoose(entries) {
+		// A crash or a shutdown cut the child's run off: what it did is
+		// not known, so it is never settled failed — the parent could
+		// delegate the work again over an effect the child had. The
+		// child recovers on its own ladder (RecoverTurn) and the
+		// delegation stays open: it parks (its calls of unknown outcome
+		// mirrored for a person) or runs on to its answer. A cut-off
+		// child that was itself delegating is ended depth first, as
+		// before: its delegations are canceled at their boundaries.
+		return p.recoverCutOff(ctx, parent, rc)
 	}
 	state, stop, usage, parked := classify(entries)
 	if parked {
@@ -333,16 +353,24 @@ func syncDelegation(s *thread.Session, rc Receipt) bool {
 // usage is the session's whole cost, turns and summaries.
 func classify(entries []thread.Entry) (state State, stop string, usage core.Usage, parked bool) {
 	var last *thread.TurnEntry
+	closed := false
 	for _, e := range entries {
 		switch e := e.(type) {
 		case thread.TurnEntry:
 			last = &e
+			closed = false
 			usage = usage.Add(e.Usage)
 		case thread.CompactionEntry:
 			usage = usage.Add(e.SummarizerUsage)
+		case thread.ApprovalAuditEntry:
+			// RecoverTurn found the cut-off run had answered and only
+			// its end was lost: it wrote the end, the answer stands.
+			closed = closed || (last != nil && e.Step == thread.StepRecover && e.CallID == "" && e.Outcome == "closed" && e.RunID == last.RunID)
 		}
 	}
 	switch {
+	case last != nil && last.CutOff && closed:
+		return Done, finalText(entries), usage, false
 	case last == nil:
 		return Failed, "the child's run did not survive a restart: no turn was recorded", usage, false
 	case len(last.Pending) > 0:
@@ -358,9 +386,80 @@ func classify(entries []thread.Entry) (state State, stop string, usage core.Usag
 	return Done, finalText(entries), usage, false
 }
 
+// cutOff reports whether a child's file shows a run that started and
+// never ended on its own (ADR 0032): a prompt entry after the last turn
+// entry (or with none at all), or a last turn entry marked CutOff that
+// no recovery closed. Its outcome is not known.
+func cutOff(entries []thread.Entry) bool {
+	started, cut := false, false
+	closed := map[string]bool{}
+	for _, e := range entries {
+		switch e := e.(type) {
+		case thread.MessageEntry:
+			if e.RunID != "" {
+				started = true
+			}
+		case thread.TurnEntry:
+			started, cut = false, e.CutOff
+			if cut && closed[e.RunID] {
+				cut = false
+			}
+		case thread.ApprovalAuditEntry:
+			if e.Step == thread.StepRecover && e.CallID == "" {
+				closed[e.RunID] = true
+				cut = false // recovered: a continuation, a park or a close follows
+			}
+		}
+	}
+	return started || cut
+}
+
+// recoverCutOff reattaches a cut-off child and starts its recovery on
+// a pool goroutine (arm, replayOrRecover → RecoverTurn): the receipt
+// stays unsettled, and the delegation ends as the recovered child does.
+func (p *Pool) recoverCutOff(ctx context.Context, parent *thread.Session, rc Receipt) error {
+	d, err := p.delegateFor(ctx, parent, rc, wrapperOf(parent, rc))
+	if errors.Is(err, errSettled) || errors.Is(err, errForeign) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	gen := d.parks
+	p.mu.Unlock()
+	p.arm(d, gen, nil)
+	return nil
+}
+
 // reattach rebuilds the bridge to a child parked at an approval:
 // missing mirrors are written, and the receipt records parked.
 func (p *Pool) reattach(ctx context.Context, parent *thread.Session, rc Receipt) error {
+	d, err := p.delegateFor(ctx, parent, rc, wrapperOf(parent, rc))
+	if errors.Is(err, errSettled) || errors.Is(err, errForeign) {
+		return nil // settled since the caller read the ledger, or another pool's: nothing to reattach
+	}
+	if err != nil {
+		return err
+	}
+	if err := p.mirror(ctx, d); err != nil {
+		return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, &unmirroredError{err})
+	}
+	if rc.State != Parked {
+		if _, err := parent.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
+			Receipt: rc.ID, Status: thread.PoolParked, Child: rc.Child,
+		}); err != nil {
+			return fmt.Errorf("thread/pool: parked receipt for %s: %w", rc.ID, err)
+		}
+	}
+	return nil
+}
+
+// wrapperOf is the delegating call a reattached child's answer
+// resolves, "" when none can: the call still open in the parent, or the
+// one its mirrors name — unless the run that delegated died before its
+// turn ended.
+func wrapperOf(parent *thread.Session, rc Receipt) string {
 	wrapper := ""
 	if rc.Call != "" && callPending(parent, rc.Call) {
 		// The delegating call is still open in the parent: the child's
@@ -383,24 +482,7 @@ func (p *Pool) reattach(ctx context.Context, parent *thread.Session, rc Receipt)
 		// comes.
 		wrapper = ""
 	}
-	d, err := p.delegateFor(ctx, parent, rc, wrapper)
-	if errors.Is(err, errSettled) || errors.Is(err, errForeign) {
-		return nil // settled since the caller read the ledger, or another pool's: nothing to reattach
-	}
-	if err != nil {
-		return err
-	}
-	if err := p.mirror(ctx, d); err != nil {
-		return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, &unmirroredError{err})
-	}
-	if rc.State != Parked {
-		if _, err := parent.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
-			Receipt: rc.ID, Status: thread.PoolParked, Child: rc.Child,
-		}); err != nil {
-			return fmt.Errorf("thread/pool: parked receipt for %s: %w", rc.ID, err)
-		}
-	}
-	return nil
+	return wrapper
 }
 
 // turnLandedSince reports whether a turn of parent ended after

@@ -1867,6 +1867,13 @@ func (p *Pool) Forward(ctx context.Context, parent *thread.Session, receiptID st
 // child park, for a person to retry or skip — or retries a ReplayKeyed
 // one with its same key.
 func replayOrRecover(ctx context.Context, child *thread.Session, replay ...thread.ApprovalDecisionEntry) (*thread.Turn, error) {
+	if len(replay) == 0 {
+		// Nothing to replay — a cut-off child Recover reattached: its
+		// cut-off turn is recovered first (ErrNotPending: there is none).
+		if t, err := child.RecoverTurn(ctx); !errors.Is(err, thread.ErrNotPending) {
+			return t, err
+		}
+	}
 	t, err := child.ReplayDecisions(ctx, replay...)
 	if errors.Is(err, thread.ErrRecoveryRequired) {
 		return child.RecoverTurn(ctx)

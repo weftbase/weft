@@ -189,6 +189,20 @@ result, effect unknown) or that never got a result stay unanswered on
 `pending`, without synthetic text, and RecoverTurn handles the turn as
 any cut-off run.
 
+**A cut-off pool child is recovered, not failed (review P1-4).**
+`thread/pool`'s `Recover` used to settle a child whose run a crash or a
+shutdown cut off as `failed` — and a parent told "failed" may delegate
+the work again over the child's effect. Such a child (a run started and
+never ended, or a turn recorded `cut_off` that no recovery closed) is
+now reattached and recovered on its own ladder (`RecoverTurn`, on a
+pool goroutine): its calls of unknown outcome park and are mirrored
+onto the parent as recovery requests, or it continues to its answer,
+which settles the receipt; the receipt stays open meanwhile. A cut-off
+child that was itself delegating (an open receipt or mirror of its
+own) is still ended depth first and settled failed, its delegations
+canceled at their boundaries — the residual case, where the cut-off
+step's outcome is the grandchildren's.
+
 ## Consequences
 
 - One append (and flush) per dispatched call that is not `ReplaySafe`
