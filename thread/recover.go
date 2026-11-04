@@ -591,6 +591,16 @@ func (s *Session) delegationEndedLocked(entry, callID string) bool {
 	return false
 }
 
+// liveDelegationLocked reports whether callID delegates to a
+// thread/pool child that is still the pool's to settle: a mirrored
+// child request names it as its wrapper, and its delegation is not
+// over (delegationEndedLocked — a delegation ended unanswered is a
+// person's to decide, recoveryEntries' reasonDelegated). Callers hold
+// s.mu.
+func (s *Session) liveDelegationLocked(walk approvalWalk, callID string) bool {
+	return walk.wrappers[callID] != "" && !s.delegationEndedLocked(s.callEntryLocked(callID), callID)
+}
+
 // unknownLocked returns the cut-off run's calls whose outcome is
 // unknown (rule B): calls that are not ReplaySafe, without a result,
 // that the run may have started — its own step's calls whose dispatch
@@ -970,10 +980,17 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 
 // recoverParkLocked parks the cut-off run's own unanswered calls
 // (recoveryEntries) and starts the resume when that decided every
-// call. Callers hold s.mu.
+// call. A call delegating to a live thread/pool child (its parked
+// request is mirrored here) is left to the pool, as unknownLocked
+// leaves it: parking it too would offer the delegation twice, and
+// approving both would delegate twice. Callers hold s.mu.
 func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {
 	var extra []Entry
+	walk := s.approvalWalkLocked()
 	for _, c := range x.calls {
+		if s.liveDelegationLocked(walk, c.ID) {
+			continue // the pool's to settle (ADR 0022 §7)
+		}
 		extra = append(extra, s.recoveryEntries(c, x.run, c.Args, nil, s.parkQuorum(), s.callStartLocked(x, c), rc)...)
 	}
 	if err := s.recordRecoverLocked(persist, x, recoverParked, "", x.calls, extra...); err != nil {

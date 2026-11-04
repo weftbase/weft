@@ -461,3 +461,52 @@ func TestRecoverEndsASubtreeCutMidCascade(t *testing.T) {
 		t.Errorf("the top offers %+v, want L1's delegating call as a recovery request", pend)
 	}
 }
+
+// P1-1 (final review): the documented boot sequence — Open, the pool's
+// Recover, then RecoverTurn — over a top whose delegating call was cut
+// off after its child parked and mirrored. Recover reattaches the
+// child, whose mirror stays offered; RecoverTurn must leave the
+// delegating call to the pool, as unknownLocked does, not also park it
+// as a recovery request (whose approval would delegate a second time).
+func TestRecoverTurnLeavesALiveDelegationToThePool(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	gated := []bool{false, true}
+	top := parkCrashChain(t, dir, gated)
+	cutBefore(t, filepath.Join(dir, top+".jsonl"), kind("turn"))
+
+	st, err := jsonl.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pool.New(4)
+	lead, ran := crashChain(p, gated, false)
+	s, err := thread.Open(ctx, st, top, lead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(ctx) }()
+	if err := p.Recover(ctx, s); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if rt, err := s.RecoverTurn(ctx); err != nil || rt != nil {
+		t.Fatalf("RecoverTurn = %v, %v; want the boundary left waiting", rt, err)
+	}
+	pend := s.Pending()
+	if len(pend) != 1 || pend[0].Child == "" || pend[0].Recovery {
+		t.Fatalf("Pending = %+v, want only the child's mirrored request", pend)
+	}
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	rc := waitFor(t, p, s, pool.Receipts(s)[0].ID, pool.Done)
+	if rc.Stop != "level1 done" {
+		t.Errorf("receipt = %+v, want L1's answer", rc)
+	}
+	if n := len(pool.Receipts(s)); n != 1 {
+		t.Errorf("the delegating call delegated %d times; want once", n)
+	}
+	if got := ran.snapshot(); len(got) != 1 || !got[0] {
+		t.Errorf("approved runs = %v, want the approved call run once", got)
+	}
+}
