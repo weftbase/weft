@@ -593,7 +593,15 @@ takes its origin's under its own), held over the stored pairs for an
 `Open`'s life, stamped under the identity keys above (which win) and
 under a `Send`'s own `thread.RunOptions(weft.Metadata(...))` (which wins
 per key) — a tenant or a batch tag on every turn without threading a
-context through each `Send`.
+context through each `Send`. The pairs a run starts under are recorded
+with what waits on disk: a parked request and a queued receipt keep
+the session's run metadata merged under the send's own (`.run.metadata`),
+so a reopen by a process with other run metadata — another worker,
+another deployment — reads them back (`Request.Metadata`) and the
+resume or the restored send runs under them, the recorded pairs
+winning. A `thread/pool` child runs under its parent's run metadata.
+A platform puts its own labels here under its own namespace (Weftbase:
+`weftbase.agent_version`); weft never reads them.
 
 The compaction marker: every compaction that lands (threshold,
 `Compact`, `ApplyCompaction`, a trim, the overflow re-run) emits a

@@ -6,6 +6,17 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+### Added
+
+- thread: `Request.Metadata` — the run metadata a parked run ran under, as its request recorded it: the session's run metadata (`WithRunMetadata`) merged under the parking `Send`'s own context and `core.Metadata` pairs. A platform's labels (a tenant, a deployment, an agent version under its own key such as `weftbase.agent_version`) are readable by whichever process reopens the session, whatever run metadata that process opened it with. weft never reads them.
+
+### Changed
+
+- thread: a parked request (`ApprovalRequestEntry.Run`) and a queued receipt (`ReceiptEntry.Run`) record the session's run metadata beside the send's own, so the resume or the restored send runs under the labels it was started with — the recorded pairs winning over the reopening Session's, as the parked settings already did. Before, only the send's own pairs were recorded and a reopen by a process with other run metadata lost them.
+- thread/pool: a child session runs under its parent's run metadata, as a fork does — written into its header at `Submit`, held over it when the pool reopens it — and a mirrored child request carries the child run's metadata (`Request.Metadata` on the parent's `Pending`).
+
 ## 0.21.0 — 2026-11-03
 
 ### Changed (breaking)

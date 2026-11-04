@@ -209,7 +209,7 @@ func (s *Session) steerSendLocked(ctx context.Context, msg core.Message, opts []
 	}
 	clone := cloneMessage(msg)
 	e := ReceiptEntry{ID: t.id, ParentID: s.leaf, Created: s.now(),
-		Status: ReceiptQueued, Msg: &clone, Run: core.SettingsOf(ctx, opts...)}
+		Status: ReceiptQueued, Msg: &clone, Run: s.settingsOfLocked(ctx, opts)}
 	if err := s.st.Append(ctx, s.header.ID, e); err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (s *Session) deferSteerLocked(q queuedSteer) (*Turn, string, error) {
 	ft.policy, ft.hasPolicy = Steer, true
 	ctx := context.WithoutCancel(q.ctx)
 	ps := q.followUp(ft, "")
-	receipt, err := s.acceptLocked(ctx, ft, q.msg, core.SettingsOf(ps.ctx, ps.opts...), func(id, parent string, created time.Time) Entry {
+	receipt, err := s.acceptLocked(ctx, ft, q.msg, s.settingsOfLocked(ps.ctx, ps.opts), func(id, parent string, created time.Time) Entry {
 		return ReceiptEntry{ID: id, ParentID: parent, Created: created,
 			Receipt: q.receipt, Status: ReceiptDeferred, Turn: ft.id}
 	})

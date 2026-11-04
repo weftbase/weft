@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -141,6 +142,14 @@ type Request struct {
 	// parked, or the session's Quorum if higher; 0 when one decision
 	// resolves it.
 	Quorum int
+	// Metadata is the run metadata the parked run ran under, as its
+	// request recorded it (ApprovalRequestEntry.Run): the session's
+	// run metadata (WithRunMetadata) merged under the parking Send's
+	// own context and core.Metadata pairs — the labels a platform set
+	// on the session (a tenant, a deployment, a version under its own
+	// key), readable by whichever process reopens the session. weft
+	// never reads it. A copy; nil when the run carried none.
+	Metadata map[string]string
 }
 
 // Decision is one call's outcome, the value Decide records (ADR 0021
@@ -906,7 +915,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	cr := &chainResult{opts: opts, awaitCtx: ctx, runID: t.runID}
 	// What the parked run ran under, as data: a resume after a restart
 	// has lost opts and ctx, and puts this back (runResume).
-	settings := core.SettingsOf(ctx, opts...)
+	settings := s.settingsOf(ctx, opts)
 	var expiry time.Time
 	if s.cfg.requestExpiry > 0 {
 		expiry = s.approvalNow().Add(s.cfg.requestExpiry)
@@ -1251,12 +1260,16 @@ func toolSchemaHash(a *core.Agent, name string) string {
 // Quorum is the entry's; the session's own, when higher, is the
 // caller's to fold in (pendingLocked).
 func requestFromEntry(session string, e ApprovalRequestEntry) Request {
-	return Request{
+	r := Request{
 		ID: e.ID, Session: session, CallID: e.CallID, Tool: e.Tool,
 		Args: slices.Clone(e.Args), ArgsSHA256: e.ArgsSHA256,
 		RunID: e.RunID, Reason: e.Reason, Expiry: e.Expiry, Created: e.Created,
 		Child: e.Child, Quorum: e.Quorum,
 	}
+	if e.Run != nil && len(e.Run.Metadata) > 0 {
+		r.Metadata = maps.Clone(e.Run.Metadata)
+	}
+	return r
 }
 
 // parkQuorum is the quorum a request parked now records: the

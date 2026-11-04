@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -648,11 +649,17 @@ func mirrorCallID(child, callID string) string {
 func mirrorRequests(reqs []thread.Request, child, wrapper string) []thread.ApprovalRequestEntry {
 	out := make([]thread.ApprovalRequestEntry, 0, len(reqs))
 	for _, r := range reqs {
-		out = append(out, thread.ApprovalRequestEntry{
+		e := thread.ApprovalRequestEntry{
 			CallID: mirrorCallID(child, r.CallID), Tool: r.Tool, Args: r.Args, ArgsSHA256: r.ArgsSHA256,
 			RunID: r.RunID, Reason: r.Reason, Expiry: r.Expiry, Quorum: r.Quorum,
 			Child: child, Wrapper: wrapper,
-		})
+		}
+		if len(r.Metadata) > 0 {
+			// The child run's labels ride the mirror, so the parent's
+			// Pending names them too (Request.Metadata).
+			e.Run = &core.RunSettings{Metadata: maps.Clone(r.Metadata)}
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -1396,7 +1403,8 @@ func (p *Pool) delegateFor(ctx context.Context, parent *thread.Session, rc Recei
 		}
 		return nil, err
 	}
-	child, err := thread.Open(ctx, parent.Storage(), rc.Child, agent, thread.InheritApprovals(parent))
+	child, err := thread.Open(ctx, parent.Storage(), rc.Child, agent, thread.InheritApprovals(parent),
+		thread.WithRunMetadata(parent.RunMeta()))
 	if err != nil {
 		return nil, fmt.Errorf("thread/pool: child session %s not reopened: %w", rc.Child, err)
 	}

@@ -204,7 +204,8 @@ func (p *Pool) openEnded(ctx context.Context, above *thread.Session, childID str
 	if err != nil {
 		return nil, err
 	}
-	child, err := thread.Open(ctx, above.Storage(), childID, agent, thread.InheritApprovals(above))
+	child, err := thread.Open(ctx, above.Storage(), childID, agent, thread.InheritApprovals(above),
+		thread.WithRunMetadata(above.RunMeta()))
 	if err != nil {
 		return nil, fmt.Errorf("thread/pool: child session %s not reopened: %w", childID, err)
 	}

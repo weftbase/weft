@@ -380,7 +380,7 @@ func (s *Session) enqueueLocked(ctx context.Context, msg core.Message, opts []co
 	}
 	t := s.newTurnLocked()
 	t.policy, t.hasPolicy = policy, true
-	receipt, err := s.acceptLocked(ctx, t, msg, core.SettingsOf(ctx, opts...), nil)
+	receipt, err := s.acceptLocked(ctx, t, msg, s.settingsOfLocked(ctx, opts), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1483,6 +1483,29 @@ func (s *Session) RunMeta() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return maps.Clone(s.runMetaLocked())
+}
+
+// settingsOf is what a run under ctx and opts runs under, as data —
+// the value a parked request (ApprovalRequestEntry.Run) and a queued
+// receipt (ReceiptEntry.Run) record: core.SettingsOf with the
+// session's run metadata (WithRunMetadata) as the first option, so its
+// Metadata reads as the run's does — the session's pairs under the
+// send's own context and core.Metadata pairs. A reopen by any process
+// then knows the labels the run was started under, whatever run
+// metadata that process opened the session with.
+func (s *Session) settingsOf(ctx context.Context, opts []core.RunOption) *core.RunSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settingsOfLocked(ctx, opts)
+}
+
+// settingsOfLocked is settingsOf for callers that hold s.mu.
+func (s *Session) settingsOfLocked(ctx context.Context, opts []core.RunOption) *core.RunSettings {
+	rm := s.runMetaLocked()
+	if len(rm) == 0 {
+		return core.SettingsOf(ctx, opts...)
+	}
+	return core.SettingsOf(ctx, append([]core.RunOption{core.Metadata(maps.Clone(rm))}, opts...)...)
 }
 
 // runMetaLocked is the session's run metadata, merged: the header's,

@@ -883,7 +883,10 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 
 	// The child takes the parent's approval policy (ADR 0022 §7):
 	// expiry, quorum, the signing rule and its keyring, the clock.
-	opts := []thread.SessionOption{thread.WithLineage(parent.ID(), callID), thread.InheritApprovals(parent)}
+	// A child runs under its parent's run metadata (a tenant, a
+	// deployment label): written into its header, as a Fork's is.
+	opts := []thread.SessionOption{thread.WithLineage(parent.ID(), callID), thread.InheritApprovals(parent),
+		thread.WithRunMetadata(parent.RunMeta())}
 	if name != "" {
 		// The wrap's name is the resume key a restarted process
 		// re-Wraps into existence (ADR 0022 §7).
