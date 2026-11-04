@@ -1386,6 +1386,19 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	var keep []core.ToolCallPart // unanswered on the line, for the chain
 	if !shutdown {
 		keep = unknown
+	} else if len(unknown) > 0 {
+		// Cut off — a shutdown, or a Close that gave up on the run —
+		// with handlers the loop abandoned that may still be running:
+		// the chain does not run, so the registry learns of them here,
+		// before the cut-off is durable. A RecoverTurn in this process
+		// (a reopen of the session) then parks their calls for a person
+		// with no keyed retry and no Reconcile, and an approval waits
+		// for the handler (ErrStillRunning), as the chain's own park.
+		s.locked(func() {
+			for _, c := range unknown {
+				sp.abandonLocked(t.runID, c.ID)
+			}
+		})
 	}
 	perr := s.recordTurnEnd(persist, t, turnEnd{res: res, err: err, report: report, inputLen: inputLen, chain: chain, sp: sp, shutdown: shutdown, unknown: keep})
 	// Steers still live when the run ended defer here: the run met a

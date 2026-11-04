@@ -341,3 +341,130 @@ func TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest(t *testing.T) {
 		})
 	}
 }
+
+// P1-1, the pool path: Pool.Close under a shutdown cuts a child's turn
+// off while its handler ignores the cancellation and keeps running.
+// In the same process the parent is reopened and a new pool recovers
+// it: the child's call parks for a person as still running — no keyed
+// retry beside the first handler — mirrored on the parent; Pool.Decide
+// approving it is refused with thread.ErrStillRunning until the
+// handler returned, then the retry runs alone and the delegation ends
+// done.
+func TestPoolCloseGiveUpThenRecoverWaitsForTheStillRunningHandler(t *testing.T) {
+	for _, sc := range poolStores(t) {
+		t.Run(sc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var mu sync.Mutex
+			invoked, active, most := 0, 0, 0
+			release := make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+			started := make(chan struct{}, 4)
+			ship := func() *core.ToolDef {
+				return core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
+					mu.Lock()
+					invoked++
+					first := invoked == 1
+					active++
+					most = max(most, active)
+					mu.Unlock()
+					started <- struct{}{}
+					defer func() { mu.Lock(); active--; mu.Unlock() }()
+					if first {
+						<-release // ignores its context
+					}
+					return "shipped", nil
+				}, core.Replay(core.ReplayKeyed), core.Timeout(time.Hour))
+			}
+			counts := func() (int, int) { mu.Lock(); defer mu.Unlock(); return invoked, most }
+			st := sc.st(t)
+			parent, err := thread.Create(ctx, st, core.New(wefttest.Script()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := pool.New(1)
+			r, err := p.Submit(ctx, parent, core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+			), ship()), "go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			cctx, cancel := context.WithCancelCause(ctx)
+			cancel(thread.ErrShutdown)
+			_ = p.Close(cctx) // gives up at once: the handler ignores the cancellation
+			if err := parent.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			// The same process: the parent reopened on the same store,
+			// a new pool recovers it.
+			parent, err = thread.Open(ctx, st, parent.ID(), core.New(wefttest.Script()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = parent.Close(ctx) }()
+			p2 := pool.New(1)
+			defer func() { _ = p2.Close(ctx) }()
+			if err := p2.Register(r.Child, core.New(wefttest.Script(wefttest.Say("child done")), ship())); err != nil {
+				t.Fatal(err)
+			}
+			// The closed pool finishes the child's Close once its cut-off
+			// landed: its hold on the storage is released.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				cs, err := thread.Open(ctx, st, r.Child, core.New(wefttest.Script()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = cs.Claim(ctx)
+				_ = cs.Close(ctx)
+				if err == nil {
+					break
+				}
+				if !errors.Is(err, thread.ErrLocked) || time.Now().After(deadline) {
+					t.Fatalf("the cut-off child's hold was not released: %v", err)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err := p2.Recover(ctx, parent); err != nil {
+				t.Fatalf("Recover = %v", err)
+			}
+			for len(parent.Pending()) == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			pend := parent.Pending()
+			if len(pend) != 1 || !pend[0].Recovery || pend[0].Child != r.Child || !strings.Contains(pend[0].Reason, "still running") {
+				t.Fatalf("parent Pending = %+v, want the child's still-running recovery request mirrored", pend)
+			}
+			mirror := pend[0]
+			if inv, _ := counts(); inv != 1 {
+				t.Fatalf("ship ran %d times while its first handler ran: the keyed retry did not wait", inv)
+			}
+			if err := p2.Decide(ctx, parent, bound(parent, thread.Approve(mirror.CallID))); !errors.Is(err, thread.ErrStillRunning) {
+				t.Fatalf("Pool.Decide while the handler runs = %v, want ErrStillRunning", err)
+			}
+			close(release)
+			released = true
+			deadline = time.Now().Add(5 * time.Second)
+			for {
+				err = p2.Decide(ctx, parent, bound(parent, thread.Approve(mirror.CallID)))
+				if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err != nil {
+				t.Fatalf("Pool.Decide after the handler returned = %v", err)
+			}
+			waitReceipt(t, parent, pool.Done)
+			if inv, m := counts(); inv != 2 || m != 1 {
+				t.Fatalf("ship ran %d times, at most %d at once; want the retry after the first returned", inv, m)
+			}
+		})
+	}
+}

@@ -222,6 +222,10 @@ type Pool struct {
 	// session (the bare path), so Close reaches them too.
 	calls    map[uint64]context.CancelFunc
 	nextCall uint64
+	// waiting holds the abandoned child handlers pumpWhenReturned
+	// already waits on, by their done channel: one waiter per handler,
+	// however many refused pumps ask.
+	waiting map[<-chan struct{}]bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -323,6 +327,7 @@ func New(max int, opts ...Option) *Pool {
 		resolving:     map[string]*lookupMark{},
 		nameAgents:    map[string]*core.Agent{},
 		calls:         map[uint64]context.CancelFunc{},
+		waiting:       map[<-chan struct{}]bool{},
 		nestedEnd:     nestedEndWait,
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -1217,6 +1222,16 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 		// Another writer holds the child (a recovery that found it
 		// running elsewhere): its outcome is that writer's, and the
 		// receipt is not settled on a guess either.
+		if errors.Is(err, thread.ErrShutdown) {
+			// The shutdown's Close of the child gave up at once (its
+			// context was already done); the cut-off is recorded now,
+			// so the close is finished here: the child's hold on the
+			// storage is released, and a Recover in this process — a
+			// pool rebuilt without a restart — can reopen it. A handler
+			// the cut-off left running is known to the process
+			// (thread.AbandonedHandler): the recovered call waits for it.
+			p.closeChild(context.WithoutCancel(ctx), d)
+		}
 		return outcome{err: err}
 	}
 	canceled := p.wasCanceled(d)
@@ -1245,10 +1260,12 @@ func refusedReplay(err error) bool {
 // pumpWhenReturned pumps d's parent once each still-running abandoned
 // handler of d's child has returned, so an approval the child refused
 // with ErrStillRunning is replayed without waiting for the next
-// Decide. Pool-owned work: counted in the drain, ended by Close.
+// Decide. One waiter per handler: a pump refused again while one
+// waits adds none. Pool-owned work: counted in the drain, ended by
+// Close.
 func (p *Pool) pumpWhenReturned(d *delegate) {
 	for _, r := range d.child.Pending() {
-		done := thread.AbandonedHandler(d.child.ID(), r.RunID, r.CallID)
+		done := thread.AbandonedHandler(r.RunID, r.CallID)
 		if done == nil {
 			continue
 		}
@@ -1257,12 +1274,20 @@ func (p *Pool) pumpWhenReturned(d *delegate) {
 			p.mu.Unlock()
 			return
 		}
+		if p.waiting[done] {
+			p.mu.Unlock()
+			continue
+		}
+		p.waiting[done] = true
 		p.wg.Add(1)
 		p.mu.Unlock()
 		go func() {
 			defer p.wg.Done()
 			select {
 			case <-done:
+				p.mu.Lock()
+				delete(p.waiting, done)
+				p.mu.Unlock()
 				p.pumpAsync(d.parent, d.agent.Logger())
 			case <-p.ctx.Done():
 			}

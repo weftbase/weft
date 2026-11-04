@@ -1113,13 +1113,13 @@ func refuseStillRunning(parent *thread.Session, ds ...thread.Decision) error {
 // done channel of the still-running handler of the child call the
 // mirror names, nil when none runs. A mirror's call id is the child's
 // own, namespaced by the child session (mirrorCallID) — once per level
-// of a chain, the run id the innermost child's — so each split of it
-// names a session and a call in that session's terms, and the
-// innermost is the one that ran.
+// of a chain, the run id the innermost child's — so each suffix of it
+// past a session prefix names a call in some child's terms, and the
+// innermost is the one that ran under the run id.
 func childHandler(r thread.Request) <-chan struct{} {
 	parts := strings.Split(r.CallID, "/")
 	for i := 0; i+1 < len(parts); i++ {
-		if done := thread.AbandonedHandler(parts[i], r.RunID, strings.Join(parts[i+1:], "/")); done != nil {
+		if done := thread.AbandonedHandler(r.RunID, strings.Join(parts[i+1:], "/")); done != nil {
 			return done
 		}
 	}

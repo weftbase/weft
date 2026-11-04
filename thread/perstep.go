@@ -145,18 +145,18 @@ func (s *Session) afterDispatch(sp *stepPersist) core.RunOption {
 }
 
 // abandonLocked files the still-running handler of callID under the
-// process-wide registry as run's (abandoned): an approval of its
-// call's recovery request waits for it, from this Session and from
-// any later one of the same session in this process. Callers hold
-// s.mu.
-func (sp *stepPersist) abandonLocked(s *Session, run, callID string) {
+// process-wide registry as run's (abandoned): nothing automatic runs
+// the call again while it runs, and an approval of its call's recovery
+// request waits for it — from this Session, a later one of the same
+// session, or a fork, in this process. Callers hold s.mu.
+func (sp *stepPersist) abandonLocked(run, callID string) {
 	h := sp.running[sp.calls[callID]+"\x00"+callID]
 	if h == nil || h.n == 0 {
 		return // returned since the wait gave up on it
 	}
-	k := abandonKey{session: s.header.ID, run: run, call: callID}
+	k := abandonKey{run: run, call: callID}
 	h.abandoned = append(h.abandoned, k)
-	abandoned.add(k, s.header.Created, h.done)
+	abandoned.add(k, h.done)
 }
 
 // stillRunning waits, under one shared deadline bound, for every

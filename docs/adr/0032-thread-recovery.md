@@ -168,9 +168,13 @@ call's handler is still running past its bound; approve to retry it
 with the same idempotency key once it has returned, deny to skip it` —
 no retry is counted (the final-review amendment extends the wait to
 every class and to a person's approval).
-The wait holds the turn's end (a `Close` waits for it, within its own
-deadline). After a crash no handler is left running, and nothing
-waits.
+The wait holds the turn's end; a `Close` waits for the turn's end
+within its own deadline. A `Close` that gives up first cuts the turn
+off and the end of the turn does not wait: the handler still running is
+filed in the process's registry (release-gate amendment below), so a
+`RecoverTurn` in the same process parks its call for a person — no
+keyed retry, no `Reconcile` — and an approval waits for it. After a
+crash no handler is left running, and nothing waits.
 
 **Rule E — audited like any decision.** The session's own retries are
 decision entries with a `recover` audit step (Outcome `retry`, Detail
@@ -585,22 +589,49 @@ above meant one `Session`: a `Close` then `Open` in the same process —
 a server evicting an idle session — forgot the handler, and an
 approval ran a second one beside it. The handlers a turn's end leaves
 running are now held in a process-wide registry keyed by the call's
-occurrence (session id, run id, call id) and the session header's
-`Created` — the identity the lease already uses for "the same stored
-session", so two stores holding one pinned session id stay apart. A
-lookup that cannot name `Created` (`AbandonedHandler`, from a pool
-parent) matches any; a collision there can only refuse an approval. An
-entry is added when the call parks as still running and removed by
-`core.AfterDispatch` when the handler returns, whatever became of the
-request — the registry holds only handlers that run. A restart still
-ends them with the process.
+occurrence: its run id and call id. Run ids embed the session they were
+minted in (`<session>-t<n>`), so the key names the origin session too,
+and every session holding the request — the one that ran it, a reopen
+of it, a `Fork` that copied it, a pool parent's mirror — asks under the
+same key, whatever its own id. Two stores holding one pinned session id
+collide on it; a collision can only refuse an approval, never let one
+through beside a running handler. An entry is added by the turn's end
+that leaves the handler running and removed by `core.AfterDispatch`
+when the handler returns, whatever became of the request — the
+registry holds only handlers that run. A restart still ends them with
+the process.
+
+**A `Close` that gives up files the handler too (release gate, last
+round, P1-1).** A `Close` whose deadline passes while a handler ignores
+the cancellation cuts the turn off (`TurnEntry.CutOff`, as a shutdown):
+the decision chain does not run, so the end of the turn neither waited
+for the handler nor filed it, and a `Close`, `Open`, `RecoverTurn` in
+the same process retried a keyed call at once beside the first
+handler, asked a `ReplayNever` call's `Reconcile` while it ran, and
+took an approval that started a second one. The cut-off branch now
+files every unknown-outcome call's live handler under the cut-off run,
+before the cut-off is durable. `RecoverTurn` (and its rungs) treat a
+filed, still-running call as still running: no keyed retry, no
+`Reconcile`, the call parked for a person with the still-running
+reason, an approval refused with `ErrStillRunning` until the handler
+returns, then taken as any. The same holds under a pool: `Pool.Close`
+under a shutdown cut its running children off; the closed pool now
+finishes each child's `Close` once its cut-off landed, releasing its
+hold, so a pool rebuilt in the same process can `Recover` it — and the
+recovered call waits for the handler. A `Fork` of a session carries a
+still-running request with its original run id; the fork's approval is
+refused the same way (P2-1).
 
 Tests: `TestInterruptedResumeLeavesItsRecoveryRequestForAPerson`,
 `TestNoArmingPathSettlesAnUndecidedRecoveryRequest`,
 `TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest`,
 `TestStillRunningSurvivesAnInProcessReopen`,
-`TestStillRunningDoesNotCrossStoresOfOneSessionID`,
-`TestAbandonedRegistryReleasesOnReturn` (thread);
+`TestStillRunningRunIDCollisionOnlyRefuses`,
+`TestAbandonedRegistryReleasesOnReturn`,
+`TestCloseGiveUpThenRecoverTurnWaitsForTheStillRunningHandler`,
+`TestForkRefusesApprovingAStillRunningCall` (thread);
+`TestPoolCloseGiveUpThenRecoverWaitsForTheStillRunningHandler`,
+`TestPumpWhenReturnedKeepsOneWaiterPerHandler`,
 `TestPoolDecideRefusesApprovingAStillRunningChildCall`,
 `TestRefusedChildReplayKeepsTheDelegationParked`,
 `TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest` (thread/pool).

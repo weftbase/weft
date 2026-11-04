@@ -111,12 +111,14 @@ func TestStillRunningSurvivesAnInProcessReopen(t *testing.T) {
 	}
 }
 
-// The registry's key keeps two stores apart: sessions of one pinned id
-// in two stores, the first's handler still running past its bound, the
-// second's returned. An approval in the second is taken — the first's
-// handler is another stored session's (told apart by the header's
-// Created) — and runs; the first's is still refused.
-func TestStillRunningDoesNotCrossStoresOfOneSessionID(t *testing.T) {
+// The registry matches a call by run id and call id, whatever session
+// asks (run ids embed their origin session). Sessions of one pinned id
+// in two stores collide: the first's handler still runs past its
+// bound, the second's returned. The collision can only refuse — the
+// second's approval waits (ErrStillRunning) until the first's handler
+// returned, then runs — never let an approval through beside a
+// running handler.
+func TestStillRunningRunIDCollisionOnlyRefuses(t *testing.T) {
 	pinned := func() thread.SessionOption {
 		var n atomic.Int64
 		return thread.IDs(func() string {
@@ -127,7 +129,12 @@ func TestStillRunningDoesNotCrossStoresOfOneSessionID(t *testing.T) {
 		})
 	}
 	held := &abandonedTool{release: make(chan struct{})}
-	defer close(held.release)
+	released := false
+	defer func() {
+		if !released {
+			close(held.release)
+		}
+	}()
 	a, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 	), held.def(core.ReplayNever)), pinned())
@@ -145,7 +152,6 @@ func TestStillRunningDoesNotCrossStoresOfOneSessionID(t *testing.T) {
 		t.Fatalf("a's Pending = %+v", pa)
 	}
 
-	time.Sleep(2 * time.Millisecond) // a later header time, as any second Create has
 	var ran atomic.Int32
 	quick := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		if ran.Add(1) == 1 {
@@ -173,14 +179,24 @@ func TestStillRunningDoesNotCrossStoresOfOneSessionID(t *testing.T) {
 	if len(pb) != 1 || !pb[0].Recovery || pb[0].RunID != pa[0].RunID {
 		t.Fatalf("b's Pending = %+v, want a recovery request of the same run id as a's", pb)
 	}
-	rt, err := b.Decide(bg, thread.Approve("s1").Bind(pb[0]))
+	if rt, err := b.Decide(bg, thread.Approve("s1").Bind(pb[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
+		t.Fatalf("b's Decide while a's handler runs = %v, %v; want the collision to refuse (ErrStillRunning)", rt, err)
+	}
+	close(held.release)
+	released = true
+	var rt *thread.Turn
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rt, err = b.Decide(bg, thread.Approve("s1").Bind(pb[0]))
+		if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if err != nil || rt == nil {
-		t.Fatalf("b's Decide = %v, %v: another store's handler refused it", rt, err)
+		t.Fatalf("b's Decide after a's handler returned = %v, %v", rt, err)
 	}
 	if res, err := rt.Wait(); err != nil || res.Text() != "done" {
 		t.Fatalf("b's resume = %v, %v", res, err)
-	}
-	if _, err := a.Decide(bg, thread.Approve("s1").Bind(pa[0])); !errors.Is(err, thread.ErrStillRunning) {
-		t.Fatalf("a's Decide = %v, want ErrStillRunning", err)
 	}
 }

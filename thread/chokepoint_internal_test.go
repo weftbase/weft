@@ -95,7 +95,7 @@ func TestAbandonedRegistryReleasesOnReturn(t *testing.T) {
 	if len(p) != 1 || p[0].Reason != reasonStillRunning {
 		t.Fatalf("pending = %+v", p)
 	}
-	k := abandonKey{session: s.ID(), run: p[0].RunID, call: "s1"}
+	k := abandonKey{run: p[0].RunID, call: "s1"}
 	held := func() int {
 		abandoned.mu.Lock()
 		defer abandoned.mu.Unlock()

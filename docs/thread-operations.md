@@ -341,10 +341,17 @@ returned …`) and an `Approve` is refused with `thread.ErrStillRunning`
 until the handler returns (retry it then; `Deny` is taken at once).
 The handler is known to the process, not to the `Session`: closing an
 idle session and opening it again in the same process (an eviction)
-still refuses the `Approve` while the first handler runs, and
-`pool.Decide` refuses the approval of a child's still-running call on
-the parent, recording nothing (`thread.AbandonedHandler` reads the
-registry). A restart ends the handler, and the refusal with it.
+still refuses the `Approve` while the first handler runs, so does a
+`Fork` that carried the request, and `pool.Decide` refuses the
+approval of a child's still-running call on the parent, recording
+nothing (`thread.AbandonedHandler(runID, callID)` reads the registry).
+A `Close` that gives up while a handler ignores its cancellation cuts
+the turn off; the handler is filed all the same, so `Open` and
+`RecoverTurn` in the same process park the call for a person — no
+keyed retry, no `Reconcile` — and refuse the `Approve` until it
+returns (likewise a child a shutdown `pool.Close` cut off, recovered by
+a new pool in the same process). A restart ends the handler, and the
+refusal with it.
 Skipping a recovery request (`Deny`) shows the model
 `OUTCOME_UNKNOWN: … it was skipped, not retried: do not repeat it`,
 never `DENIED`; and no resume starts while a recovery request is

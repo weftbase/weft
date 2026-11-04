@@ -775,11 +775,12 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 }
 
 // handlerRunningLocked reports whether req's call has a handler a
-// turn's end left running past its bound that has not returned yet —
-// in this process, from this Session or an earlier one of the same
-// session (the abandoned registry). Callers hold s.mu.
+// turn's end left running that has not returned yet — in this
+// process, from this Session, an earlier one of the same session, or
+// the session a fork copied the request from (the abandoned
+// registry). Callers hold s.mu.
 func (s *Session) handlerRunningLocked(req Request) bool {
-	return abandoned.running(abandonKey{session: s.header.ID, run: req.RunID, call: req.CallID}, s.header.Created)
+	return handlerRunning(req.RunID, req.CallID)
 }
 
 // anyAlways reports whether some approval among ds asked for the
@@ -1181,7 +1182,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 				req := es[0].(ApprovalRequestEntry)
 				req.Reason = reasonStillRunning
 				es = []Entry{req}
-				s.locked(func() { sp.abandonLocked(s, t.runID, c.ID) })
+				s.locked(func() { sp.abandonLocked(t.runID, c.ID) })
 			}
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {

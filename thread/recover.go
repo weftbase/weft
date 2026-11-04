@@ -153,6 +153,12 @@ func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.
 		if def == nil || s.replayAtDispatchLocked(c, run) != core.ReplayNever || def.Reconciler() == nil {
 			continue
 		}
+		if handlerRunning(run, c.ID) {
+			// Its abandoned handler still runs in this process: the
+			// system of record could answer "missing" for an effect
+			// about to land. It parks for a person (recoveryEntries).
+			continue
+		}
 		entry := s.callEntryLocked(c.ID)
 		if entry == "" {
 			continue
@@ -937,6 +943,13 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 	case start == startUnknowable && def != nil && def.RequiresApproval():
 		// Its tool parks it before it starts: it never ran.
 		req.Recovery, req.Reason = false, parkingReason(s, c.Name)
+		return []Entry{req}
+	case handlerRunning(run, c.ID):
+		// Its handler, abandoned by a run a Close cut off, still runs
+		// in this process: nothing automatic runs it again — no keyed
+		// retry, no Reconcile — and a person's approval waits for it
+		// (ErrStillRunning).
+		req.Reason = reasonStillRunning
 		return []Entry{req}
 	case s.delegationEndedLocked(s.callEntryLocked(c.ID), c.ID):
 		// It delegated to a thread/pool child, and the delegation was
