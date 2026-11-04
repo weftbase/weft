@@ -1165,7 +1165,9 @@ func TestChainNeverDecidesWrapper(t *testing.T) {
 						t.Errorf("a decision was recorded for the delegating call: %+v", e)
 					}
 				case thread.ApprovalAuditEntry:
-					if e.CallID == "c-wrapper" && e.Step != thread.StepPark {
+					// StepDispatch is the gate's record, not the chain's: the
+					// delegation passed the gate before its child parked.
+					if e.CallID == "c-wrapper" && e.Step != thread.StepPark && e.Step != thread.StepDispatch {
 						t.Errorf("chain step %q ran over the delegating call", e.Step)
 					}
 				}

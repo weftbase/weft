@@ -94,6 +94,10 @@ base
   resolve name ─────────── unknown → NO_SUCH_TOOL
   RequireApproval? ──────── not Call.Approved → ErrApprovalRequired → pending
   BeforeDispatch gate ───── refused → ErrNotDispatched; the handler never runs
+  handler middleware ────── WrapHandler (first listed = outermost): the
+                            handler's side — reached only by a call
+                            allowed to start; may answer instead of
+                            the handler (thread/pool's delegation)
   decode (StrictInput) ──── failure → INVALID_INPUT naming the field
   handler ───────────────── string verbatim / JSON; error or *ToolError
   AfterDispatch hook ────── the handler returned (abandoned or not)
@@ -141,6 +145,13 @@ key derived from that one's. A `Subagent`'s
 child run inherits neither the key option nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.
+A `thread/pool` delegation sits there too, as the handler middleware
+`pool.Wrap` installs (`weft.WrapHandler`): under a session the child
+session is created only after the approval boundary (a wrapped tool's
+`RequireApproval`, `ParkOn`, `ParkAllExcept`, `ParkSource`, a
+middleware's park) and after the gate has recorded, flushed and fenced
+the delegating call — a parked, denied, felled or fenced-off call never
+starts a child (ADR 0022's and ADR 0032's 2026-11-04 amendments).
 The `Subagent` handler calls the child agent's `execute` on the call's
 ctx, so the child occupies the slot like any tool; its events are
 wrapped (`Nested`, Seq from this run's counter, under this step's

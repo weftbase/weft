@@ -1807,7 +1807,9 @@ func parkRuleFrom(ctx context.Context) *parkRule {
 // chain builds the tool-call chain for one call: agent middleware
 // (outermost, first registered first) around the tool's middleware
 // around the base caller, which resolves the tool, enforces
-// RequireApproval, decodes, and runs the handler. def is nil for an
+// RequireApproval and the park rule, passes the dispatch gate, and
+// runs the handler — through the tool's handler middleware
+// (WrapHandler), which decodes nothing itself. def is nil for an
 // unknown tool — the chain still runs, so Allow/Audit see the attempt,
 // and the base returns the NO_SUCH_TOOL error.
 //
@@ -1868,7 +1870,23 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 			// position, through the same gate (P1-5).
 			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate, after: after})
 		}
+		// The handler, with its own middleware (WrapHandler) around it:
+		// past the approval boundary and the gate, inside AfterDispatch.
+		// Built only for a tool that has some: the plain path allocates
+		// nothing more.
+		var handler ToolCaller
+		if len(def.hmw) > 0 {
+			handler = func(ctx context.Context, call ToolCallPart) (string, error) {
+				return def.invoke(ctx, call.Args, strict)
+			}
+			for i := len(def.hmw) - 1; i >= 0; i-- {
+				handler = def.hmw[i](handler)
+			}
+		}
 		if mark == nil {
+			if handler != nil {
+				return handler(ctx, call)
+			}
 			return def.invoke(ctx, call.Args, strict)
 		}
 		// Every return path leaves the mark right: a normal return
@@ -1884,7 +1902,13 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 			}
 		}()
 		mark.enter()
-		out, err := def.invoke(ctx, call.Args, strict)
+		var out string
+		var err error
+		if handler != nil {
+			out, err = handler(ctx, call)
+		} else {
+			out, err = def.invoke(ctx, call.Args, strict)
+		}
 		mark.returning(err)
 		return out, err
 	}

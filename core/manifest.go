@@ -202,7 +202,7 @@ func (a *Agent) manifestEntry() manifestAgent {
 			Source:          toolSource(t),
 			Subagent:        t.subagent,
 			SubagentHash:    t.subagentHash,
-			Middleware:      toolLayers(t.mw),
+			Middleware:      toolLayers(slices.Concat(t.mw, t.hmw)),
 		}
 		if a.hasOutput && t.Name == outputToolName {
 			mt.OutputType = a.outputType

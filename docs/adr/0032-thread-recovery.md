@@ -229,8 +229,9 @@ delegations ended depth first, as before — a parked one canceled at its
 boundary, a cut-off one settled `canceled` (never `failed`: what it did
 is not known), a finished one from its file — and is then recovered like
 any cut-off child, never settled `failed`. Its delegating call has no
-result and its delegation is over: the acceptance receipt naming the
-call is the delegation's dispatch record, so the call may have run.
+result and its delegation is over; its dispatch record says it may have
+run (the delegation passes the gate like any call: amendment below —
+before it, the acceptance receipt stood in for that record).
 `RecoverTurn` parks it for a person whatever its tool's class (no keyed
 retry, no `Reconcile`), as a recovery request with the pinned reason
 `cut off while it delegated: the delegated work may have run; approve to
@@ -402,3 +403,62 @@ as of unknown outcome, as above. weft/mcp wraps every tools/call
 transport failure in it and always sends the call's idempotency key in
 `_meta` (`dev.weftgo/idempotency_key`), so a server that deduplicates
 applies a retry once.
+
+## Amendment (2026-11-04 — a delegation is a call)
+
+`thread/pool`'s `Wrap` used to delegate in tool middleware, which runs
+before the approval boundary and before the dispatch gate. Under a
+session a pool-wrapped tool's own `RequireApproval`, the run's `ParkOn`
+and `ParkAllExcept`, an agent's `ParkSource` and a middleware's
+`ErrApprovalRequired` were therefore ignored — the child ran unapproved
+— and a delegation wrote no dispatch record and met no felled check and
+no fence (a fail-open of WR-1, WR-4 and WR-7 for delegations).
+
+**Decision: a delegation is an effect like any other call.** It
+happens only where a handler would run: after the park decision and
+after the gate passes. The core gains `core.WrapHandler(mw...)`, tool
+middleware on the handler's side of the chain (agent middleware → tool
+middleware → approval boundary → `BeforeDispatch` → handler middleware
+→ handler); `Wrap` installs its delegation there, so the delegation is
+the call's effective handler. So, under a session:
+
+- a call the run parks never creates a child — approve and it
+  delegates once, deny and no child ever starts;
+- the gate writes the delegation's dispatch record (its replay class
+  in `Detail`, `ReplayNever` unless the tool says otherwise) and
+  flushes it before the child session or its acceptance receipt is
+  created, refuses a felled turn, and fences: a writer that lost its
+  lease starts no child (the run ends `thread.not_dispatched`);
+- it is a handler for the rest of the rules too: inside
+  `AfterDispatch`, a panic in it is the handler's, and a delegation of
+  a tool that is not `ReplaySafe` cut off before it answered has an
+  unknown outcome.
+
+A delegating call whose child parked passed the gate, yet it is not of
+unknown outcome: its child's requests are mirrored onto the parent, and
+the turn's end parks it for the child's answer as before (ADR 0022 §7),
+never down the ladder.
+
+Recovery reads the delegation's own dispatch record. The acceptance
+receipt no longer stands in for it (review 3 P1-c's stopgap is
+dropped): a call whose delegation was ended unanswered is "may have
+run" because its record says so, and still goes to a person whatever
+its class (`cut off while it delegated: …`) — recovery is not built at
+depth. A crash after the dispatch record and before the acceptance
+receipt leaves a recorded call with no receipt: it may have run, so it
+parks as an ordinary recovery request (`cut off: the call may have run;
+…`; `Reconcile` asked first when the tool has one) — never "cut off
+before it started", never delegated again on the session's own say.
+
+Why a core hook and not the pool alone: the pool cannot move its
+delegation behind the base without one. A tool of its own whose
+handler delegates (and calls a `Subagent`'s `Invoke` outside a session)
+loses what only `core.Subagent` records — the manifest's delegation
+edge and the child's hash — and a context value that swaps the handler
+would have to be cleared before every nested call to keep it from
+leaking. `WrapHandler` is one tool option with no state.
+
+Tests: `TestDelegationParksBeforeTheChild`, `TestDelegationPassesTheGate`,
+`TestDelegationCutOffBeforeAcceptance` (thread/pool, jsonl and sqlite),
+`TestWrapHandlerRunsPastApprovalAndGate`,
+`TestWrapHandlerOrderAndManifest` (core).

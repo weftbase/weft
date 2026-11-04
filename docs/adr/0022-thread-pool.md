@@ -33,8 +33,9 @@
    one bound shares one pool): every child run a pool starts — wrapped
    or submitted — holds one slot while it works (amendment §A: not
    while it waits on a child of its own, not while it is parked). `pool.Wrap(agent)` returns a
-   subagent tool (`weft.Subagent` under a `weft.WrapTools` middleware,
-   a tool-level option — no core change) whose child runs acquire a
+   subagent tool (`weft.Subagent` with the delegation as its handler
+   middleware, `weft.WrapHandler` — amendment 2026-11-04; first a
+   `weft.WrapTools` middleware) whose child runs acquire a
    slot before the child starts and release it when the child's session
    settles.
 
@@ -172,10 +173,12 @@ receipt and a draining `Close` cover both operator moves.
   golden; so is the settled-receipt shape an application reads.
 - `pool` imports `thread` and the root, never `weft/store` (ADR 0011
   §1's module rule, one level down).
-- No core change: the pool is a `ToolMiddleware`, session entries, and
-  pool-owned goroutines — the two release notes that matter
-  (`ErrApprovalRequired` parking from middleware, `Resolve` on resume)
-  are ADR 0007's existing rules.
+- No core change at first: the pool was a `ToolMiddleware`, session
+  entries, and pool-owned goroutines — the two release notes that
+  matter (`ErrApprovalRequired` parking from middleware, `Resolve` on
+  resume) are ADR 0007's existing rules. Amended 2026-11-04: the
+  middleware ran ahead of the approval boundary and the dispatch gate,
+  so the delegation now sits behind both (`core.WrapHandler`).
 
 ## Rejected
 
@@ -643,3 +646,26 @@ it, resumed with its answer on the receipt as before.
 Tests: `TestRecoverEndsAFailedChildsSubtree`,
 `TestRecoverOrphanedDelegatingCallResumesTheChild` (crash images cut
 from a parked chain's jsonl files, as the kill loop leaves them).
+
+## Amendment 2026-11-04 — the delegation runs where the handler would
+
+`Wrap`'s middleware ran before the approval boundary (ADR 0007) and
+before the dispatch gate (ADR 0031): under a session a wrapped tool's
+`RequireApproval` (through `ToolOptions`), the run's `ParkOn` /
+`ParkAllExcept`, an agent's `ParkSource` and a middleware's
+`ErrApprovalRequired` did not hold — the child ran unapproved — and the
+delegation wrote no dispatch record and met neither the felled check
+nor the fence. A delegation is an effect like any call: `Wrap` now
+installs it with `core.WrapHandler`, on the handler's side of the
+chain, so a call the run parks creates no child (approve delegates
+once, deny never starts one) and an allowed delegation is recorded,
+flushed and fenced by the gate before its child session and acceptance
+receipt exist. The bare path (no session) moves with it: its slot is
+taken after the approval boundary too. Middleware given through
+`ToolOptions(core.WrapTools(...))` now runs outside the delegation
+(before the approval boundary) instead of inside it. The texts the
+model reads are unchanged, except that a sync delegation of a tool that
+is not `ReplaySafe` cut off before it answered now reads (or, under a
+session, parks as) an unknown outcome, as any handler does. Recovery
+reads the delegation's own dispatch record (ADR 0032's amendment of
+the same date).

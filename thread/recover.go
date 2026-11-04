@@ -552,9 +552,6 @@ func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
 	if !ok {
 		return startUnknowable
 	}
-	if s.delegationEndedLocked(entry, c.ID) {
-		return startMaybe // it delegated: the child may have run
-	}
 	if me, ok := s.order[i].(MessageEntry); !ok || !me.DispatchRecorded {
 		return startUnknowable
 	}
@@ -568,12 +565,13 @@ func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
 
 // delegationEndedLocked reports whether callID, a call of the step
 // entry entry, delegated to a thread/pool child whose delegation is
-// over: an acceptance receipt naming it follows the step — the
-// delegation's dispatch record, appended before the child runs — and a
+// over: an acceptance receipt naming it follows the step, and a
 // settlement of that receipt follows too. Its call has no result: what
 // the child did is the delegation's, and the pool resolves it no more.
-// A delegation still open is the pool's to settle (ADR 0022 §7).
-// Callers hold s.mu.
+// A delegation still open is the pool's to settle (ADR 0022 §7). Whether
+// the call started is its dispatch record's to say, as for any call: a
+// delegation runs where its handler would, past the gate. Callers hold
+// s.mu.
 func (s *Session) delegationEndedLocked(entry, callID string) bool {
 	i, ok := s.byID[entry]
 	if !ok {

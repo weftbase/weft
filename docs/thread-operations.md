@@ -549,10 +549,16 @@ not the numbers themselves.
   to its answer. A child cut off while it was itself delegating is not
   recovered at depth: its own delegations are ended first (a cut-off
   grandchild settles `canceled`, never `failed`), and its delegating
-  call — which may have run — reaches the parent as a recovery request
-  (`cut off while it delegated: …`): approve delegates again, deny
-  skips it and the child's model reads `OUTCOME_UNKNOWN … do not
-  repeat it`. A child
+  call — its dispatch record says it may have run — reaches the parent
+  as a recovery request (`cut off while it delegated: …`): approve
+  delegates again, deny skips it and the child's model reads
+  `OUTCOME_UNKNOWN … do not repeat it`. A delegation is a call like any
+  other: it passes the approval boundary and the dispatch gate before
+  its child session exists, so its dispatch record lands before its
+  acceptance receipt. A crash between the two leaves a call that may
+  have run and no receipt: `RecoverTurn` parks it as a recovery request
+  for a person (never "cut off before it started", never delegated
+  again on its own). A child
   whose agent the pool does not hold is reported (`pool.ErrNoAgent`)
   and left for a later call. Limits: a finished child's answer is read
   back as its last assistant text (a structured `Output` answer is not

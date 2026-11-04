@@ -96,7 +96,9 @@ func (o toolOptionsOption) applyWrap(c *wrapConfig) { c.toolOpts = append(c.tool
 // ToolOptions forwards weft tool options to the underlying subagent
 // tool — Timeout, MaxResultBytes, a snippet — which otherwise the
 // wrap would hide. RequireApproval composes as on any tool: it gates
-// the act of delegating (ADR 0014).
+// the act of delegating (ADR 0014) — no child is created until the
+// call is approved, as no handler runs. A WrapTools middleware given
+// here runs before the approval boundary, the delegation after it.
 func ToolOptions(opts ...core.ToolOption) WrapOption { return toolOptionsOption{opts} }
 
 // Wrap returns a subagent tool whose children the pool runs (ADR 0022
@@ -196,8 +198,10 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 				// Park the parent's call (ADR 0022 §7): the child's
 				// requests are mirrored durable on the parent, and
 				// this call completes — resolved with the child's
-				// answer — when they are decided. The park is the one
-				// rule tool middleware already had (ADR 0007).
+				// answer — when they are decided. A handler may park
+				// its call (ADR 0007); the session's turn end parks it
+				// for the child's answer, not as an unknown outcome,
+				// though it passed the gate (a mirror names it).
 				return "", fmt.Errorf("thread/pool: agent %q awaits approval in child session %s: %w",
 					name, r.Child, core.ErrApprovalRequired)
 			case out.err != nil:
@@ -210,12 +214,17 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 			return out.answer, nil
 		}
 	}
-	// The middleware wraps the subagent tool's own chain from the
-	// outside (a tool-level WrapTools, ADR 0006): agent middleware →
-	// this wrap → the tool's own options → handler.
+	// The delegation is the call's effect, so it sits where the
+	// subagent's handler would run (core.WrapHandler): agent
+	// middleware → the tool's own middleware → the approval boundary
+	// (RequireApproval, ParkOn, ParkAllExcept, ParkSource, a
+	// middleware's ErrApprovalRequired) → the dispatch gate (under a
+	// session: the dispatch record, the felled check, the fence) →
+	// this wrap → the subagent handler. A call that is not allowed to
+	// start never creates a child.
 	// Named where it is made (core.NameToolMiddleware): the tool's
 	// manifest middleware reads "pool.Wrap" however it is inlined.
-	all := append([]core.ToolOption{core.WrapTools(core.NameToolMiddleware("pool.Wrap", mw))}, cfg.toolOpts...)
+	all := append([]core.ToolOption{core.WrapHandler(core.NameToolMiddleware("pool.Wrap", mw))}, cfg.toolOpts...)
 	return core.Subagent(name, description, agent, all...), nil
 }
 

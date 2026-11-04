@@ -2004,6 +2004,22 @@ type ToolMiddleware = core.ToolMiddleware
 // Audit, MapErrors. Nil entries are ignored.
 func WrapTools(mw ...ToolMiddleware) PolicyOption { return core.WrapTools(mw...) }
 
+// WrapHandler installs middleware on the tool's handler side of the
+// chain: agent middleware → tool middleware (WrapTools) → the approval
+// boundary (RequireApproval, the run's park rule) → the dispatch gate
+// (BeforeDispatch) → handler middleware → decode → handler. A handler
+// middleware is reached only by a call that is allowed to start, and
+// it is the handler as far as the run is concerned: what it does
+// counts as the call's effect — it is inside AfterDispatch, its panic
+// is the handler's, and a call of a tool that is not ReplaySafe cut off
+// in it has an unknown outcome. It may answer the call instead of next
+// (weft/thread/pool delegates a Subagent's call to a child session
+// this way). The first listed is the outermost; successive WrapHandler
+// options append inward. The manifest lists them after the tool's
+// WrapTools middleware. Invoke runs the handler alone, without them.
+// Nil entries are ignored.
+func WrapHandler(mw ...ToolMiddleware) ToolOption { return core.WrapHandler(mw...) }
+
 // PromptSnippet attaches system-prompt lines to a tool. The loop appends
 // the snippets of the tools it advertises to the agent's Instructions
 // for every model call — one paragraph per tool, in registration order,

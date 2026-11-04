@@ -1091,7 +1091,10 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	var wrappers map[string]string
 	s.locked(func() { wrappers = s.approvalWalkLocked().wrappers })
 	for _, c := range calls {
-		if sp.wasStarted(s, c.ID) {
+		if wrappers[c.ID] == "" && sp.wasStarted(s, c.ID) {
+			// (A delegating call passed the gate too — the delegation is
+			// its handler — but its child parked, mirrored: it parks
+			// below, for the child's answer.)
 			// Its handler started and gave no answer (core.ParkUnknown):
 			// the outcome is unknown, and the recovery ladder decides it
 			// (ADR 0032) — a keyed retry (bounded), or a person. Not the

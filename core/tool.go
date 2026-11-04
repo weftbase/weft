@@ -67,6 +67,10 @@ type ToolDef struct {
 	reconcile  ReconcileFunc
 	snippet    string // PromptSnippet: composed into the system prompt
 	mw         []ToolMiddleware
+	// hmw is the handler's own middleware (WrapHandler): it runs
+	// where the handler runs, past the approval boundary and the
+	// dispatch gate.
+	hmw []ToolMiddleware
 
 	// invoke decodes args (rejecting undeclared fields when strict),
 	// runs the handler, and renders the result text. RawTool handlers
@@ -457,6 +461,7 @@ func (t *ToolDef) clone() *ToolDef {
 	c.InputSchema = cloneSchema(t.InputSchema)
 	c.OutputSchema = cloneSchema(t.OutputSchema)
 	c.mw = slices.Clone(t.mw)
+	c.hmw = slices.Clone(t.hmw)
 	return &c
 }
 
@@ -582,6 +587,32 @@ func (o wrapToolsOption) applyTool(t *ToolDef) {
 // on RunResult.Pending. The reference set is in package mw: Allow,
 // Audit, MapErrors. Nil entries are ignored.
 func WrapTools(mw ...ToolMiddleware) PolicyOption { return wrapToolsOption(mw) }
+
+type wrapHandlerOption []ToolMiddleware
+
+func (o wrapHandlerOption) applyTool(t *ToolDef) {
+	for _, m := range o {
+		if m != nil {
+			t.hmw = append(t.hmw, m)
+		}
+	}
+}
+
+// WrapHandler installs middleware on the tool's handler side of the
+// chain: agent middleware → tool middleware (WrapTools) → the approval
+// boundary (RequireApproval, the run's park rule) → the dispatch gate
+// (BeforeDispatch) → handler middleware → decode → handler. A handler
+// middleware is reached only by a call that is allowed to start, and
+// it is the handler as far as the run is concerned: what it does
+// counts as the call's effect — it is inside AfterDispatch, its panic
+// is the handler's, and a call of a tool that is not ReplaySafe cut off
+// in it has an unknown outcome. It may answer the call instead of next
+// (weft/thread/pool delegates a Subagent's call to a child session
+// this way). The first listed is the outermost; successive WrapHandler
+// options append inward. The manifest lists them after the tool's
+// WrapTools middleware. Invoke runs the handler alone, without them.
+// Nil entries are ignored.
+func WrapHandler(mw ...ToolMiddleware) ToolOption { return wrapHandlerOption(mw) }
 
 type snippetOption struct{ text string }
 

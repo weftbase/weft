@@ -3,9 +3,10 @@
 // whose children run as sessions of their own, linked to the parent
 // session and call, and receipts recording every delegation's journey.
 // The pool imports the root module and weft/thread, never a
-// persistence module (ADR 0011 §1's module rule, one level down), and
-// changes nothing in the core: it is a tool middleware, session
-// entries, and pool-owned goroutines.
+// persistence module (ADR 0011 §1's module rule, one level down): it
+// is a subagent tool's handler middleware (core.WrapHandler — the
+// delegation runs where the handler would, past the approval boundary
+// and the dispatch gate), session entries, and pool-owned goroutines.
 //
 // # The bound
 //
