@@ -165,7 +165,9 @@ it, at most 30 s, before it approves the retry: two handlers of one call
 never run at once. Still running past the bound, the call parks as a
 recovery request for a person instead, reason `outcome unknown: the
 call's handler is still running past its bound; approve to retry it
-with the same idempotency key, deny to skip it` — no retry is counted.
+with the same idempotency key once it has returned, deny to skip it` —
+no retry is counted (the final-review amendment extends the wait to
+every class and to a person's approval).
 The wait holds the turn's end (a `Close` waits for it, within its own
 deadline). After a crash no handler is left running, and nothing
 waits.
@@ -462,3 +464,77 @@ Tests: `TestDelegationParksBeforeTheChild`, `TestDelegationPassesTheGate`,
 `TestDelegationCutOffBeforeAcceptance` (thread/pool, jsonl and sqlite),
 `TestWrapHandlerRunsPastApprovalAndGate`,
 `TestWrapHandlerOrderAndManifest` (core).
+
+## Amendment (2026-11-04 — final review: no second effect, no blind wait)
+
+**A live delegation is the pool's (P1-1).** After a crash the boot
+sequence `Open → pool.Recover → RecoverTurn` parked a delegating call
+whose child was alive and mirrored as a recovery request too; the
+request cleared the wrapper mapping, and approving both delegated
+twice. `RecoverTurn` now leaves a call whose child request is mirrored
+here, and whose delegation is not over, to the pool — as the "unknown
+outcome" check already did. A delegation ended unanswered still parks
+for a person (`cut off while it delegated: …`).
+
+**No delegation from a nested `CallTool` (P1-2).** A delegation's
+receipt, lineage and mirrors name the delegating call; one reached
+through `Agent.CallTool` names an inner call the parent's transcript
+does not hold, so its outer call was offered as an unknown outcome
+beside the parked child. Decision: fail closed. Under a session
+`pool.Wrap` refuses a call with `Call.Outer` set, before any child
+exists, with `pool.ErrNestedDelegation`; keying a delegation on the
+outermost call is not built.
+
+**An undecided recovery request is a person's (P1-3).** `Resume`
+denies undecided calls `no decision` — a plain `DENIED` the model
+answers by asking again. While a recovery request is undecided `Resume`
+fails with `ErrRecoveryRequired` and starts nothing. Every other path
+that settles one is a deny of some channel (expiry, an interrupt, a
+pool cancel), which reads as the `OUTCOME_UNKNOWN … do not repeat it`
+skip, or arms only a settled boundary (`Continue`, `AutoResume`, the
+pool's replay); `Close` records nothing.
+
+**No retry beside a running handler, any class (P2-1, P2-4).** The
+rule "no retry over a running handler" above covered only the session's
+own keyed retry; a `ReplayNever` call abandoned at its `Timeout` was
+offered at once, and a fast `Approve` started a second handler beside
+the first. The end of the turn now waits for every abandoned handler
+whose call may be retried (keyed or `ReplayNever`; a `ReplaySafe` one
+is not run again and waits for nothing) before it retries or offers the
+call — in parallel, under one shared 30 s deadline, so N calls hold the
+turn 30 s, not N × 30 s. Past it the request's reason reads `outcome
+unknown: the call's handler is still running past its bound; approve
+to retry it with the same idempotency key once it has returned, deny
+to skip it` (pinned), and an approval is refused with
+`ErrStillRunning` until the handler returns (in-process: a restart
+ends the handler with the process). A deny or a resolve is taken.
+
+**An interrupt over an effect waits for a person, visibly (P2-2).** An
+`Interrupt` (or a cancel) that fells a turn while a handler with
+effects runs parks that call as a recovery request; the Interrupt's own
+turn waits behind it until a person decides — unbounded, by design.
+The felled turn's `Wait` error matches `ErrRecoveryRequired` beside the
+cancellation, so a caller learns it must decide instead of waiting
+blind.
+
+**A handler's park of a dispatched call fails the call (P2-3).** A
+handler that returned the `ErrApprovalRequired` of a call it dispatched
+with `CallTool` (a `RequireApproval` or park-rule tool) was offered as
+an unknown outcome; approving reran it, and it parked again for ever.
+Parking the outer call as an ordinary request would loop the same way:
+an approval names one call and never carries to what its handler
+dispatches. So the core reads that park as the handler's failure — the
+handler still sees `ErrApprovalRequired` from `CallTool`, and the model
+reads `tool "X", dispatched by this call's handler, requires approval
+and did not run: a dispatched call is never parked for one` (pinned).
+A handler's own `ErrApprovalRequired` still parks its call.
+
+Tests: `TestRecoverTurnLeavesALiveDelegationToThePool`,
+`TestNestedCallToolDelegationIsRefused` (thread/pool),
+`TestResumeRefusesAnUndecidedRecoveryRequest`,
+`TestNeverRetryWaitsForTheAbandonedHandler`,
+`TestApprovalWaitsForAStillRunningHandler`,
+`TestAbandonedHandlersShareOneDeadline`,
+`TestInterruptedEffectParksAndHoldsTheInterrupt`,
+`TestCallToolParkReturnedByTheHandlerDoesNotPark` (thread),
+`TestCallToolParkReturnedByTheHandlerFailsTheOuterCall` (core).

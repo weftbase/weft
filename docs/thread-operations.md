@@ -533,6 +533,11 @@ not the numbers themselves.
 
 ## 10. Pool operations
 
+- **A delegation is the model's call.** Under a session a wrapped tool
+  reached through a handler's `CallTool` is refused before any child
+  exists (`pool.ErrNestedDelegation`); give the model the wrapped tool
+  itself.
+
 - **One pool per storage's delegations.** `Recover` treats an
   unsettled receipt that no child of *this* pool is running as left by
   a dead process. With two live pools over the same sessions, a
@@ -694,8 +699,9 @@ not the numbers themselves.
   `EDITED: the call ran with the arguments …`. A recovery request takes
   no edit. Re-checking policy on the edited arguments is the decider's.
   A session that holds an edit is format 6: a 0.21 reader refuses it.
-- **Cosigners.** A platform that counts its own quorum forwards one
-  decision naming every decider in `Decision.Cosigners` (MAC-covered
+- **Cosigners.** An approval service outside the session that counts
+  its own quorum forwards one decision naming every decider it counted
+  in `Decision.Cosigners` (MAC-covered
   when signed); the session records them and never counts them toward
   its own `Quorum`.
 - **Idempotency keys.** Every call a session runs carries

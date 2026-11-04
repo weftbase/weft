@@ -441,8 +441,9 @@ as no decision and running the model's original arguments.
 
 **Cosigners (D2).** `Decision.Cosigners` (and `SignedDecision.Cosigners`,
 covered by the MAC when present) names every decider a remote authority
-counted before it forwarded one decision — Weftbase counts its own
-quorum, separation of duties and eligibility and forwards once. The
-decision entry records them (`cosigners`, additive); weft never counts
-them toward its own `Quorum`. Sessions Weftbase manages run without
+counted before it forwarded one decision — an external approval
+service that counts its own quorum, separation of duties and
+eligibility, and forwards once. The decision entry records them
+(`cosigners`, additive); weft never counts them toward its own
+`Quorum`. A session whose approvers are counted elsewhere runs without
 weft's `Quorum`.

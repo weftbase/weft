@@ -141,7 +141,12 @@ cause `thread.not_dispatched`. A `CallTool` from inside a handler is
 keyed (from the dispatching call's key and its position) and passes
 the same gate, `Call.Outer` naming the dispatching call — at any depth:
 a call nested under an inner call the gate let start starts too, its
-key derived from that one's. A `Subagent`'s
+key derived from that one's. A park of such a call (its tool's
+`RequireApproval`, the run's park rule) is the handler's to read
+(`ErrApprovalRequired` from `CallTool`): returned by the handler it
+fails the dispatching call — the model reads that the inner tool needs
+approval and did not run — never parks it, for an approval would not
+carry to the inner call. A `Subagent`'s
 child run inherits neither the key option nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.
@@ -151,7 +156,10 @@ session is created only after the approval boundary (a wrapped tool's
 `RequireApproval`, `ParkOn`, `ParkAllExcept`, `ParkSource`, a
 middleware's park) and after the gate has recorded, flushed and fenced
 the delegating call — a parked, denied, felled or fenced-off call never
-starts a child (ADR 0022's and ADR 0032's 2026-11-04 amendments).
+starts a child (ADR 0022's and ADR 0032's 2026-11-04 amendments). A
+delegation reached through a handler's `CallTool` is refused under a
+session (`pool.ErrNestedDelegation`): its receipt would name a call
+the parent's transcript does not hold.
 The `Subagent` handler calls the child agent's `execute` on the call's
 ctx, so the child occupies the slot like any tool; its events are
 wrapped (`Nested`, Seq from this run's counter, under this step's
@@ -182,6 +190,8 @@ repair, exempting the last assistant message's unresolved calls
         ▼
 approved → the tool-call chain above, Call.Approved = true
 denied   → DENIED: <reason>;  undecided → DENIED: no decision
+           (weft/thread: a skipped recovery request reads OUTCOME_UNKNOWN,
+            and Resume refuses while one is undecided)
         │
         ▼
 results complete the earlier tool message → first model call of this run

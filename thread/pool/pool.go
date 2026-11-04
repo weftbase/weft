@@ -8,6 +8,12 @@
 // delegation runs where the handler would, past the approval boundary
 // and the dispatch gate), session entries, and pool-owned goroutines.
 //
+// Under a session a delegation is a call of the parent's transcript:
+// the model calls the wrapped tool. A delegation a handler dispatches
+// with Agent.CallTool is refused (ErrNestedDelegation) — its receipt
+// and mirrored requests would name a call the transcript does not
+// hold, and recovery could offer it twice.
+//
 // # The bound
 //
 // A Pool admits at most max child runs doing work at once — model

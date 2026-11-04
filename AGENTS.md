@@ -250,7 +250,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); every Decide decision is bound to the request it
 //    answers — d.Bind(r) sets d.RequestID, d.ArgsSHA256 = r.ID, r.ArgsSHA256 (unbound: ErrInvalidDecision; another
 //    occurrence: ErrNotPending; other args: ErrArgsChanged); the same decision again is a no-op, signed or not; thread.Edit(id, args).Bind(r) opens a revision (Request.RevisionOf)
-//    the editor approves once — Quorum(n) still needs n approvers; Decision.Cosigners records a platform's counted deciders; s.Grant(thread.Grant{…, Who: grantor}), s.Revoke, thread.WithApprover(a, timeout), Quorum(n)
+//    the editor approves once — Quorum(n) still needs n approvers; Decision.Cosigners records the deciders external approvers counted; s.Grant(thread.Grant{…, Who: grantor}), s.Revoke, thread.WithApprover(a, timeout), Quorum(n)
 //    (recorded per request: a reopen never lowers it), RequestExpiry(d), OnRequest(fn), s.Audit(). A parked
 //    or queued send's run options and context, as far as they are data (weft.SettingsOf → weft.RunSettings:
 //    park rule, OnlyTools, lowered budgets, overrides, metadata), are recorded and survive a restart; an
