@@ -333,7 +333,7 @@ func TestCloseEndsSendsQueuedBehindABoundary(t *testing.T) {
 		t.Errorf("the queued turn: err = %v, want ErrClosed", err)
 	}
 	// A decision on the sealed session records nothing and runs nothing.
-	if _, err := s.Decide(ctx, thread.Approve(s.Pending()[0].CallID)); !errors.Is(err, thread.ErrClosed) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(s.Pending()[0].CallID))); !errors.Is(err, thread.ErrClosed) {
 		t.Errorf("Decide after Close: err = %v, want ErrClosed", err)
 	}
 	if rt, err := s.Resume(ctx); err == nil {
@@ -526,7 +526,7 @@ func TestCloseContextEndDuringResume(t *testing.T) {
 	if _, err := turn.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	resume, err := s.Decide(ctx, thread.Approve(s.Pending()[0].CallID))
+	resume, err := s.Decide(ctx, bound(s, thread.Approve(s.Pending()[0].CallID)))
 	if err != nil || resume == nil {
 		t.Fatalf("Decide = %v, %v; want the resume turn", resume, err)
 	}

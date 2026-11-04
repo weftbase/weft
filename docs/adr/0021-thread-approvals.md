@@ -395,3 +395,17 @@ resolves alone under any quorum, and the call's span reads
 `weft.tool.approved_by = recovery`. The step `recover` without a call
 id records RecoverTurn's handling of a run (Outcome `continued` — Detail
 the continuation's run id —, `parked`, `resumed`, `closed`).
+
+## Amendment (2026-11-04 — bound and idempotent deciding; G3, G4, WR-12)
+
+`Decide` takes only bound decisions: each names the request occurrence
+it answers and the arguments it was shown (`RequestID`, `ArgsSHA256`,
+set by `Decision.Bind`); an unbound one is `ErrInvalidDecision`. With
+the binding, deciding is idempotent: a decision equal to one recorded
+for the same request (outcome, reason, content, Who, arguments, Always,
+key) is a no-op — nil, no entry. `DecideSigned` treats the same signed
+bytes again (the nonce already recorded on a decision whose MAC-covered
+fields are equal) as applied: nil, no entry, no `signed` audit; a
+different decision under that nonce stays `ErrReplay`. A decision with
+no request id can never take the no-op path, so a retry is never
+applied to a later occurrence of the call (G4).

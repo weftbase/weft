@@ -457,7 +457,7 @@ func TestNestedRandomChains(t *testing.T) {
 				}
 				round++
 				if acted || round < 1+rint(3) || mode == chainsDecide || (mode == chainsRestart && !delegated) {
-					if err := p.Decide(ctx, c.s, ds...); err != nil {
+					if err := p.Decide(ctx, c.s, boundAll(c.s, ds...)...); err != nil {
 						t.Logf("%s: Decide: %v", where(), err)
 					}
 					continue
@@ -470,7 +470,7 @@ func TestNestedRandomChains(t *testing.T) {
 					go func() {
 						defer bg.Done()
 						time.Sleep(time.Duration(rint(500)) * time.Microsecond)
-						_ = p.Decide(ctx, c.s, ds...)
+						_ = p.Decide(ctx, c.s, boundAll(c.s, ds...)...)
 					}()
 					stopRetries()
 					within(t, 40*time.Second, "Close", func() {
@@ -483,7 +483,7 @@ func TestNestedRandomChains(t *testing.T) {
 					bg.Add(1)
 					go func() {
 						defer bg.Done()
-						if err := p.Decide(ctx, c.s, ds...); err != nil {
+						if err := p.Decide(ctx, c.s, boundAll(c.s, ds...)...); err != nil {
 							t.Logf("%s: racing Decide: %v", where(), err)
 						}
 					}()
@@ -498,7 +498,7 @@ func TestNestedRandomChains(t *testing.T) {
 					}
 					cancel()
 				case chainsRestart:
-					if err := p.Decide(ctx, c.s, ds...); err != nil {
+					if err := p.Decide(ctx, c.s, boundAll(c.s, ds...)...); err != nil {
 						t.Logf("%s: Decide: %v", where(), err)
 					}
 					time.Sleep(time.Duration(rint(2000)) * time.Microsecond)

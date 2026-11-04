@@ -478,7 +478,7 @@ func TestAuditRecordsHowAResumeEnded(t *testing.T) {
 		return out
 	}
 	parkTurn(t, s, ctx)
-	rt, err := s.Decide(ctx, thread.Approve("call_a"))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve("call_a")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestAuditRecordsHowAResumeEnded(t *testing.T) {
 
 	// A resume whose run fails says failed, with the error.
 	parkTurn(t, s, ctx)
-	rt2, err := s.Decide(ctx, thread.Approve("call_b"))
+	rt2, err := s.Decide(ctx, bound(s, thread.Approve("call_b")))
 	if err != nil {
 		t.Fatal(err)
 	}

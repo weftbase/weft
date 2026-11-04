@@ -94,7 +94,7 @@ func TestIdempotencyKeySurvivesRestart(t *testing.T) {
 			if p := s2.Pending(); len(p) != 1 || p[0].IdempotencyKey != want {
 				t.Fatalf("pending after reopen = %+v, want the key %s", p, want)
 			}
-			rt, err := s2.Decide(bg, thread.Approve("call_1"))
+			rt, err := s2.Decide(bg, bound(s2, thread.Approve("call_1")))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestIdempotencyKeySurvivesRestart(t *testing.T) {
 			if _, err := t2.Wait(); err != nil {
 				t.Fatal(err)
 			}
-			rt, err = s2.Decide(bg, thread.Approve("call_1"))
+			rt, err = s2.Decide(bg, bound(s2, thread.Approve("call_1")))
 			if err != nil {
 				t.Fatal(err)
 			}

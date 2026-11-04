@@ -256,7 +256,7 @@ func recSendWait(t *testing.T, s *thread.Session, text string) *core.RunResult {
 
 func recDecide(t *testing.T, s *thread.Session, d thread.Decision) {
 	t.Helper()
-	if _, err := s.Decide(context.Background(), d); err != nil {
+	if _, err := s.Decide(context.Background(), bound(s, d)); err != nil {
 		t.Fatal(err)
 	}
 	recWaitIdle(t, s)

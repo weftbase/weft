@@ -1341,7 +1341,7 @@ func TestTriggerReArmsAfterTheBoundaryResolves(t *testing.T) {
 	}
 	// Resolving the boundary re-arms the trigger: the resume's own
 	// post-turn site fires and the summary lands.
-	rt, err := s.Decide(ctx, thread.Approve(s.Pending()[0].CallID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(s.Pending()[0].CallID)))
 	if err != nil {
 		t.Fatal(err)
 	}

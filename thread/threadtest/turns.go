@@ -101,7 +101,7 @@ func mixedBatchResume(open func(t *testing.T) thread.Storage) func(*testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rt, err := s2.Decide(ctx, thread.Approve("call_d"))
+		rt, err := s2.Decide(ctx, bound(s2, thread.Approve("call_d")))
 		if err != nil || rt == nil {
 			t.Fatalf("Decide = %v, %v", rt, err)
 		}

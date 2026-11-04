@@ -53,7 +53,7 @@ func ExampleContentThread() {
 	_, _ = turn.Wait()
 	d := thread.Deny("r1", "need a photo")
 	d.Who = "agent-7"
-	_, _ = s.Decide(ctx, d)
+	_, _ = s.Decide(ctx, bound(s, d))
 	_ = s.WaitIdle(ctx)
 	_ = s.Close(ctx)
 	_ = p.Shutdown(ctx)

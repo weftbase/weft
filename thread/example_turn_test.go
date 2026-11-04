@@ -182,7 +182,7 @@ func ExampleTurn_Next() {
 	fmt.Println("steer:", steer.Outcome())
 	followUp := steer.Next()
 
-	resume, _ := s.Decide(ctx, thread.Deny("call_1", "superseded"))
+	resume, _ := s.Decide(ctx, bound(s, thread.Deny("call_1", "superseded")))
 	if _, err := resume.Wait(); err != nil {
 		fmt.Println(err)
 		return

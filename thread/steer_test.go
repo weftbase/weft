@@ -239,7 +239,7 @@ func TestSteerVsApprovals(t *testing.T) {
 	if next == nil {
 		t.Fatal("a deferred steer links its follow-up through Next")
 	}
-	if _, err := s.Decide(ctx, thread.Approve(p[0].CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(p[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := next.Wait(); err != nil {
@@ -1201,7 +1201,7 @@ func TestDeferredSteerFollowUpKeepsItsRunOptions(t *testing.T) {
 	if _, err := steer.Wait(); err != nil || steer.Next() == nil {
 		t.Fatalf("the steer: %v, next %v", err, steer.Next())
 	}
-	rt, err := s.Decide(ctx, thread.Deny("call_r", "no"))
+	rt, err := s.Decide(ctx, bound(s, thread.Deny("call_r", "no")))
 	if err != nil {
 		t.Fatal(err)
 	}

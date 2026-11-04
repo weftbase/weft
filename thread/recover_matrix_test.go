@@ -25,7 +25,7 @@ func TestEveryArmingPathRefusesAnUnknownOutcome(t *testing.T) {
 	}{
 		{"resume", func(t *testing.T, s *thread.Session) error { _, err := s.Resume(bg); return err }},
 		{"decide", func(t *testing.T, s *thread.Session) error {
-			_, err := s.Decide(bg, thread.Deny("c2", "no"))
+			_, err := s.Decide(bg, bound(s, thread.Deny("c2", "no")))
 			return err
 		}},
 		{"decide_signed", func(t *testing.T, s *thread.Session) error {
@@ -67,7 +67,7 @@ func TestEveryArmingPathRefusesAnUnknownOutcome(t *testing.T) {
 				if _, err := turn.Wait(); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := s.Decide(bg, thread.Approve("c1")); err != nil {
+				if _, err := s.Decide(bg, bound(s, thread.Approve("c1"))); err != nil {
 					t.Fatal(err)
 				}
 				charge.crash = cs
@@ -107,7 +107,7 @@ func TestEveryArmingPathRefusesAnUnknownOutcome(t *testing.T) {
 				if len(ds) == 0 {
 					t.Fatal("nothing pending after RecoverTurn")
 				}
-				rt, err = s2.Decide(bg, ds...)
+				rt, err = s2.Decide(bg, boundAll(s2, ds...)...)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -297,7 +297,7 @@ func TestRecoverOrphanedDelegatingCallResumesTheChild(t *testing.T) {
 	if len(pend) != 1 || pend[0].Child == "" {
 		t.Fatalf("top Pending = %+v, want L1's request", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	rc := waitFor(t, p, s, pool.Receipts(s)[0].ID, pool.Done)

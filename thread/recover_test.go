@@ -159,10 +159,10 @@ func TestRecoverParksAnUnknownOutcome(t *testing.T) {
 			if len(charge.ran()) != 1 {
 				t.Fatalf("the cut-off call ran again unasked: %v", charge.ran())
 			}
-			if _, err := s.Decide(bg, thread.ApproveAlways("call_1")); !errors.Is(err, thread.ErrInvalidDecision) {
+			if _, err := s.Decide(bg, bound(s, thread.ApproveAlways("call_1"))); !errors.Is(err, thread.ErrInvalidDecision) {
 				t.Fatalf("ApproveAlways on a recovery request = %v, want ErrInvalidDecision", err)
 			}
-			rt, err = s.Decide(bg, thread.Approve("call_1"))
+			rt, err = s.Decide(bg, bound(s, thread.Approve("call_1")))
 			if err != nil || rt == nil {
 				t.Fatalf("Decide = %v, %v", rt, err)
 			}
@@ -244,7 +244,7 @@ func TestRecoverMixedReplayClasses(t *testing.T) {
 			if retries != 2 || recoveryApprovals != 2 {
 				t.Fatalf("audit: %d retry steps, %d recovery approvals; want 2 and 2", retries, recoveryApprovals)
 			}
-			rt, err := s.Decide(bg, thread.Approve("c_mail"))
+			rt, err := s.Decide(bg, bound(s, thread.Approve("c_mail")))
 			if err != nil || rt == nil {
 				t.Fatalf("Decide = %v, %v", rt, err)
 			}
@@ -736,7 +736,7 @@ func TestTimeoutParksForRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = s2.Close(bg) }()
-			rt, err := s2.Decide(bg, thread.Approve("p"))
+			rt, err := s2.Decide(bg, bound(s2, thread.Approve("p")))
 			if err != nil || rt == nil {
 				t.Fatalf("Decide = %v, %v", rt, err)
 			}

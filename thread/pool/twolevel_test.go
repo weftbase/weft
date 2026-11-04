@@ -92,7 +92,7 @@ func TestNestedTwoLevelApprove(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	t1, req := parkTwoLevel(t, s)
-	if err := p.Decide(ctx, s, thread.Approve(req.CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(req.CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID)
@@ -144,7 +144,7 @@ func TestNestedTwoLevelDeny(t *testing.T) {
 	lead, ran := twoLevel(t, p, "payments: refund refused")
 	s, _ := thread.Create(ctx, st, lead)
 	t1, req := parkTwoLevel(t, s)
-	if err := p.Decide(ctx, s, thread.Deny(req.CallID, "out of policy")); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Deny(req.CallID, "out of policy"))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID)
@@ -239,7 +239,7 @@ func TestNestedTwoLevelAcrossRestart(t *testing.T) {
 	if len(pend) != 1 || pend[0].Tool != "refund" {
 		t.Fatalf("Pending after the restart = %+v", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID)
@@ -266,7 +266,7 @@ func TestNestedTwoLevelRestartWithoutGrandchildAgent(t *testing.T) {
 	if len(pend) != 1 {
 		t.Fatalf("Pending after the restart = %+v", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID)
@@ -335,7 +335,7 @@ func decideEach(t *testing.T, p *pool.Pool, s *thread.Session, orders []string, 
 			}
 		}
 		prev = pend[0]
-		if err := p.Decide(context.Background(), s, decide(i, pend[0])); err != nil {
+		if err := p.Decide(context.Background(), s, bound(s, decide(i, pend[0]))); err != nil {
 			t.Fatalf("Decide %d: %v", i, err)
 		}
 		want := pool.Parked
@@ -509,7 +509,7 @@ func TestNestedCancelWhileAwaitingTheGrandchild(t *testing.T) {
 			started := make(chan struct{}, 1)
 			s, _ := thread.Create(ctx, st, overPayments(p, blockingPayments(started), nil, ""))
 			t1 := parkLead(t, s)
-			if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+			if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 				t.Fatalf("Decide: %v", err)
 			}
 			select {
@@ -605,7 +605,7 @@ func TestNestedResumeHoldsTheBound(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+			if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 				t.Errorf("Decide: %v", err)
 			}
 		}()
@@ -654,7 +654,7 @@ func TestNestedRestartMidApprovedCallParksForRecovery(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	parkLead(t, s)
-	if err := old.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := old.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	select {
@@ -695,7 +695,7 @@ func TestNestedRestartMidApprovedCallParksForRecovery(t *testing.T) {
 	if len(pend) != 1 || !pend[0].Recovery {
 		t.Fatalf("Pending after Recover = %+v, want the refund as a recovery request", pend)
 	}
-	if err := p2.Decide(ctx, open, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, open, bound(open, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide the retry: %v", err)
 	}
 	rc := waitFor(t, p2, open, pool.Receipts(open)[0].ID, pool.Done)

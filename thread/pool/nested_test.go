@@ -133,7 +133,7 @@ func TestNestedSyncFullFlow(t *testing.T) {
 	// Decide through the pool: records in the parent, replays into
 	// the child, resumes it, and completes the wrapper with the
 	// child's answer.
-	if err := p.Decide(ctx, s, thread.Approve(req.CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(req.CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID); err != nil || !rc.Settled() {
@@ -201,7 +201,7 @@ func TestNestedAsyncParkAndDecide(t *testing.T) {
 	if len(pend) != 1 || pend[0].Tool != "refund" || pend[0].Child == "" {
 		t.Fatalf("Pending = %+v", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	final := waitState(t, s, thread.PoolDone)
@@ -278,7 +278,7 @@ func TestNestedAcrossRestart(t *testing.T) {
 	if len(pend) != 1 || pend[0].Tool != "refund" {
 		t.Fatalf("Pending after restart = %+v", pend)
 	}
-	if err := p2.Decide(ctx, open, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, open, bound(open, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide after restart: %v", err)
 	}
 	if rc, err := p2.Wait(ctx, open, pool.Receipts(open)[0].ID); err != nil || !rc.Settled() {
@@ -395,7 +395,7 @@ func TestNestedDeny(t *testing.T) {
 	if len(pend) != 1 {
 		t.Fatalf("Pending = %+v", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Deny(pend[0].CallID, "out of policy")); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Deny(pend[0].CallID, "out of policy"))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if rc, err := p.Wait(ctx, s, pool.Receipts(s)[0].ID); err != nil || !rc.Settled() {
@@ -550,7 +550,7 @@ func TestConcurrentDecide(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if approve {
-					_ = p.Decide(ctx, s, thread.Approve(call))
+					_ = p.Decide(ctx, s, bound(s, thread.Approve(call)))
 					return
 				}
 				_ = p.Decide(ctx, s) // a pure pump
@@ -655,7 +655,7 @@ func TestRegisterResumesParkedSubmitChild(t *testing.T) {
 	if len(pend) != 1 {
 		t.Fatalf("Pending after the reopen = %+v", pend)
 	}
-	if err := p2.Decide(ctx, open, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, open, bound(open, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	final := waitState(t, open, thread.PoolDone)

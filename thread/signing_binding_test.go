@@ -50,7 +50,7 @@ func TestSignedDecisionBoundToItsOccurrence(t *testing.T) {
 
 	// The first occurrence is denied by hand; the resume parks call_1
 	// again.
-	rt, err := s.Decide(ctx, thread.Deny(call.ID, "not yet"))
+	rt, err := s.Decide(ctx, bound(s, thread.Deny(call.ID, "not yet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,10 @@ func TestSignedDecisionNeedsAnIssuedNonce(t *testing.T) {
 	if _, err := s.DecideSigned(ctx, sd); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DecideSigned(ctx, sd); !errors.Is(err, thread.ErrReplay) {
+	if _, err := s.DecideSigned(ctx, sd); err != nil {
+		t.Fatalf("the same signed decision again: got %v, want it applied (G3)", err)
+	}
+	if _, err := s.DecideSigned(ctx, thread.SignDecision(secret, r, thread.Deny(call.ID, "other"))); !errors.Is(err, thread.ErrReplay) {
 		t.Fatalf("replay: got %v, want ErrReplay", err)
 	}
 	if len(ran.snapshot()) != 0 {
@@ -272,7 +275,7 @@ func TestRequireSignedIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := again.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := again.Decide(ctx, bound(again, thread.Approve(call.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("unsigned Decide after a reopen without RequireSigned: %v, want ErrSignatureRequired", err)
 	}
 	// Reopened with no keyring at all: a session nobody could decide.
@@ -322,7 +325,7 @@ func TestRequireSignedIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tight.Decide(ctx, thread.Approve(call2.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := tight.Decide(ctx, bound(tight, thread.Approve(call2.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("a tightened Open: %v, want ErrSignatureRequired", err)
 	}
 }
@@ -534,7 +537,10 @@ func TestSignedRefusalsAreAuditedWithinBounds(t *testing.T) {
 	if _, err := s.DecideSigned(ctx, good); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DecideSigned(ctx, good); !errors.Is(err, thread.ErrReplay) {
+	if _, err := s.DecideSigned(ctx, good); err != nil {
+		t.Fatal(err) // the same signed bytes: applied, not audited (G3)
+	}
+	if _, err := s.DecideSigned(ctx, thread.SignDecision(secret, r, thread.Deny(call.ID, "other"))); !errors.Is(err, thread.ErrReplay) {
 		t.Fatal(err)
 	}
 	var details []string
@@ -552,8 +558,9 @@ func TestSignedRefusalsAreAuditedWithinBounds(t *testing.T) {
 	}
 
 	// A flood of replays stops being written at the bound.
+	other := thread.SignDecision(secret, r, thread.Deny(call.ID, "other"))
 	for i := 0; i < 40; i++ {
-		if _, err := s.DecideSigned(ctx, good); !errors.Is(err, thread.ErrReplay) {
+		if _, err := s.DecideSigned(ctx, other); !errors.Is(err, thread.ErrReplay) {
 			t.Fatal(err)
 		}
 	}

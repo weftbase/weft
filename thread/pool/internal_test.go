@@ -252,7 +252,7 @@ func racingPumpSettlement(t *testing.T, lateRegister bool) {
 	if err := p2.Register(r.Child, resumed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := open.Decide(ctx, thread.Approve(open.Pending()[0].CallID)); err != nil {
+	if _, err := open.Decide(ctx, bound(open, thread.Approve(open.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	// The second pump runs whole inside the first one's window: after
@@ -336,7 +336,7 @@ func TestWaitReturnsWithTheResumeArmed(t *testing.T) {
 		close(entered)
 		<-release
 	}
-	if err := p.Decide(ctx, parent, thread.Approve(parent.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, parent, bound(parent, thread.Approve(parent.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	<-entered // settled in the ledger, the wrapper not yet resolved
@@ -663,7 +663,7 @@ func TestCloseWhileParkingReleasesTheChild(t *testing.T) {
 	if err := p2.Register(r.Child, core.New(wefttest.Script(wefttest.Say("resumed")), refund)); err != nil {
 		t.Fatal(err)
 	}
-	if err := p2.Decide(ctx, open, thread.Approve(open.Pending()[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, open, bound(open, thread.Approve(open.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -738,7 +738,7 @@ func decisionWhileParking(t *testing.T, syncWrap bool) {
 		// Decide's two halves, every pump inside the window: the
 		// parent records the approval (the watch's pump fires), then
 		// Decide's own pump.
-		_, err := parent.Decide(ctx, thread.Approve(pending[0].CallID))
+		_, err := parent.Decide(ctx, bound(parent, thread.Approve(pending[0].CallID)))
 		watched.Wait()
 		if err == nil {
 			err = p.pump(ctx, parent)
@@ -850,7 +850,7 @@ func TestStaleParkReplayRefused(t *testing.T) {
 			t.Errorf("mirrors while parking = %+v", pending)
 			return
 		}
-		if _, err := parent.Decide(ctx, thread.Approve(pending[0].CallID)); err != nil {
+		if _, err := parent.Decide(ctx, bound(parent, thread.Approve(pending[0].CallID))); err != nil {
 			t.Errorf("Decide: %v", err)
 		}
 	}
@@ -900,7 +900,7 @@ func TestStaleParkReplayRefused(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("Pending after the re-park = %+v, want the second run's call alone", pending)
 	}
-	if err := p.Decide(ctx, parent, thread.Approve(pending[0].CallID)); err != nil {
+	if err := p.Decide(ctx, parent, bound(parent, thread.Approve(pending[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -963,7 +963,7 @@ func TestFailedCancelArmsReadyDecision(t *testing.T) {
 			t.Errorf("mirrors while settling = %+v", pending)
 			return errClose
 		}
-		if _, err := parent.Decide(ctx, thread.Approve(pending[0].CallID)); err != nil {
+		if _, err := parent.Decide(ctx, bound(parent, thread.Approve(pending[0].CallID))); err != nil {
 			t.Errorf("Decide: %v", err)
 		}
 		return errClose

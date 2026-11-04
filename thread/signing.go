@@ -543,6 +543,9 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 		return nil, fmt.Errorf("thread: DecideSigned needs a keyring")
 	}
 	v := s.verifySignedLocked(ctx, sd)
+	if v.applied {
+		return nil, nil
+	}
 	if v.err == nil {
 		// A verified signature over a delegating call is still no
 		// decision (ADR 0022 §7): the call completes with its child.
@@ -589,6 +592,8 @@ type signedVerdict struct {
 	authenticated bool
 	request       *Request
 	swept         bool
+	// applied: the same signed decision is already on file (G3).
+	applied bool
 }
 
 // verifySignedLocked runs DecideSigned's checks in their documented
@@ -640,6 +645,13 @@ func (s *Session) verifySignedLocked(ctx context.Context, sd SignedDecision) sig
 	// entries, so the guard survives restarts.
 	for _, e := range s.order {
 		if d, ok := e.(ApprovalDecisionEntry); ok && d.Nonce != "" && d.Nonce == sd.Nonce {
+			if sameSigned(d, sd) {
+				// The same signed decision again (G3): it stands, and a
+				// redelivery is answered as applied — nothing recorded,
+				// nothing audited.
+				v.applied = true
+				return v
+			}
 			return refuse(ErrReplay, "replayed", "nonce already decided call %q", d.CallID)
 		}
 	}
@@ -734,4 +746,13 @@ func (s *Session) auditSignedRefusalLocked(ctx context.Context, sd SignedDecisio
 		s.agent.Logger().Warn("thread: refused signed decision not audited",
 			"session", s.header.ID, "call", callID, "err", err)
 	}
+}
+
+// sameSigned reports whether a recorded decision is the one sd signs:
+// every field the MAC covers that the entry records. Its nonce matched
+// and sd's MAC verified, so equal fields are the same signed bytes.
+func sameSigned(d ApprovalDecisionEntry, sd SignedDecision) bool {
+	return d.CallID == sd.CallID && d.Outcome == sd.Kind && d.Reason == sd.Reason && d.Content == sd.Content &&
+		d.Who == sd.Who && d.KeyID == sd.KeyID && d.RequestID == sd.RequestID && d.ArgsSHA256 == sd.ArgsSHA256 &&
+		d.Always == (sd.Always && sd.Kind == OutcomeApprove)
 }

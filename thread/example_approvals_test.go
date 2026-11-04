@@ -109,7 +109,7 @@ func ExampleSession_DecideSigned() {
 	settle(t1)
 	call := s.Pending()[0].CallID
 
-	_, err = s.Decide(ctx, thread.Approve(call))
+	_, err = s.Decide(ctx, bound(s, thread.Approve(call)))
 	fmt.Println("unsigned:", errors.Is(err, thread.ErrSignatureRequired))
 
 	challenge, err := s.Request(call) // travels to the signing side
@@ -129,11 +129,15 @@ func ExampleSession_DecideSigned() {
 	}
 	fmt.Println("signed:", settle(resume).Text())
 
-	_, err = s.DecideSigned(ctx, signed)
+	_, err = s.DecideSigned(ctx, signed) // the same signed bytes again: applied
+	fmt.Println("redelivered:", err == nil)
+	other, _ := ring.Sign(challenge, thread.Deny(call, "second thoughts"))
+	_, err = s.DecideSigned(ctx, other) // another decision under the spent nonce
 	fmt.Println("replayed:", errors.Is(err, thread.ErrReplay))
 	// Output:
 	// unsigned: true
 	// signed: Deployed.
+	// redelivered: true
 	// replayed: true
 }
 
@@ -201,7 +205,7 @@ func ExampleRequestExpiry() {
 
 	time.Sleep(time.Until(req.Expiry) + 5*time.Millisecond) // nobody decided in time
 
-	_, err := s.Decide(ctx, thread.Approve(req.CallID))
+	_, err := s.Decide(ctx, bound(s, thread.Approve(req.CallID)))
 	fmt.Println("too late:", errors.Is(err, thread.ErrExpired))
 
 	// The expiry's denial completed the boundary; the session resumed.
@@ -267,7 +271,7 @@ func ExampleSession_Audit() {
 
 	no := thread.Deny(s.Pending()[0].CallID, "change freeze")
 	no.Who = "avi"
-	resume, _ := s.Decide(ctx, no)
+	resume, _ := s.Decide(ctx, bound(s, no))
 	settle(resume)
 
 	for _, e := range s.Audit() {
@@ -304,7 +308,7 @@ func ExampleSession_Resume() {
 	t1, _ := s.Send(ctx, weft.User("Deploy everywhere."))
 	settle(t1)
 
-	turn, err := s.Decide(ctx, thread.Approve("call_eu"))
+	turn, err := s.Decide(ctx, bound(s, thread.Approve("call_eu")))
 	fmt.Println("decided one of two; resumed:", turn != nil, err)
 
 	resume, err := s.Resume(ctx)

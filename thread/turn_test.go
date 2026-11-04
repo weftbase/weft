@@ -604,7 +604,7 @@ func TestSendPendingApprovalResume(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Send 2: %v", err)
 		}
-		rt, err := s.Decide(ctx, thread.Approve("call_9"))
+		rt, err := s.Decide(ctx, bound(s, thread.Approve("call_9")))
 		if err != nil {
 			t.Fatalf("Decide: %v", err)
 		}

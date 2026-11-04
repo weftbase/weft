@@ -463,6 +463,13 @@ func (s *Session) Decide(ctx context.Context, ds ...Decision) (*Turn, error) {
 	wrappers := s.approvalWalkLocked().wrappers
 	batch := make([]recordedDecision, len(ds))
 	for i, d := range ds {
+		if d.RequestID == "" || d.ArgsSHA256 == "" {
+			// A decision states what it decided (R5, WR-12): the request
+			// occurrence and the arguments shown. Bind it to the Request
+			// it answers (Decision.Bind).
+			return nil, fmt.Errorf("%w: the decision for call %q names no request and no arguments; bind it to the Request it answers (Decision.Bind)",
+				ErrInvalidDecision, d.CallID)
+		}
 		if child := wrappers[d.CallID]; child != "" {
 			return nil, fmt.Errorf("%w: call %q completes with child session %s", ErrDelegated, d.CallID, child)
 		}
@@ -544,6 +551,22 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	for _, r := range pending {
 		byCall[r.CallID] = r
 	}
+	// Deciding is idempotent (G3, G4): the same decision again — a
+	// platform re-forwarding what it recorded, a retried request — is a
+	// no-op, not an error, when it names the request it decided and
+	// matches what was recorded for it. Without a request id a retry
+	// is ambiguous and never takes this path.
+	kept := batch[:0:0]
+	for _, d := range batch {
+		if req, ok := byCall[d.CallID]; (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d) {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if len(kept) == 0 {
+		return nil // every decision was already recorded
+	}
+	batch = kept
 	seen := make(map[string]bool, len(batch))
 	for _, d := range batch {
 		if !validOutcome(d.Kind) {
@@ -2056,4 +2079,36 @@ func recoveryDecisionErr(req Request, d Decision) error {
 			ErrInvalidDecision, d.CallID)
 	}
 	return nil
+}
+
+// alreadyDecidedLocked reports whether d repeats a decision already
+// recorded for the request it names: same request, outcome, reason,
+// content, decider, shown arguments, standing wish and signing key. A
+// decision naming no request never repeats one (G4). Callers hold s.mu.
+func (s *Session) alreadyDecidedLocked(d recordedDecision) bool {
+	if d.RequestID == "" {
+		return false
+	}
+	for _, e := range s.order {
+		de, ok := e.(ApprovalDecisionEntry)
+		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID {
+			continue
+		}
+		if de.Outcome == d.Kind && de.Reason == d.Reason && de.Content == d.Content && de.Who == d.Who &&
+			de.ArgsSHA256 == d.ArgsSHA256 && de.Always == (d.Always && d.Kind == OutcomeApprove) && de.KeyID == d.keyID {
+			return true
+		}
+	}
+	return false
+}
+
+// Bind returns d bound to the request it answers: the request entry's
+// id and the hash of the arguments it shows (Request.ID,
+// Request.ArgsSHA256), and its call. Decide refuses a decision that
+// names neither (ErrInvalidDecision): a decision states exactly what
+// it decided, so a retry is recognised (a no-op) and a decision never
+// lands on another occurrence of the call.
+func (d Decision) Bind(r Request) Decision {
+	d.CallID, d.RequestID, d.ArgsSHA256 = r.CallID, r.ID, r.ArgsSHA256
+	return d
 }

@@ -246,10 +246,10 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    session lock and emitted by one goroutine per Session (never under the lock; Close waits), ids/enums/counts always, who/reasons/texts under the body's "content" (the agent's
 //    Content, else the destination's policy; weft/otel strips it, otel.ContentThread for Redact); label names
 //    are metadata. An index, not evidence (ADR 0021, amendment 2026-10-19); the timeline that reads them is U12.2's.
-//    Approvals (ADR 0021): s.Pending(); s.Decide(ctx, thread.Approve(id) | Deny | Resolve | ResolveError |
-//    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); a Decision decided elsewhere binds what was
-//    shown: d.RequestID, d.ArgsSHA256 = r.ID, r.ArgsSHA256 (else ErrNotPending / ErrArgsChanged; the hash is
-//    recorded); s.Grant(thread.Grant{…, Who: grantor}), s.Revoke, thread.WithApprover(a, timeout), Quorum(n)
+//    Approvals (ADR 0021): s.Pending(); s.Decide(ctx, thread.Approve(id).Bind(r) | Deny | Resolve | ResolveError |
+//    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); every Decide decision is bound to the request it
+//    answers — d.Bind(r) sets d.RequestID, d.ArgsSHA256 = r.ID, r.ArgsSHA256 (unbound: ErrInvalidDecision; another
+//    occurrence: ErrNotPending; other args: ErrArgsChanged); the same decision again is a no-op, signed or not; s.Grant(thread.Grant{…, Who: grantor}), s.Revoke, thread.WithApprover(a, timeout), Quorum(n)
 //    (recorded per request: a reopen never lowers it), RequestExpiry(d), OnRequest(fn), s.Audit(). A parked
 //    or queued send's run options and context, as far as they are data (weft.SettingsOf → weft.RunSettings:
 //    park rule, OnlyTools, lowered budgets, overrides, metadata), are recorded and survive a restart; an

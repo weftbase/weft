@@ -67,7 +67,7 @@ func parkedRequestRecordsRunMetadata(t *testing.T, b durableBackend) {
 	if again := s2.Pending(); again[0].Metadata["tenant"] != "acme-2" {
 		t.Fatal("Request.Metadata is not a copy")
 	}
-	rt, err := s2.Decide(bg, thread.Approve("call_1"))
+	rt, err := s2.Decide(bg, bound(s2, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}

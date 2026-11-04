@@ -152,7 +152,7 @@ func ExamplePool_Decide() {
 	}
 	pend := s.Pending()
 	fmt.Println("pending:", pend[0].Tool)
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		panic(err)
 	}
 	// Decide queued the child's resume and returned; Wait follows the
@@ -366,7 +366,7 @@ func ExamplePool_Register() {
 	}
 	pend := reopened.Pending()
 	fmt.Println("pending after the restart:", pend[0].Tool)
-	if err := p2.Decide(ctx, reopened, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, reopened, bound(reopened, thread.Approve(pend[0].CallID))); err != nil {
 		panic(err)
 	}
 	final, _ := p2.Wait(ctx, reopened, r.ID)
@@ -426,7 +426,7 @@ func ExamplePool_Recover() {
 		panic(err)
 	}
 	pend := reopened.Pending()
-	if err := p2.Decide(ctx, reopened, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, reopened, bound(reopened, thread.Approve(pend[0].CallID))); err != nil {
 		panic(err)
 	}
 	final, _ := p2.Wait(ctx, reopened, receipt.ID)

@@ -123,7 +123,7 @@ func TestNestedResolutionQueuesASlotWhenTheGrandchildHasNone(t *testing.T) {
 
 	first := p.sem.enqueue() // the test holds the only slot
 	<-first.ready
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	waitQueued(t, p, 1) // the middle's resume
@@ -222,7 +222,7 @@ func TestCancelBeforeTheWrapperParksStillResolvesIt(t *testing.T) {
 	if len(s.Pending()) != 1 {
 		t.Fatalf("lead Pending = %+v, want a's refund", s.Pending())
 	}
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	var a Receipt
@@ -334,7 +334,7 @@ func TestNestedEndBoundSettlesTheStuckGrandchild(t *testing.T) {
 	st := thread.Memory()
 	s, _ := thread.Create(ctx, st, chainOver(p, payments, nil))
 	t1 := parkChain(t, s)
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	select {

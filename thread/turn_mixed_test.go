@@ -120,7 +120,7 @@ func TestMixedBatchAutoResume(t *testing.T) {
 		if len(res1.Pending) != 1 || res1.Pending[0].ID != "call_d" {
 			t.Fatalf("Pending = %+v, want call_d alone", res1.Pending)
 		}
-		rt, err := s.Decide(ctx, thread.Approve("call_d"))
+		rt, err := s.Decide(ctx, bound(s, thread.Approve("call_d")))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestMixedBatchManualResume(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rt, err := s.Decide(ctx, thread.Approve("call_d")); err != nil || rt != nil {
+		if rt, err := s.Decide(ctx, bound(s, thread.Approve("call_d"))); err != nil || rt != nil {
 			t.Fatalf("Decide = %v, %v; want no resume under AutoResume(false)", rt, err)
 		}
 		rt, err := s.Resume(ctx)
@@ -243,7 +243,7 @@ func TestMixedBatchAcrossReopen(t *testing.T) {
 		if p := s2.Pending(); len(p) != 1 || p[0].CallID != "call_d" {
 			t.Fatalf("reopened Pending = %+v, want call_d", p)
 		}
-		rt, err := s2.Decide(ctx, thread.Approve("call_d"))
+		rt, err := s2.Decide(ctx, bound(s2, thread.Approve("call_d")))
 		if err != nil || rt == nil {
 			t.Fatalf("Decide = %v, %v", rt, err)
 		}
@@ -293,7 +293,7 @@ func TestMixedBatchResumeSurvivesAFailedAppend(t *testing.T) {
 				t.Fatal(err)
 			}
 			st.arm(nth)
-			rt, err := s.Decide(ctx, thread.Approve("call_d"))
+			rt, err := s.Decide(ctx, bound(s, thread.Approve("call_d")))
 			if err != nil || rt == nil {
 				t.Fatalf("Decide = %v, %v", rt, err)
 			}
@@ -345,7 +345,7 @@ func TestResumeJoinKeepsMessagesWrittenWhileParked(t *testing.T) {
 			if err := s.CustomMessage(ctx, "note", core.User("a note written while parked")); err != nil {
 				t.Fatal(err)
 			}
-			rt, err := s.Decide(ctx, thread.Approve("call_d"))
+			rt, err := s.Decide(ctx, bound(s, thread.Approve("call_d")))
 			if err != nil || rt == nil {
 				t.Fatalf("Decide = %v, %v", rt, err)
 			}
@@ -538,14 +538,15 @@ func TestMixedBatchKeepsMirroredRequestsDecided(t *testing.T) {
 	// The parked call stands for a child session's parked call.
 	if _, err := s.AppendApprovalRequests(ctx, thread.ApprovalRequestEntry{
 		CallID: "child_call", Tool: "spend", Args: []byte(`{}`),
-		RunID: "s_child-t1", Child: "s_child", Wrapper: "call_d",
+		ArgsSHA256: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", // sha256("{}")
+		RunID:      "s_child-t1", Child: "s_child", Wrapper: "call_d",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if p := s.Pending(); len(p) != 1 || p[0].CallID != "child_call" || p[0].Child != "s_child" {
 		t.Fatalf("Pending = %+v, want the mirrored child request", p)
 	}
-	if rt, err := s.Decide(ctx, thread.Approve("child_call")); err != nil || rt != nil {
+	if rt, err := s.Decide(ctx, bound(s, thread.Approve("child_call"))); err != nil || rt != nil {
 		t.Fatalf("Decide on the mirror = %v, %v; want it recorded, no resume yet", rt, err)
 	}
 	rt, err := s.ResolveDelegation(ctx, "call_d", "s_child", "the child's answer", false)

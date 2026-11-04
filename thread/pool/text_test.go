@@ -91,7 +91,7 @@ func TestModelVisibleTexts(t *testing.T) {
 		)
 		s, _ := thread.Create(ctx, thread.Memory(), delegating(p, child))
 		t1, rc := park(t, s)
-		if err := p.Decide(ctx, s, thread.Approve(rc.Child+"/c-a")); err != nil {
+		if err := p.Decide(ctx, s, bound(s, thread.Approve(rc.Child+"/c-a"))); err != nil {
 			t.Fatal(err)
 		}
 		waitFor(t, p, s, rc.ID, pool.Failed)

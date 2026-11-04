@@ -421,7 +421,7 @@ pl := pool.New(4)                                       // at most 4 child runs 
 research := pl.MustWrap("research", "Research a topic.", researcher)
 rc, _ := pl.Submit(ctx, s, researcher, "survey the options") // a receipt, at once
 rc2, _ := pl.Wait(ctx, s, rc.ID)                        // settled, or parked at an approval
-err := pl.Decide(ctx, s, thread.Approve(childCallID))   // records and arms; does not wait
+err := pl.Decide(ctx, s, thread.Approve(r.CallID).Bind(r)) // r from s.Pending(); records and arms; does not wait
 err = pl.Recover(ctx, s)                                // after a restart, once per parent
 err = pl.Close(ctx)                                     // cancel what runs, drain
 ```
@@ -447,7 +447,8 @@ turn, _ = s.Send(ctx, weft.User("Deploy to prod."))
 res, _ = turn.Wait()                       // res.Pending: the gated calls
 for _, r := range s.Pending() { notify(r) } // durable, restart-safe
 
-rt, _ := s.Decide(ctx, thread.Approve(id)) // resumes when the boundary completes
+r := s.Pending()[0]                         // the request a person decides
+rt, _ := s.Decide(ctx, thread.Approve(r.CallID).Bind(r)) // bound to that request; resumes when the boundary completes
 follow := turn.Next()                      // the same resume, from the parked turn
 
 s.Grant(ctx, thread.Grant{                 // "always allow go test"

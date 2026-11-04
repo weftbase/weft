@@ -116,7 +116,7 @@ func TestChildParksTwice(t *testing.T) {
 				if len(pend) != 1 || pend[0].CallID != rc.Child+"/"+id || pend[0].Child != rc.Child {
 					t.Fatalf("round %d: Pending = %+v, want the child's %s alone", round, pend, id)
 				}
-				if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+				if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 					t.Fatalf("round %d: Decide: %v", round, err)
 				}
 				want := pool.Parked
@@ -172,10 +172,10 @@ func TestWrapperNotDecidable(t *testing.T) {
 	s, _ := thread.Create(ctx, st, delegating(p, child))
 	t1, rc := park(t, s)
 	for _, d := range []thread.Decision{thread.Approve("c-wrapper"), thread.Deny("c-wrapper", "no"), thread.Resolve("c-wrapper", "forged")} {
-		if _, err := s.Decide(ctx, d); !errors.Is(err, thread.ErrDelegated) {
+		if _, err := s.Decide(ctx, bound(s, d)); !errors.Is(err, thread.ErrDelegated) {
 			t.Fatalf("Session.Decide(%s) on the wrapper: %v, want ErrDelegated", d.Kind, err)
 		}
-		if err := p.Decide(ctx, s, d); !errors.Is(err, thread.ErrDelegated) {
+		if err := p.Decide(ctx, s, bound(s, d)); !errors.Is(err, thread.ErrDelegated) {
 			t.Fatalf("Pool.Decide(%s) on the wrapper: %v, want ErrDelegated", d.Kind, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestWrapperNotDecidable(t *testing.T) {
 		t.Fatalf("%d sessions exist, want the parent and its one child", n)
 	}
 	// The delegation still completes the one way it can.
-	if err := p.Decide(ctx, s, thread.Approve(rc.Child+"/c-a")); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(rc.Child+"/c-a"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, p, s, rc.ID, pool.Done)
@@ -230,7 +230,7 @@ func TestResumeHoldsSlot(t *testing.T) {
 		t.Fatalf("Pending = %+v", pend)
 	}
 	begun := time.Now()
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if took := time.Since(begun); took > 2*time.Second {
@@ -319,7 +319,7 @@ func TestDecideJoinsErrors(t *testing.T) {
 	if len(ds) != 3 {
 		t.Fatalf("Pending after the restart = %+v", open.Pending())
 	}
-	err = p2.Decide(ctx, open, ds...)
+	err = p2.Decide(ctx, open, boundAll(open, ds...)...)
 	if !errors.Is(err, pool.ErrNoAgent) {
 		t.Fatalf("Decide = %v, want ErrNoAgent", err)
 	}
@@ -480,7 +480,7 @@ func TestNestedExpiry(t *testing.T) {
 	now = now.Add(2 * time.Hour)
 	mu.Unlock()
 	// An approval now is too late, and says so.
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); !errors.Is(err, thread.ErrExpired) {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); !errors.Is(err, thread.ErrExpired) {
 		t.Fatalf("approving a lapsed nested request: %v, want ErrExpired", err)
 	}
 	// The sweep denied the mirror; the pump carries the denial down.
@@ -556,7 +556,7 @@ func TestChildInheritsSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open the child: %v", err)
 	}
-	if _, err := side.Decide(ctx, thread.Approve("c-a")); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := side.Decide(ctx, bound(side, thread.Approve("c-a"))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("the unsigned door on the child: %v, want ErrSignatureRequired", err)
 	}
 	if len(ran.snapshot()) != 0 {
@@ -682,7 +682,7 @@ func TestCancelParked(t *testing.T) {
 		}
 		// A decision now has nothing to address, and a pump nothing to
 		// resume.
-		if err := p.Decide(ctx, s, thread.Approve(r.Child+"/c-a")); !errors.Is(err, thread.ErrNotPending) {
+		if err := p.Decide(ctx, s, bound(s, thread.Approve(r.Child+"/c-a"))); !errors.Is(err, thread.ErrNotPending) {
 			t.Errorf("deciding a canceled child's request: %v, want ErrNotPending", err)
 		}
 		if len(ran.snapshot()) != 0 {
@@ -1064,7 +1064,7 @@ func TestDecisionDuringTheDelegatingTurn(t *testing.T) {
 	if mirror == "" {
 		t.Fatalf("the child's request never surfaced: %+v", s.Pending())
 	}
-	if err := p.Decide(ctx, s, thread.Approve(mirror)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(mirror))); err != nil {
 		t.Fatalf("Decide during the delegating turn: %v", err)
 	}
 	// The decision is recorded; the child must not run on it yet.
@@ -1177,7 +1177,7 @@ func TestChainNeverDecidesWrapper(t *testing.T) {
 			if n := len(mustList(ctx, t, st)); n != 2 {
 				t.Fatalf("%d sessions exist, want the parent and its one child", n)
 			}
-			if err := p.Decide(ctx, s, thread.Approve(rc.Child+"/c-a")); err != nil {
+			if err := p.Decide(ctx, s, bound(s, thread.Approve(rc.Child+"/c-a"))); err != nil {
 				t.Fatal(err)
 			}
 			waitFor(t, p, s, rc.ID, pool.Done)
@@ -1279,7 +1279,7 @@ func TestSessionDecideReachesChild(t *testing.T) {
 	)
 	s, _ := thread.Create(ctx, st, delegating(p, child))
 	t1, rc := park(t, s)
-	if _, err := s.Decide(ctx, thread.Approve(rc.Child+"/c-a")); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(rc.Child+"/c-a"))); err != nil {
 		t.Fatalf("Session.Decide on the mirrored request: %v", err)
 	}
 	waitState(t, s, pool.Done)

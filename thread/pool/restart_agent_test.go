@@ -103,7 +103,7 @@ func TestPoolChildRestartUnderAnotherAgent(t *testing.T) {
 			if tc.approve {
 				d = thread.Approve(pend[0].CallID)
 			}
-			err = p2.Decide(ctx, open, d)
+			err = p2.Decide(ctx, open, bound(open, d))
 			if tc.child == nil {
 				if !errors.Is(err, pool.ErrNoAgent) {
 					t.Fatalf("Decide with no agent wrapped: err = %v, want ErrNoAgent", err)

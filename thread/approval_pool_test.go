@@ -60,7 +60,7 @@ func TestPoolDelegationCompletesUnderRequireSigned(t *testing.T) {
 		t.Fatalf("no mirrored child request surfaced: %+v", req)
 	}
 	// The pool's unsigned route is the caller's Decide: refused.
-	if err := p.Decide(ctx, s, thread.Approve(req.CallID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(req.CallID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("an unsigned decision through the pool: %v, want ErrSignatureRequired", err)
 	}
 	challenge, err := s.Request(req.CallID)
@@ -142,7 +142,7 @@ func TestPoolReplaysAQuorumIntoTheChild(t *testing.T) {
 	for _, who := range []string{"alice", "bob"} {
 		d := thread.Approve(req.CallID)
 		d.Who = who
-		if err := p.Decide(ctx, s, d); err != nil {
+		if err := p.Decide(ctx, s, bound(s, d)); err != nil {
 			t.Fatalf("%s's approval through the pool: %v", who, err)
 		}
 	}
@@ -204,7 +204,7 @@ func TestChildReplayBatchMintsOneGrant(t *testing.T) {
 	second.Who = "bob"
 	// The user's door rejects a batch naming one call twice — the
 	// pool-child carve-out is gone.
-	if _, err := s.Decide(ctx, first, second); !errors.Is(err, thread.ErrInvalidDecision) {
+	if _, err := s.Decide(ctx, bound(s, first), bound(s, second)); !errors.Is(err, thread.ErrInvalidDecision) {
 		t.Fatalf("Decide with a duplicate call on a pool child: %v, want ErrInvalidDecision", err)
 	}
 	if got := len(decisionsFor(s, call.ID)); got != 0 {

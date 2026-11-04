@@ -149,7 +149,7 @@ func TestApprovalsParkDecideResume(t *testing.T) {
 		t.Fatalf("gated tool ran before any decision: %v", got)
 	}
 
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestApprovalsRestartDecideResume(t *testing.T) {
 		t.Fatalf("Pending after restart: %+v", pend)
 	}
 
-	rt, err := s2.Decide(ctx, thread.Deny(pend[0].CallID, "not on call"))
+	rt, err := s2.Decide(ctx, bound(s2, thread.Deny(pend[0].CallID, "not on call")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestApprovalsPartialDecisions(t *testing.T) {
 	if got := len(s.Pending()); got != 2 {
 		t.Fatalf("Pending: got %d, want 2", got)
 	}
-	rt, err := s.Decide(ctx, thread.Approve("call_1"))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestApprovalsPartialDecisions(t *testing.T) {
 	if got := len(s.Pending()); got != 1 || s.Pending()[0].CallID != "call_2" {
 		t.Fatalf("Pending after partial decide: %+v", s.Pending())
 	}
-	rt, err = s.Decide(ctx, thread.Deny("call_2", "second refusal"))
+	rt, err = s.Decide(ctx, bound(s, thread.Deny("call_2", "second refusal")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestApprovalsAuditCompleteness(t *testing.T) {
 	if counts["request:"+call.ID] != 1 || counts["audit:park:parked"] != 1 {
 		t.Fatalf("park chain entries: %v", counts)
 	}
-	rt, err := s.Decide(ctx, thread.Resolve(call.ID, `{"status":"already refunded"}`))
+	rt, err := s.Decide(ctx, bound(s, thread.Resolve(call.ID, `{"status":"already refunded"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,26 +576,26 @@ func TestDecideErrNotPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Decide(ctx, thread.Approve("bogus")); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve("bogus"))); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("bogus call: %v, want ErrNotPending", err)
 	}
 	call := parkSend(t, s, ctx)
 	before := len(s.Entries())
-	if _, err := s.Decide(ctx, thread.Approve(call.ID), thread.Deny("other", "x")); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)), bound(s, thread.Deny("other", "x"))); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("batch with one bad id: %v, want ErrNotPending", err)
 	}
 	if got := len(s.Entries()); got != before {
 		t.Fatalf("a rejected Decide recorded something: %d entries, want %d", got, before)
 	}
 	// Deciding the same call twice: the second time it is not pending.
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rt.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("re-decide: %v, want ErrNotPending", err)
 	}
 }
@@ -633,7 +633,7 @@ func TestSendQueuedBehindBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func TestAutoResumeOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,7 +927,7 @@ func TestSendOverDecidedBoundaryResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s1, ctx)
-	if _, err := s1.Decide(ctx, thread.Approve(call.ID)); err != nil {
+	if _, err := s1.Decide(ctx, bound(s1, thread.Approve(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	// The decisions are durable; the resume never ran. A reopen with
@@ -986,8 +986,8 @@ func TestDecideConcurrent(t *testing.T) {
 	parkSend(t, s, ctx)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = s.Decide(ctx, thread.Approve("call_1")) }()
-	go func() { defer wg.Done(); _, _ = s.Decide(ctx, thread.Approve("call_2")) }()
+	go func() { defer wg.Done(); _, _ = s.Decide(ctx, bound(s, thread.Approve("call_1"))) }()
+	go func() { defer wg.Done(); _, _ = s.Decide(ctx, bound(s, thread.Approve("call_2"))) }()
 	wg.Wait()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1035,7 +1035,7 @@ func TestResumeRetryAfterCanceledArm(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	dead := &secondDeathCtx{}
@@ -1231,7 +1231,7 @@ func TestResolveErrorDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	rt, err := s.Decide(ctx, thread.ResolveError(call.ID, "the payments API is down"))
+	rt, err := s.Decide(ctx, bound(s, thread.ResolveError(call.ID, "the payments API is down")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1282,7 +1282,7 @@ func TestResumeTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	t1, err := s.Resume(ctx)
@@ -1344,7 +1344,7 @@ func TestQuorumGrantMatchWaitsForSecondDecision(t *testing.T) {
 	if got := s.Pending(); len(got) != 1 {
 		t.Fatalf("Pending after a one-identity grant decision: got %d, want 1 (quorum unmet)", len(got))
 	}
-	rt, err := s.Decide(ctx, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "alice"})
+	rt, err := s.Decide(ctx, bound(s, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "alice"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1387,7 +1387,7 @@ func TestQuorumApproverApprovalWaitsForSecondDecision(t *testing.T) {
 	if got := s.Pending(); len(got) != 1 {
 		t.Fatalf("Pending after the approver's single approval: got %d, want 1 (quorum unmet)", len(got))
 	}
-	rt, err := s.Decide(ctx, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "alice"})
+	rt, err := s.Decide(ctx, bound(s, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "alice"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1420,7 +1420,7 @@ func TestDenyAlwaysMintsNoGrant(t *testing.T) {
 	call := parkSend(t, s, ctx)
 	d := thread.Deny(call.ID, "not allowed")
 	d.Always = true
-	rt, err := s.Decide(ctx, d)
+	rt, err := s.Decide(ctx, bound(s, d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1466,7 +1466,7 @@ func TestRepeatedCallIDOccurrencesStaySeparate(t *testing.T) {
 	}
 	call := parkSend(t, s, ctx)
 	// The first occurrence is denied.
-	if _, err := s.Decide(ctx, thread.Deny(call.ID, "changed my mind")); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Deny(call.ID, "changed my mind"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Grant(ctx, thread.Grant{
@@ -1528,10 +1528,10 @@ func TestResolveBesideApproveConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if rt, err := s.Decide(ctx, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "bob"}); err != nil || rt != nil {
+	if rt, err := s.Decide(ctx, bound(s, thread.Decision{CallID: call.ID, Kind: thread.OutcomeApprove, Who: "bob"})); err != nil || rt != nil {
 		t.Fatalf("one approval of two: turn %v, err %v", rt, err)
 	}
-	rt, err := s.Decide(ctx, thread.Resolve(call.ID, "42"))
+	rt, err := s.Decide(ctx, bound(s, thread.Resolve(call.ID, "42")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1593,7 +1593,7 @@ func TestDecideGrantRevokeFlushDurable(t *testing.T) {
 	}
 	call := parkSend(t, s, ctx)
 	n0 := c.count()
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}

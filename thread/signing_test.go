@@ -233,7 +233,10 @@ func TestSignedReplayAcrossRestart(t *testing.T) {
 	if _, err := s2.DecideSigned(ctx, sd); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s2.DecideSigned(ctx, sd); !errors.Is(err, thread.ErrReplay) {
+	if _, err := s2.DecideSigned(ctx, sd); err != nil {
+		t.Fatalf("the same signed decision after restart: got %v, want it applied (G3)", err)
+	}
+	if _, err := s2.DecideSigned(ctx, thread.SignDecision(secret, r, thread.Approve(call.ID))); !errors.Is(err, thread.ErrReplay) {
 		t.Fatalf("replay after restart: got %v, want ErrReplay", err)
 	}
 }
@@ -304,7 +307,7 @@ func TestRequireSigned(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("unsigned Decide: %v, want ErrSignatureRequired", err)
 	}
 	r, err := s.Request(call.ID)

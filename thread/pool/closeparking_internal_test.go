@@ -66,7 +66,7 @@ func closeWhileParkingDecided(t *testing.T, syncWrap bool) {
 		}
 		// Decide inside the window: recorded, its pump finds the child
 		// still running and leaves it to this park.
-		if err := p.Decide(ctx, parent, thread.Approve(pending[0].CallID)); err != nil {
+		if err := p.Decide(ctx, parent, bound(parent, thread.Approve(pending[0].CallID))); err != nil {
 			t.Errorf("Decide inside the window: %v", err)
 		}
 		go func() { closed <- p.Close(ctx) }()

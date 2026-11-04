@@ -41,8 +41,13 @@ module, ADR 0005).
 
 - Format 6 (ADR 0011 §6, ADR 0032): a cut-off turn entry (`cut_off`) and a recovery request (`recovery`) are written with `"v":6`; a reader from 0.21 fails with `ErrNewerFormat` on a session that holds one instead of answering a call of unknown outcome with a synthetic result. Sessions that never recovered keep their versions; every older file reads as before.
 
+### Changed (breaking)
+
+- thread: every `Decide` decision is bound to the request it answers — `RequestID` and `ArgsSHA256`, set with the new `Decision.Bind(r Request)`; an unbound one is `ErrInvalidDecision` (WR-12; pool's `Decide` included). Write `s.Decide(ctx, thread.Approve(r.CallID).Bind(r))` with `r` from `Pending()`. Signed decisions are bound by their challenge already.
+
 ### Changed
 
+- thread: deciding is idempotent (G3, G4). The same bound decision again — same request, outcome, reason, content, decider, arguments and key — returns nil and records nothing; the same signed bytes again (same nonce and MAC-covered fields) return nil without an audit entry instead of `ErrReplay`, so a platform that records first and re-forwards may forward again. A different decision on a decided request is still `ErrNotPending`; a different one under a spent nonce `ErrReplay`.
 - thread, thread/pool: an approved call whose resume a crash cut short is no longer run again on its own when it is not `ReplaySafe`: the resume is refused (`ErrRecoveryRequired`) and `RecoverTurn` parks it as a recovery request; `thread/pool`'s `Recover` does this at any depth of a chain and mirrors the request to the parent.
 - thread: a parked request (`ApprovalRequestEntry.Run`) and a queued receipt (`ReceiptEntry.Run`) record the session's run metadata beside the send's own, so the resume or the restored send runs under the labels it was started with — the recorded pairs winning over the reopening Session's, as the parked settings already did. Before, only the send's own pairs were recorded and a reopen by a process with other run metadata lost them.
 - thread/pool: a child session runs under its parent's run metadata, as a fork does — written into its header at `Submit`, held over it when the pool reopens it — and a mirrored child request carries the child run's metadata (`Request.Metadata` on the parent's `Pending`).

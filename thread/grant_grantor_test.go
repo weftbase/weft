@@ -57,7 +57,7 @@ func TestGrantRecordsItsGrantor(t *testing.T) {
 	}
 	d := thread.ApproveAlways("call_2")
 	d.Who = "merchant:7"
-	rt, err := s.Decide(ctx, d)
+	rt, err := s.Decide(ctx, bound(s, d))
 	if err != nil {
 		t.Fatal(err)
 	}

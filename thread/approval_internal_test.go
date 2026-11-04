@@ -40,7 +40,7 @@ func TestRunResumeWithoutBoundaryMakesNoGhostRun(t *testing.T) {
 	if len(pend) != 1 {
 		t.Fatalf("Pending: %d", len(pend))
 	}
-	if _, err := s.Decide(ctx, Approve(pend[0].CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, Approve(pend[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	// Arm exactly as armResumeLocked does, then navigate the leaf off

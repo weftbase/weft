@@ -91,7 +91,7 @@ func TestDecideOnExpiredRequestIsRefused(t *testing.T) {
 	pend := s.Pending()[0]
 	clock.Advance(pend.Expiry.Sub(clock.Now()) + time.Millisecond) // strictly past it
 
-	rt, err := s.Decide(ctx, thread.Approve(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve(call.ID)))
 	if !errors.Is(err, thread.ErrExpired) {
 		t.Fatalf("Decide on an expired request: got %v, want ErrExpired", err)
 	}
@@ -182,7 +182,7 @@ func TestDecideRejectsInvalidBatches(t *testing.T) {
 		"no decisions":               nil,
 		"no outcome":                 {{CallID: call.ID}},
 	} {
-		if rt, err := s.Decide(ctx, ds...); !errors.Is(err, thread.ErrInvalidDecision) || rt != nil {
+		if rt, err := s.Decide(ctx, boundAll(s, ds...)...); !errors.Is(err, thread.ErrInvalidDecision) || rt != nil {
 			t.Errorf("%s: got turn %v, err %v; want ErrInvalidDecision", name, rt, err)
 		}
 	}
@@ -213,7 +213,7 @@ func TestApproveAlwaysGrantsOnlyAnEffectiveApproval(t *testing.T) {
 			t.Fatal(err)
 		}
 		call := parkSend(t, s, ctx)
-		if _, err := s.Decide(ctx, always(call.ID, "alice")); err != nil {
+		if _, err := s.Decide(ctx, bound(s, always(call.ID, "alice"))); err != nil {
 			t.Fatal(err)
 		}
 		if got := grantCount(s); got != 0 {
@@ -221,7 +221,7 @@ func TestApproveAlwaysGrantsOnlyAnEffectiveApproval(t *testing.T) {
 		}
 		no := thread.Deny(call.ID, "not this one")
 		no.Who = "bob"
-		rt, err := s.Decide(ctx, no)
+		rt, err := s.Decide(ctx, bound(s, no))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,12 +242,12 @@ func TestApproveAlwaysGrantsOnlyAnEffectiveApproval(t *testing.T) {
 			t.Fatal(err)
 		}
 		call := parkSend(t, s, ctx)
-		if _, err := s.Decide(ctx, always(call.ID, "alice")); err != nil {
+		if _, err := s.Decide(ctx, bound(s, always(call.ID, "alice"))); err != nil {
 			t.Fatal(err)
 		}
 		yes := thread.Approve(call.ID)
 		yes.Who = "bob"
-		rt, err := s.Decide(ctx, yes)
+		rt, err := s.Decide(ctx, bound(s, yes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -276,7 +276,7 @@ func TestDecideRecordsViaUser(t *testing.T) {
 	call := parkSend(t, s, ctx)
 	d := thread.Deny(call.ID, "no")
 	d.Via, d.Who = "expiry", "root"
-	if _, err := s.Decide(ctx, d); err != nil {
+	if _, err := s.Decide(ctx, bound(s, d)); err != nil {
 		t.Fatal(err)
 	}
 	got := decisionsFor(s, call.ID)
@@ -304,7 +304,7 @@ func TestBranchBackToDecisionNeedsNewDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	decision := decisionsFor(s, call.ID)[0]
@@ -337,7 +337,7 @@ func TestBranchBackToDecisionNeedsNewDecision(t *testing.T) {
 		t.Fatalf("Pending after branching back to the decision: %+v, want the call pending again", got)
 	}
 	no := thread.Deny(call.ID, "once was enough")
-	if _, err := s.Decide(ctx, no); err != nil {
+	if _, err := s.Decide(ctx, bound(s, no)); err != nil {
 		t.Fatal(err)
 	}
 	rt2, err := s.Resume(ctx)
@@ -369,7 +369,7 @@ func TestForkDoesNotInheritDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.Approve(call.ID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	f, err := s.Fork(ctx, s.Leaf(), thread.AutoResume(false))
@@ -467,7 +467,7 @@ func TestQuorumChainApprovalStillParksARequest(t *testing.T) {
 			// The second approval completes it.
 			yes := thread.Approve(call.ID)
 			yes.Who = "alice"
-			rt, err := s.Decide(ctx, yes)
+			rt, err := s.Decide(ctx, bound(s, yes))
 			if err != nil {
 				t.Fatal(err)
 			}

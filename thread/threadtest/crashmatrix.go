@@ -205,7 +205,7 @@ func assertCrashPoint(t *testing.T, point string, st thread.Storage) {
 		if len(pend) != 1 {
 			t.Fatalf("pending after the crash = %+v", pend)
 		}
-		if _, err := s.Decide(ctx, thread.Approve(pend[0].CallID)); err != nil {
+		if _, err := s.Decide(ctx, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 			t.Fatalf("Decide: %v", err)
 		}
 		if p := s.Pending(); len(p) != 0 {
@@ -569,7 +569,7 @@ func assertCrashPoint(t *testing.T, point string, st thread.Storage) {
 		if len(pend) != 1 || pend[0].Child != CrashMatrixKidID {
 			t.Fatalf("the mirrored request after the crash = %+v", pend)
 		}
-		if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+		if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 			t.Fatalf("Decide: %v", err)
 		}
 		wctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -912,7 +912,7 @@ func crashMatrixParkChild(point string, st thread.Storage) {
 	if point == "approval" {
 		dieAt(point)
 	}
-	if _, err := s.Decide(ctx, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		fmt.Println("helper: decide failed:", err)
 		os.Exit(2)
 	}
@@ -1111,7 +1111,7 @@ func crashMatrixSignedChild(point string, st thread.Storage) {
 		os.Exit(2)
 	}
 	if point == "resume_arm" {
-		if _, err := s.Decide(ctx, thread.Approve(pend[0].CallID)); err != nil {
+		if _, err := s.Decide(ctx, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 			fmt.Println("helper: decide failed:", err)
 			os.Exit(2)
 		}
@@ -1173,7 +1173,7 @@ func crashMatrixExpiryChild(st thread.Storage) {
 	mu.Lock()
 	now = now.Add(2 * time.Hour)
 	mu.Unlock()
-	if _, err := s.Decide(ctx, thread.Approve(pend[0].CallID)); !errors.Is(err, thread.ErrExpired) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(pend[0].CallID))); !errors.Is(err, thread.ErrExpired) {
 		helperFail("the decision over a lapsed request was not refused as expired", err)
 	}
 	dieAt("expiry_sweep")
@@ -1274,7 +1274,7 @@ func crashMatrixJoinChild(st thread.Storage) {
 	if len(pend) != 1 {
 		helperFail("the turn did not park", pend)
 	}
-	if _, err := s.Decide(ctx, thread.Approve(pend[0].CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		helperFail("decide failed", err)
 	}
 	<-inResume // the resume's model call: the join landed before it

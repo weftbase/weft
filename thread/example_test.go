@@ -479,7 +479,7 @@ func ExampleSession_Decide() {
 		fmt.Println("pending request:", r.CallID, "on", r.Tool)
 	}
 
-	rt, err := s.Decide(ctx, thread.Approve("call_1"))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve("call_1")))
 	if err != nil {
 		fmt.Println(err)
 		return

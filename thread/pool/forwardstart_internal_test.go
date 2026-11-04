@@ -63,7 +63,7 @@ func TestForwardInTheStartWindowIsRefused(t *testing.T) {
 	if len(s.Pending()) != 1 {
 		t.Fatalf("parent pending %+v, receipts %+v; want the child's refund mirrored", s.Pending(), Receipts(s))
 	}
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -216,7 +216,7 @@ func TestForwardInARestartedResumesStartWindowReadsParked(t *testing.T) {
 	if len(open.Pending()) != 1 {
 		t.Fatalf("pending after the restart %+v", open.Pending())
 	}
-	if err := p2.Decide(ctx, open, thread.Approve(open.Pending()[0].CallID)); err != nil {
+	if err := p2.Decide(ctx, open, bound(open, thread.Approve(open.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)

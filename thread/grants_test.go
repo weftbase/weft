@@ -250,7 +250,7 @@ func TestGrantLifetime(t *testing.T) {
 	}
 	// The parked call is decided by hand, the resume settles, and a
 	// fresh unlimited grant is revoked before it can match anything.
-	if _, err := s.Decide(ctx, thread.Deny(s.Pending()[0].CallID, "enough")); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Deny(s.Pending()[0].CallID, "enough"))); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -334,7 +334,7 @@ func TestApproveAlways(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := s.Pending()[0]
-	rt, err := s.Decide(ctx, thread.ApproveAlways(call.CallID))
+	rt, err := s.Decide(ctx, bound(s, thread.ApproveAlways(call.CallID)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,12 +448,12 @@ func TestQuorum(t *testing.T) {
 
 	one := thread.Approve(call.ID)
 	one.Who = "avi"
-	if rt, err := s.Decide(ctx, one); err != nil || rt != nil {
+	if rt, err := s.Decide(ctx, bound(s, one)); err != nil || rt != nil {
 		t.Fatalf("one approval of two: rt=%v err=%v", rt, err)
 	}
 	two := thread.Approve(call.ID)
 	two.Who = "avi" // the same approver twice is one approver
-	if rt, err := s.Decide(ctx, two); err != nil || rt != nil {
+	if rt, err := s.Decide(ctx, bound(s, two)); err != nil || rt != nil {
 		t.Fatalf("same approver twice: rt=%v err=%v", rt, err)
 	}
 	if got := len(s.Pending()); got != 1 {
@@ -461,7 +461,7 @@ func TestQuorum(t *testing.T) {
 	}
 	three := thread.Approve(call.ID)
 	three.Who = "bee"
-	rt, err := s.Decide(ctx, three)
+	rt, err := s.Decide(ctx, bound(s, three))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,12 +492,12 @@ func TestQuorumConflictResolvesToDeny(t *testing.T) {
 	call := parkSend(t, s, ctx)
 	yes := thread.Approve(call.ID)
 	yes.Who = "avi"
-	if _, err := s.Decide(ctx, yes); err != nil {
+	if _, err := s.Decide(ctx, bound(s, yes)); err != nil {
 		t.Fatal(err)
 	}
 	no := thread.Deny(call.ID, "not during the freeze")
 	no.Who = "bee"
-	rt, err := s.Decide(ctx, no)
+	rt, err := s.Decide(ctx, bound(s, no))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestQuorumDenyAloneResolves(t *testing.T) {
 	call := parkSend(t, s, ctx)
 	d := thread.Deny(call.ID, "no")
 	d.Who = "avi"
-	rt, err := s.Decide(ctx, d)
+	rt, err := s.Decide(ctx, bound(s, d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestAuditTellsTheWholeStory(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	if _, err := s.Decide(ctx, thread.ApproveAlways(call.ID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.ApproveAlways(call.ID))); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -863,7 +863,7 @@ func TestApproveAlwaysWithoutArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := parkSend(t, s, ctx)
-	rt, err := s.Decide(ctx, thread.ApproveAlways(call.ID))
+	rt, err := s.Decide(ctx, bound(s, thread.ApproveAlways(call.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}

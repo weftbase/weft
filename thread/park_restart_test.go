@@ -70,7 +70,7 @@ func parkRuleSurvivesRestart(t *testing.T, rule core.RunOption) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := s2.Decide(ctx, thread.Approve("call_1"))
+	rt, err := s2.Decide(ctx, bound(s2, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}

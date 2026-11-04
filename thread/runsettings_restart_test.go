@@ -83,7 +83,7 @@ func (r *restartRig) resume(t *testing.T, ctx context.Context, id string, turns 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
-	rt, err := s.Decide(ctx, thread.Approve("call_1"))
+	rt, err := s.Decide(ctx, bound(s, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestQueuedSendSettingsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s2.Close(context.Background()) })
-	rt, err := s2.Decide(ctx, thread.Approve("call_1"))
+	rt, err := s2.Decide(ctx, bound(s2, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestDeciderMetadataDoesNotHideTheParkedTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	inbox := core.WithMetadata(ctx, map[string]string{"inbox.request": "r-9"})
-	rt, err := s.Decide(inbox, thread.Approve("call_1"))
+	rt, err := s.Decide(inbox, bound(s, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}

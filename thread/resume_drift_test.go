@@ -99,7 +99,7 @@ func TestResumeAfterCodeDrift(t *testing.T) {
 				if approve {
 					d = thread.Approve("call_1")
 				}
-				rt, err := s2.Decide(ctx, d)
+				rt, err := s2.Decide(ctx, bound(s2, d))
 				if err != nil {
 					t.Fatal(err)
 				}

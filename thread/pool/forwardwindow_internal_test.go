@@ -58,7 +58,7 @@ func TestForwardBetweenTheRunningReceiptAndTheMarkReadsTheStateItLeaves(t *testi
 	if len(s.Pending()) != 1 {
 		t.Fatalf("parent pending %+v, receipts %+v; want the child's refund mirrored", s.Pending(), Receipts(s))
 	}
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -149,7 +149,7 @@ func TestForwardToAParkedChildResumingMeanwhileReadsParked(t *testing.T) {
 	// the Forward has answered.
 	p.testHookStarting = func(*delegate) { <-gate }
 	p.testHookLedgerRead = func(string) {
-		if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+		if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 			t.Error(err)
 			return
 		}
@@ -167,7 +167,7 @@ func TestForwardToAParkedChildResumingMeanwhileReadsParked(t *testing.T) {
 		t.Errorf("Forward to a parked child: turn %v, err %v; want a *StateError reading parked", turn != nil, err)
 	}
 	if len(s.Pending()) == 1 { // the fix answered from the lock: decide now
-		if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+		if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -314,7 +314,7 @@ func TestForwardWhileParkingNeverReadsRunning(t *testing.T) {
 	if fwdErr != nil && (!errors.As(fwdErr, &se) || se.State != Parked) || fwdErr == nil && fwdTurn == nil {
 		t.Errorf("Forward while parking: turn %v, err %v; want a steer or a refusal reading parked", fwdTurn != nil, fwdErr)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)

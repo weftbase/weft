@@ -593,7 +593,7 @@ func TestDeferredSteerFollowUpSurvivesARestart(t *testing.T) {
 	if len(q) != 1 || q[0].Receipt != followUp.ID() || q[0].Msg.Text() != "also: be careful" {
 		t.Fatalf("the reopened Queue = %+v, want the steer's follow-up %q", q, followUp.ID())
 	}
-	rt, err := s2.Decide(ctx, thread.Deny("call_d", "no"))
+	rt, err := s2.Decide(ctx, bound(s2, thread.Deny("call_d", "no")))
 	if err != nil || rt == nil {
 		t.Fatalf("Decide = %v, %v", rt, err)
 	}

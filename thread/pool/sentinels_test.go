@@ -103,7 +103,7 @@ func TestSentinelsAreMatchable(t *testing.T) {
 			if len(ds) != 1 {
 				t.Fatalf("Pending after the restart = %+v, want the child's one request", reopened.Pending())
 			}
-			return pool.New(1).Decide(sentinelCtx(t), reopened, ds...)
+			return pool.New(1).Decide(sentinelCtx(t), reopened, boundAll(reopened, ds...)...)
 		}},
 
 		{"ErrDepth/Submit past MaxDepth from inside a run", pool.ErrDepth, func(t *testing.T) error {

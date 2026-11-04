@@ -53,7 +53,7 @@ func TestDecisionBindsWhatWasShown(t *testing.T) {
 	shown := first // the page an approver left open
 	d := thread.Deny("call_1", "no")
 	d.RequestID, d.ArgsSHA256 = first.ID, first.ArgsSHA256
-	rt, err := s.Decide(ctx, d)
+	rt, err := s.Decide(ctx, bound(s, d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,12 @@ func TestDecisionBindsWhatWasShown(t *testing.T) {
 
 	stale := thread.Approve("call_1")
 	stale.RequestID = shown.ID
-	if _, err := s.Decide(ctx, stale); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := s.Decide(ctx, bound(s, stale)); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("approving the occurrence the page showed: err = %v, want ErrNotPending", err)
 	}
 	stale = thread.Approve("call_1")
 	stale.ArgsSHA256 = shown.ArgsSHA256
-	if _, err := s.Decide(ctx, stale); !errors.Is(err, thread.ErrArgsChanged) {
+	if _, err := s.Decide(ctx, bound(s, stale)); !errors.Is(err, thread.ErrArgsChanged) {
 		t.Fatalf("approving the arguments the page showed: err = %v, want ErrArgsChanged", err)
 	}
 	if p := s.Pending(); len(p) != 1 {
@@ -85,7 +85,7 @@ func TestDecisionBindsWhatWasShown(t *testing.T) {
 	}
 	ok := thread.Approve("call_1")
 	ok.RequestID, ok.ArgsSHA256, ok.Who = second.ID, second.ArgsSHA256, "merchant:42"
-	rt, err = s.Decide(ctx, ok)
+	rt, err = s.Decide(ctx, bound(s, ok))
 	if err != nil {
 		t.Fatal(err)
 	}

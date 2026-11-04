@@ -94,7 +94,7 @@ func TestThreadRecordsSlowProviderDoesNotBlockTheSession(t *testing.T) {
 			t.Errorf("Pending = %v", p)
 		}
 		_ = s.Entries()
-		if _, err := s.Decide(ctx, thread.Approve("r1")); err != nil {
+		if _, err := s.Decide(ctx, bound(s, thread.Approve("r1"))); err != nil {
 			t.Errorf("Decide: %v", err)
 		}
 	}()
@@ -489,7 +489,7 @@ func TestDecideOnBehalfNamesTheApproval(t *testing.T) {
 	}
 	recSendWait(t, s, "check the disk")
 	recWaitIdle(t, s)
-	if _, err := s.Decide(thread.WithApprovedBy(ctx, "runtime"), thread.Approve("c1")); err != nil {
+	if _, err := s.Decide(thread.WithApprovedBy(ctx, "runtime"), bound(s, thread.Approve("c1"))); err != nil {
 		t.Fatal(err)
 	}
 	recWaitIdle(t, s)

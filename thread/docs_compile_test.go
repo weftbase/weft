@@ -193,7 +193,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 		_ = notify
 	}
 	if pend := s4.Pending(); len(pend) > 0 {
-		rt, err := s4.Decide(ctx, thread.Approve(pend[0].CallID))
+		rt, err := s4.Decide(ctx, bound(s4, thread.Approve(pend[0].CallID)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +259,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 		}
 		_ = rt
 		// README: RequireSigned closes the unsigned door.
-		if _, err := s5.Decide(ctx, thread.Approve(pend[0].CallID)); !errors.Is(err, thread.ErrSignatureRequired) {
+		if _, err := s5.Decide(ctx, bound(s5, thread.Approve(pend[0].CallID))); !errors.Is(err, thread.ErrSignatureRequired) {
 			t.Fatalf("Decide under RequireSigned: %v, want ErrSignatureRequired", err)
 		}
 	}
@@ -320,7 +320,7 @@ func TestDocsSessionsBlocksCompile(t *testing.T) {
 	if !rc2.Settled() {
 		t.Fatalf("receipt at rest and not parked should be settled: %v", rc2.State)
 	}
-	if err := pl.Decide(ctx, ps, thread.Approve("call_nobody_parked")); err == nil {
+	if err := pl.Decide(ctx, ps, bound(ps, thread.Approve("call_nobody_parked"))); err == nil {
 		t.Fatal("Decide for a call that is not pending returned nil")
 	}
 	if err := pl.Recover(ctx, ps); err != nil {

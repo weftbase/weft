@@ -93,7 +93,7 @@ func TestInterruptDenialFailureFailsTheSend(t *testing.T) {
 	// The boundary resolves by hand, and nothing runs behind it: the
 	// refused message was never queued (the script holds no turn for
 	// it, and the tree no prompt).
-	rt, err := s.Decide(ctx, thread.Deny(call.ID, "no"))
+	rt, err := s.Decide(ctx, bound(s, thread.Deny(call.ID, "no")))
 	if err != nil {
 		t.Fatal(err)
 	}

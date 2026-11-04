@@ -296,7 +296,7 @@ func TestNestedExpiryNeverOffersTheDelegatingCall(t *testing.T) {
 				offered()
 				if approve {
 					for _, r := range s.Pending() {
-						_ = p.Decide(ctx, s, thread.Approve(r.CallID)) // a lapsed one refuses: ErrExpired
+						_ = p.Decide(ctx, s, bound(s, thread.Approve(r.CallID))) // a lapsed one refuses: ErrExpired
 					}
 				}
 				deadline := time.Now().Add(5 * time.Second)
@@ -545,7 +545,7 @@ func TestCloseResolvesACanceledResumeOnceTheParentParks(t *testing.T) {
 	}
 	// Approve the child's request: its resume waits for the lead's turn
 	// to park la, and Close cancels it there.
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	closed := make(chan error, 1)

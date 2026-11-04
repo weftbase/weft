@@ -54,7 +54,7 @@ func TestQuorumSurvivesRestart(t *testing.T) {
 	}
 	first := thread.Approve("call_1")
 	first.Who = "alice"
-	rt, err := s2.Decide(ctx, first)
+	rt, err := s2.Decide(ctx, bound(s2, first))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestQuorumSurvivesRestart(t *testing.T) {
 	}
 	second := thread.Approve("call_1")
 	second.Who = "bob"
-	if rt, err = s2.Decide(ctx, second); err != nil || rt == nil {
+	if rt, err = s2.Decide(ctx, bound(s2, second)); err != nil || rt == nil {
 		t.Fatalf("the second approval: turn %v, err %v", rt, err)
 	}
 	if _, err := rt.Wait(); err != nil {

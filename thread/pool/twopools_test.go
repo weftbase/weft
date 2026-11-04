@@ -73,7 +73,7 @@ func TestTwoPoolsOneParent(t *testing.T) {
 		if it%2 == 1 {
 			via, other = pb, pa
 		}
-		if err := via.Decide(ctx, s, ds...); err != nil {
+		if err := via.Decide(ctx, s, boundAll(s, ds...)...); err != nil {
 			t.Errorf("iter %d: Decide through one pool: %v", it, err)
 		}
 		if err := other.Decide(ctx, s); err != nil {
@@ -175,7 +175,7 @@ func TestTwoPoolsOneParentRecover(t *testing.T) {
 	if len(ds) != 2 {
 		t.Fatalf("%d requests offered after the restart, want both children's: %+v", len(ds), s2.Pending())
 	}
-	if err := pa2.Decide(ctx, s2, ds...); err != nil {
+	if err := pa2.Decide(ctx, s2, boundAll(s2, ds...)...); err != nil {
 		t.Errorf("Decide through one pool: %v", err)
 	}
 	if err := pb2.Decide(ctx, s2); err != nil {

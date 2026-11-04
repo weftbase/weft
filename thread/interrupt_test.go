@@ -599,7 +599,7 @@ func TestInterruptDuringResumeRunsTheMessage(t *testing.T) {
 	// The approval starts the resume (AutoResume), which parks inside
 	// its model call: the interrupt fells it there — provably, once the
 	// park signal arrives, not by racing the resume's startup.
-	if _, err := s.Decide(ctx, thread.Approve(p[0].CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(p[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -920,7 +920,7 @@ func TestInterruptDuringARiskyCall(t *testing.T) {
 			}
 		}
 	}
-	if _, err := s.Decide(ctx, thread.Deny("p1", "checked: not charged")); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Deny("p1", "checked: not charged"))); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := t2.Wait(); err != nil || res.Text() != "the follow-up" {

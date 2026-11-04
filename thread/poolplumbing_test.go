@@ -79,13 +79,13 @@ func TestDecideRefusesDelegatingCall(t *testing.T) {
 	for _, d := range []thread.Decision{
 		thread.Approve(call.ID), thread.Deny(call.ID, "no"), thread.Resolve(call.ID, "forged"),
 	} {
-		if _, err := s.Decide(ctx, d); !errors.Is(err, thread.ErrDelegated) {
+		if _, err := s.Decide(ctx, bound(s, d)); !errors.Is(err, thread.ErrDelegated) {
 			t.Fatalf("Decide(%s) on the delegating call: %v, want ErrDelegated", d.Kind, err)
 		}
 	}
 	// A batch that names the wrapper beside a decidable call records
 	// neither.
-	if _, err := s.Decide(ctx, thread.Approve("s_child/c-inner"), thread.Approve(call.ID)); !errors.Is(err, thread.ErrDelegated) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve("s_child/c-inner")), bound(s, thread.Approve(call.ID))); !errors.Is(err, thread.ErrDelegated) {
 		t.Fatalf("a batch naming the delegating call: %v, want ErrDelegated", err)
 	}
 	if _, err := s.Request(call.ID); !errors.Is(err, thread.ErrDelegated) {
@@ -126,7 +126,7 @@ func TestReusedWrapperIDIsOffered(t *testing.T) {
 	}
 	_, call := parkTurn(t, s, ctx)
 	m := mirrorUnder(t, s, "s_child", "c-inner", "s_child-t1", call.ID, time.Time{})
-	if _, err := s.Decide(ctx, thread.Approve(m.CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(m.CallID))); err != nil {
 		t.Fatal(err)
 	}
 	rt, err := s.ResolveDelegation(ctx, call.ID, "s_child", "child answer", false)
@@ -144,7 +144,7 @@ func TestReusedWrapperIDIsOffered(t *testing.T) {
 	if len(pend) != 1 || pend[0].CallID != "same-id" || pend[0].Child != "" {
 		t.Fatalf("Pending = %+v, want the ordinary call that reuses the wrapper's id", pend)
 	}
-	nt, err := s.Decide(ctx, thread.Approve("same-id"))
+	nt, err := s.Decide(ctx, bound(s, thread.Approve("same-id")))
 	if err != nil {
 		t.Fatalf("deciding the reused id: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestMirrorsSupersededAndDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := mirrorUnder(t, s, "s_child", "call_1", "s_child-t1", "", time.Time{})
-	if _, err := s.Decide(ctx, thread.Approve(first.CallID)); err != nil {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(first.CallID))); err != nil {
 		t.Fatal(err)
 	}
 	if pend := s.Pending(); len(pend) != 0 {
@@ -201,7 +201,7 @@ func TestMirrorsSupersededAndDenied(t *testing.T) {
 		last.Reason != "the delegation was canceled" || last.RunID != "s_child-t2" {
 		t.Fatalf("the denial's record = %+v", last)
 	}
-	if _, err := s.Decide(ctx, thread.Approve(second.CallID)); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := s.Decide(ctx, bound(s, thread.Approve(second.CallID))); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("deciding an ended delegation's request: %v, want ErrNotPending", err)
 	}
 	// Nothing pending for the child: nothing recorded.
@@ -299,7 +299,7 @@ func TestReplayDecisions(t *testing.T) {
 	}
 	call = parkSend(t, child, ctx)
 	// The unsigned door stays shut on the child.
-	if _, err := child.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := child.Decide(ctx, bound(child, thread.Approve(call.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("Decide on a RequireSigned child: %v", err)
 	}
 	// One key twice is one approver: the quorum of two stays open.
@@ -378,7 +378,7 @@ func TestCancelDelegated(t *testing.T) {
 	if pend := child.Pending(); len(pend) != 0 {
 		t.Fatalf("Pending after the cancellation = %+v", pend)
 	}
-	if _, err := child.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrNotPending) {
+	if _, err := child.Decide(ctx, bound(child, thread.Approve(call.ID))); !errors.Is(err, thread.ErrNotPending) {
 		t.Fatalf("approving a canceled call: %v, want ErrNotPending", err)
 	}
 	if err := child.CancelDelegated(ctx, "again"); err != nil {
@@ -423,7 +423,7 @@ func TestInheritApprovals(t *testing.T) {
 	if len(pend) != 1 || !pend[0].Expiry.Equal(clock.Now().Add(time.Hour)) {
 		t.Fatalf("the child's request = %+v, want the parent's lifetime on the parent's clock", pend)
 	}
-	if _, err := child.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := child.Decide(ctx, bound(child, thread.Approve(call.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("the unsigned door on the child: %v, want ErrSignatureRequired", err)
 	}
 	if _, err := child.Request(call.ID); err != nil {
@@ -440,7 +440,7 @@ func TestInheritApprovals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopening the child under the parent's policy: %v", err)
 	}
-	if _, err := reopened.Decide(ctx, thread.Approve(call.ID)); !errors.Is(err, thread.ErrSignatureRequired) {
+	if _, err := reopened.Decide(ctx, bound(reopened, thread.Approve(call.ID))); !errors.Is(err, thread.ErrSignatureRequired) {
 		t.Fatalf("the unsigned door on the reopened child: %v", err)
 	}
 	if thread.InheritApprovals(nil) != nil {

@@ -110,7 +110,7 @@ func TestRecoverParkedUnmirrored(t *testing.T) {
 	if len(parent.Pending()) != 1 || receiptStates(parent, rc.ID) != "accepted running parked" {
 		t.Fatalf("a second Recover changed the ledger: %q, %+v", receiptStates(parent, rc.ID), parent.Pending())
 	}
-	if err := p.Decide(ctx, parent, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, parent, bound(parent, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	final := waitFor(t, p, parent, rc.ID, pool.Done)
@@ -217,7 +217,7 @@ func TestRecoverResolvesParkedWrapper(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parent.Decide(ctx, thread.Approve("s_child/c-a")); err != nil {
+	if _, err := parent.Decide(ctx, bound(parent, thread.Approve("s_child/c-a"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := parent.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
@@ -368,7 +368,7 @@ func TestPumpSettlesAChildThatAlreadyResumed(t *testing.T) {
 	if _, err := parent.AppendApprovalRequests(ctx, mirror); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parent.Decide(ctx, thread.Approve(mirror.CallID)); err != nil {
+	if _, err := parent.Decide(ctx, bound(parent, thread.Approve(mirror.CallID))); err != nil {
 		t.Fatal(err)
 	}
 

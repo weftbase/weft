@@ -39,7 +39,7 @@ func TestNestedAbandonedRunParkingLaterWritesNothing(t *testing.T) {
 	st := thread.Memory()
 	s, _ := thread.Create(ctx, st, chainOver(p, payments, nil))
 	t1 := parkChain(t, s)
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	select {

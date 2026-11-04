@@ -79,7 +79,7 @@ func TestOnReadyOwnsResumeAndQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := s.Decide(bg, thread.Approve("call_1"))
+	rt, err := s.Decide(bg, bound(s, thread.Approve("call_1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestOnReadyReadyAfterRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.Decide(bg, thread.Approve("call_1")); err != nil {
+			if _, err := s.Decide(bg, bound(s, thread.Approve("call_1"))); err != nil {
 				t.Fatal(err)
 			}
 			id := s.ID()
@@ -227,7 +227,7 @@ func TestAutoResumeOffReady(t *testing.T) {
 	if got := s.Ready(); len(got) != 0 {
 		t.Fatalf("Ready() while undecided = %+v", got)
 	}
-	if rt, err := s.Decide(bg, thread.Approve("call_1")); err != nil || rt != nil {
+	if rt, err := s.Decide(bg, bound(s, thread.Approve("call_1"))); err != nil || rt != nil {
 		t.Fatalf("Decide = %v, %v", rt, err)
 	}
 	if err := s.WaitIdle(bg); err != nil { // the runner may still be between items
@@ -255,7 +255,7 @@ func TestOnReadyCloseWithQueued(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued, _ := s.Send(bg, core.User("then?"))
-	if _, err := s.Decide(bg, thread.Approve("call_1")); err != nil {
+	if _, err := s.Decide(bg, bound(s, thread.Approve("call_1"))); err != nil {
 		t.Fatal(err)
 	}
 	sch.next(t, thread.ReadyResume)
@@ -369,7 +369,7 @@ func TestReadyListsACutOffTurnAlone(t *testing.T) {
 			if got := s.Ready(); len(got) != 0 {
 				t.Fatalf("Ready() with the recovery request undecided = %+v", got)
 			}
-			if _, err := s.Decide(bg, thread.Deny("call_1", "skip")); err != nil {
+			if _, err := s.Decide(bg, bound(s, thread.Deny("call_1", "skip"))); err != nil {
 				t.Fatal(err)
 			}
 			r := sch.next(t, thread.ReadyResume)

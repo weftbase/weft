@@ -93,7 +93,7 @@ func TestResumedSyncChildKeepsParkRule(t *testing.T) {
 	if len(pend) != 1 || pend[0].CallID != rc.Child+"/c-1" {
 		t.Fatalf("Pending = %+v, want the child's c-1", pend)
 	}
-	if err := p.Decide(ctx, s, thread.Approve(pend[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(pend[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, p, s, rc.ID, pool.Parked)

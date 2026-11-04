@@ -122,7 +122,7 @@ func TestSentinelsAreMatchable(t *testing.T) {
 			if err := p.s.Close(ctx); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			_, err := p.s.Decide(ctx, thread.Approve(p.call))
+			_, err := p.s.Decide(ctx, bound(p.s, thread.Approve(p.call)))
 			return err
 		}},
 		{"ErrClosed/Branch after Close", thread.ErrClosed, func(t *testing.T) error {
@@ -306,7 +306,7 @@ func TestSentinelsAreMatchable(t *testing.T) {
 			clock := newSentinelClock()
 			p := sentinelParked(t, thread.Clock(clock.Now), thread.RequestExpiry(time.Minute), thread.AutoResume(false))
 			clock.Advance(2 * time.Minute)
-			_, err := p.s.Decide(sentinelCtx(t), thread.Approve(p.call))
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Approve(p.call)))
 			return err
 		}},
 		{"ErrExpired/Request past the request's expiry", thread.ErrExpired, func(t *testing.T) error {
@@ -366,7 +366,9 @@ func TestSentinelsAreMatchable(t *testing.T) {
 			if _, err := p.s.DecideSigned(ctx, signed); err != nil {
 				t.Fatalf("the first DecideSigned: %v", err)
 			}
-			_, err = p.s.DecideSigned(ctx, signed)
+			// The same signed bytes again are applied (nil); another
+			// decision under the spent nonce is a replay.
+			_, err = p.s.DecideSigned(ctx, thread.SignDecision(secret, challenge, thread.Deny(p.call, "second thoughts")))
 			return err
 		}},
 		{"ErrArgsChanged/DecideSigned over another arguments hash", thread.ErrArgsChanged, func(t *testing.T) error {
@@ -396,16 +398,16 @@ func TestSentinelsAreMatchable(t *testing.T) {
 		}},
 		{"ErrNotPending/Decide on a call that never parked", thread.ErrNotPending, func(t *testing.T) error {
 			p := sentinelParked(t, thread.AutoResume(false))
-			_, err := p.s.Decide(sentinelCtx(t), thread.Approve("call_never_parked"))
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Approve("call_never_parked")))
 			return err
 		}},
 		{"ErrNotPending/Decide on a call decided already", thread.ErrNotPending, func(t *testing.T) error {
 			ctx := sentinelCtx(t)
 			p := sentinelParked(t, thread.AutoResume(false))
-			if _, err := p.s.Decide(ctx, thread.Approve(p.call)); err != nil {
+			if _, err := p.s.Decide(ctx, bound(p.s, thread.Approve(p.call))); err != nil {
 				t.Fatalf("the first Decide: %v", err)
 			}
-			_, err := p.s.Decide(ctx, thread.Approve(p.call))
+			_, err := p.s.Decide(ctx, bound(p.s, thread.Approve(p.call)))
 			return err
 		}},
 		{"ErrNotPending/Request for a call that never parked", thread.ErrNotPending, func(t *testing.T) error {
@@ -427,7 +429,7 @@ func TestSentinelsAreMatchable(t *testing.T) {
 		{"ErrSignatureRequired/Decide on a RequireSigned session", thread.ErrSignatureRequired, func(t *testing.T) error {
 			ring, _ := sentinelRing(t)
 			p := sentinelParked(t, thread.WithKeyring(ring), thread.RequireSigned(), thread.AutoResume(false))
-			_, err := p.s.Decide(sentinelCtx(t), thread.Approve(p.call))
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Approve(p.call)))
 			return err
 		}},
 		{"ErrInvalidDecision/Decide with no decisions", thread.ErrInvalidDecision, func(t *testing.T) error {
@@ -437,17 +439,17 @@ func TestSentinelsAreMatchable(t *testing.T) {
 		}},
 		{"ErrInvalidDecision/Decide naming one call twice", thread.ErrInvalidDecision, func(t *testing.T) error {
 			p := sentinelParked(t, thread.AutoResume(false))
-			_, err := p.s.Decide(sentinelCtx(t), thread.Approve(p.call), thread.Deny(p.call, "no"))
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Approve(p.call)), bound(p.s, thread.Deny(p.call, "no")))
 			return err
 		}},
 		{"ErrInvalidDecision/Decide with no outcome", thread.ErrInvalidDecision, func(t *testing.T) error {
 			p := sentinelParked(t, thread.AutoResume(false))
-			_, err := p.s.Decide(sentinelCtx(t), thread.Decision{CallID: p.call})
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Decision{CallID: p.call}))
 			return err
 		}},
 		{"ErrDelegated/Decide on a call that delegates to a child", thread.ErrDelegated, func(t *testing.T) error {
 			p := sentinelDelegating(t)
-			_, err := p.s.Decide(sentinelCtx(t), thread.Approve(p.call))
+			_, err := p.s.Decide(sentinelCtx(t), bound(p.s, thread.Approve(p.call)))
 			return err
 		}},
 		{"ErrDelegated/Request for a call that delegates to a child", thread.ErrDelegated, func(t *testing.T) error {

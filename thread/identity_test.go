@@ -331,7 +331,7 @@ func TestRunIdentityResumedTurn(t *testing.T) {
 		if _, err := t1.Wait(); err != nil {
 			t.Fatalf("Wait 1: %v", err) // a pending turn is a success
 		}
-		rt, err := s.Decide(ctx, thread.Approve("call_9"))
+		rt, err := s.Decide(ctx, bound(s, thread.Approve("call_9")))
 		if err != nil {
 			t.Fatalf("Decide: %v", err)
 		}
@@ -668,7 +668,7 @@ func TestResumeTurnLinksTheParkedRun(t *testing.T) {
 	}
 	d := thread.Approve(res1.Pending[0].ID)
 	d.Who = "op_42"
-	t2, err := s.Decide(ctx, d)
+	t2, err := s.Decide(ctx, bound(s, d))
 	if err != nil || t2 == nil {
 		t.Fatalf("Decide: turn %v, err %v", t2, err)
 	}
@@ -729,7 +729,7 @@ func TestResumeUndecidedCallReadsNoDecision(t *testing.T) {
 				t.Fatalf("parked turn: %v, %v", res, err)
 			}
 			if tc.deny {
-				if _, err := s.Decide(ctx, thread.Deny("rf1", "out of policy")); err != nil {
+				if _, err := s.Decide(ctx, bound(s, thread.Deny("rf1", "out of policy"))); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -816,7 +816,7 @@ func TestResumeAfterOpenLinksTheParkedRun(t *testing.T) {
 	defer func() { _ = s2.Close(ctx) }()
 	d := thread.Approve("rf1")
 	d.Who = "op_42"
-	t2, err := s2.Decide(ctx, d)
+	t2, err := s2.Decide(ctx, bound(s2, d))
 	if err != nil || t2 == nil {
 		t.Fatalf("Decide after Open: turn %v, err %v", t2, err)
 	}
@@ -862,14 +862,14 @@ func TestResumeChainLinksTheLatestPark(t *testing.T) {
 	if res, err := t1.Wait(); err != nil || len(res.Pending) != 1 {
 		t.Fatalf("t1: %v, %v", res, err)
 	}
-	t2, err := s.Decide(ctx, thread.Approve("rf1"))
+	t2, err := s.Decide(ctx, bound(s, thread.Approve("rf1")))
 	if err != nil || t2 == nil {
 		t.Fatalf("Decide rf1: turn %v, err %v", t2, err)
 	}
 	if res, err := t2.Wait(); err != nil || len(res.Pending) != 1 || res.Pending[0].ID != "rf2" {
 		t.Fatalf("t2 (resumes t1, parks rf2): %v, %v", res, err)
 	}
-	t3, err := s.Decide(ctx, thread.Deny("rf2", "not today"))
+	t3, err := s.Decide(ctx, bound(s, thread.Deny("rf2", "not today")))
 	if err != nil || t3 == nil {
 		t.Fatalf("Decide rf2: turn %v, err %v", t3, err)
 	}
@@ -923,7 +923,7 @@ func TestDecisionsLinkWhicheverTurnAppliesThem(t *testing.T) {
 	}
 	d := thread.Approve("rf1")
 	d.Who = "op_42"
-	if t2, err := s.Decide(ctx, d); err != nil || t2 != nil {
+	if t2, err := s.Decide(ctx, bound(s, d)); err != nil || t2 != nil {
 		t.Fatalf("Decide under AutoResume(false): turn %v, err %v; want no turn", t2, err)
 	}
 	t3, err := s.Send(ctx, core.User("anything else?"))

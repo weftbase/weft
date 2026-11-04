@@ -155,7 +155,7 @@ func TestBoundarySteerFollowUpInheritsParkedTurnOptions(t *testing.T) {
 	if _, err := steer.Wait(); err != nil || steer.Next() == nil {
 		t.Fatalf("steer: %v, next %v", err, steer.Next())
 	}
-	rt, err := s.Decide(ctx, thread.Deny("call_1", "no"))
+	rt, err := s.Decide(ctx, bound(s, thread.Deny("call_1", "no")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestRunsOnBehalfOfATurnKeepItsOptions(t *testing.T) {
 			if res, err := parked.Wait(); err != nil || len(res.Pending) != 1 {
 				t.Fatalf("parked turn: %v, %v", res, err)
 			}
-			rt, err := s.Decide(ctx, thread.Approve("call_1"))
+			rt, err := s.Decide(ctx, bound(s, thread.Approve("call_1")))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -385,7 +385,7 @@ func TestContextRuleSurvivesResumeAndSteer(t *testing.T) {
 		if res, err := parked.Wait(); err != nil || len(res.Pending) != 1 {
 			t.Fatalf("parked turn: %v, %v", res, err)
 		}
-		rt, err := s.Decide(ctx, thread.Approve("call_1"))
+		rt, err := s.Decide(ctx, bound(s, thread.Approve("call_1")))
 		if err != nil {
 			t.Fatal(err)
 		}

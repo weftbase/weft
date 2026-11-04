@@ -600,6 +600,15 @@ not the numbers themselves.
 
 ## 11. Approvals operations
 
+- **Deciding is bound and idempotent.** Every `Decide` decision names
+  the request it answers — `thread.Approve(r.CallID).Bind(r)` sets
+  `RequestID` and `ArgsSHA256` from the `Request` shown; an unbound
+  decision is `ErrInvalidDecision`. The same decision delivered again
+  (a reconciler re-forwarding what it recorded, a retried request) is a
+  no-op: nil, nothing recorded — and the same signed bytes again
+  (`DecideSigned`, same nonce) are applied, not `ErrReplay`, and not
+  audited. A different decision on a decided request is `ErrNotPending`;
+  another one under a spent nonce `ErrReplay`.
 - **Idempotency keys.** Every call a session runs carries
   `weft.Call.IdempotencyKey` = `thread.IdempotencyKey(session id,
   assistant entry id, call id)` (ADR 0031): a tool with side effects

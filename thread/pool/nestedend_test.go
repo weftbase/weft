@@ -85,7 +85,7 @@ func TestNestedReparkWaitsForTheRunningSibling(t *testing.T) {
 			for _, r := range s.Pending() {
 				ds = append(ds, thread.Approve(r.CallID))
 			}
-			if err := p.Decide(ctx, s, ds...); err != nil {
+			if err := p.Decide(ctx, s, boundAll(s, ds...)...); err != nil {
 				t.Fatal(err)
 			}
 			<-started
@@ -121,7 +121,7 @@ func TestNestedReparkWaitsForTheRunningSibling(t *testing.T) {
 				if pend := s.Pending(); len(pend) != 1 || pend[0].Tool != "refund" {
 					t.Fatalf("lead Pending = %+v, want repark's second request", pend)
 				}
-				if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+				if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 					t.Fatal(err)
 				}
 				if got := waitFor(t, p, s, rc.ID, pool.Done); got.Stop != "mid: done" {
@@ -236,7 +236,7 @@ func TestNestedEndLeavesAsyncChildren(t *testing.T) {
 	s, _ := thread.Create(ctx, st, lead)
 	parkLead(t, s)
 	<-bgStarted
-	if err := p.Decide(ctx, s, thread.Approve(s.Pending()[0].CallID)); err != nil {
+	if err := p.Decide(ctx, s, bound(s, thread.Approve(s.Pending()[0].CallID))); err != nil {
 		t.Fatal(err)
 	}
 	<-started
