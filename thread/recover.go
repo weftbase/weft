@@ -143,7 +143,7 @@ type reconciled struct {
 // calls go to a person. A crash during it writes nothing, so the next
 // recovery asks again; the tool never runs on its account. Callers
 // hold s.mu; it is released and re-taken.
-func (s *Session) reconcileLocked(ctx context.Context, calls []core.ToolCallPart) map[string]reconciled {
+func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.ToolCallPart) map[string]reconciled {
 	type ask struct {
 		call core.ToolCallPart
 		fn   core.ReconcileFunc
@@ -152,7 +152,7 @@ func (s *Session) reconcileLocked(ctx context.Context, calls []core.ToolCallPart
 	var asks []ask
 	for _, c := range calls {
 		def := s.toolLocked(c.Name)
-		if def == nil || def.ReplayPolicy() != core.ReplayNever || def.Reconciler() == nil {
+		if def == nil || s.replayAtDispatchLocked(c, run) != core.ReplayNever || def.Reconciler() == nil {
 			continue
 		}
 		entry := s.callEntryLocked(c.ID)
@@ -231,8 +231,8 @@ func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r rec
 // that read to the handler's first effect, plus the handler's own run:
 // a lock broken inside it is not seen — a receiver that must refuse a
 // zombie needs the idempotency key, not the fence. ctx is the turn's
-// persistence window. How durable "appended" is, is the backend's
-// (FsyncOnFlush for jsonl).
+// persistence window. How durable "appended" is, is the backend's:
+// flushed under jsonl's FsyncOnFlush; sqlite fsyncs every commit.
 func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) core.RunOption {
 	return core.BeforeDispatch(func(cctx context.Context, c core.Call, def *core.ToolDef) error {
 		if def == nil || def.ReplayPolicy() == core.ReplaySafe {
@@ -302,7 +302,7 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		// parked is never mistaken for one that may have run (ADR 0032).
 		if err := s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
 			return ApprovalAuditEntry{ID: id, ParentID: parent, Created: created,
-				CallID: c.CallID, Step: StepDispatch, RunID: c.RunID}
+				CallID: c.CallID, Step: StepDispatch, RunID: c.RunID, Detail: string(def.ReplayPolicy())}
 		}); err != nil {
 			return refuse(fmt.Errorf("the dispatch of call %q is not recorded: %w", c.CallID, err))
 		}
@@ -497,6 +497,31 @@ func (s *Session) replayOfLocked(name string) core.ReplayPolicy {
 	return core.ReplayNever
 }
 
+// replayAtDispatchLocked is c's replay class as of its dispatch in
+// run: the class its dispatch record names (the gate writes it), else
+// — no record, or one from before records named it — the tool's class
+// now (replayOfLocked). A tool relabeled between the dispatch and the
+// recovery is recovered as it started: a call that started ReplayNever
+// is never "not run again" because its tool reads ReplaySafe now, nor
+// retried because it reads ReplayKeyed (review 3 P2-5). Callers hold
+// s.mu.
+func (s *Session) replayAtDispatchLocked(c core.ToolCallPart, run string) core.ReplayPolicy {
+	if i, ok := s.byID[s.callEntryLocked(c.ID)]; ok {
+		for j := len(s.order) - 1; j > i; j-- {
+			a, ok := s.order[j].(ApprovalAuditEntry)
+			if !ok || a.Step != StepDispatch || a.CallID != c.ID || a.RunID != run {
+				continue
+			}
+			switch p := core.ReplayPolicy(a.Detail); p {
+			case core.ReplayNever, core.ReplayKeyed, core.ReplaySafe:
+				return p
+			}
+			break
+		}
+	}
+	return s.replayOfLocked(c.Name)
+}
+
 // callStart is what the file says of whether a cut-off call started.
 type callStart int
 
@@ -584,7 +609,7 @@ func (s *Session) unknownLocked(x cutOff) []core.ToolCallPart {
 	var out []core.ToolCallPart
 	for _, c := range x.calls {
 		def := s.toolLocked(c.Name)
-		if def != nil && def.ReplayPolicy() == core.ReplaySafe {
+		if s.replayAtDispatchLocked(c, x.run) == core.ReplaySafe {
 			continue
 		}
 		if walk.wrappers[c.ID] != "" {
@@ -709,7 +734,7 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 	// unknown calls whose tool can ask the system of record do.
 	if unknown := s.unknownLocked(x); len(unknown) > 0 {
 		run := x.run
-		rc := s.reconcileLocked(ctx, unknown)
+		rc := s.reconcileLocked(ctx, run, unknown)
 		// The lock was released: the session must still be as found.
 		if s.running {
 			return nil, fmt.Errorf("%w: session %s", ErrBusy, s.header.ID)
@@ -731,7 +756,7 @@ func (s *Session) recoverWithLocked(ctx, persist context.Context, x cutOff, rc m
 	case len(x.calls) > 0:
 		allSafe := true
 		for _, c := range x.calls {
-			allSafe = allSafe && s.replayOfLocked(c.Name) == core.ReplaySafe
+			allSafe = allSafe && s.replayAtDispatchLocked(c, x.run) == core.ReplaySafe
 		}
 		if !allSafe {
 			return s.recoverParkLocked(ctx, persist, x, rc)
@@ -854,10 +879,7 @@ func (s *Session) recoverContinueLocked(ctx, persist context.Context, x cutOff) 
 // person's retry needs. Callers hold s.mu.
 func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, start callStart, rc map[string]reconciled) []Entry {
 	def := s.toolLocked(c.Name)
-	policy := core.ReplayNever
-	if def != nil {
-		policy = def.ReplayPolicy()
-	}
+	policy := s.replayAtDispatchLocked(c, run)
 	req := ApprovalRequestEntry{
 		CallID: c.ID, Tool: c.Name, Args: slices.Clone(args), ArgsSHA256: hashArgs(args),
 		RunID: run, Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),

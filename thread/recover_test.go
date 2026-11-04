@@ -969,3 +969,42 @@ func TestRecoverDoubleCrashInAKeyedRetry(t *testing.T) {
 		})
 	}
 }
+
+// Review 3 P2-5: recovery reads a call's replay class as of its
+// dispatch, not as of the recovery. A ReplayNever call cut off while
+// it ran, then the tool relabeled across the deploy: as ReplaySafe it
+// would be "not run again" and left for the model to ask again; as
+// ReplayKeyed it would be retried on the session's own say. Its
+// dispatch record names the class it started under, and the call parks
+// as a recovery request for a person either way. Both backends.
+func TestRecoverUsesTheReplayClassAtDispatch(t *testing.T) {
+	for _, b := range durableBackends(t) {
+		for _, relabel := range []core.ReplayPolicy{core.ReplaySafe, core.ReplayKeyed} {
+			t.Run(b.name+"/"+string(relabel), func(t *testing.T) {
+				charge := &sideEffect{}
+				id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+					charge.crash = cs
+					return core.New(wefttest.Script(charged("charge")), charge.def())
+				}, nil)
+				charge.crash = nil
+				st = restart(t, b, st, id)
+				s, err := thread.Open(bg, st, id, core.New(wefttest.Script(wefttest.Say("x")), charge.def(core.Replay(relabel))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = s.Close(bg) }()
+				rt, err := s.RecoverTurn(bg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := s.Pending()
+				if rt != nil || len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "may have run") {
+					t.Fatalf("turn %v, pending %+v: want a recovery request for a person", rt, p)
+				}
+				if n := len(charge.ran()); n != 1 {
+					t.Fatalf("charge ran %d times, want only the cut-off run", n)
+				}
+			})
+		}
+	}
+}

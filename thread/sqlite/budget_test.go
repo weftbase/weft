@@ -58,7 +58,7 @@ const budgetOpen100k = 30 * time.Second
 func TestBudgetOpen100k(t *testing.T) {
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "big.db")
-	st, err := sqlite.Open(db, thread.FsyncOnFlush()) // a fixture: bulk-loaded
+	st, err := sqlite.Open(db) // a fixture: bulk-loaded
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +98,10 @@ const budgetList10k = 30 * time.Second
 func TestBudgetList10k(t *testing.T) {
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "fleet.db")
-	// The fleet is a fixture: seeded under FsyncOnFlush, the policy
-	// for bulk loads — the default fsyncs each of the ten thousand
-	// Creates, which is the durability a live session wants and
-	// seconds of disk time the list budget is not about.
-	st, err := sqlite.Open(db, thread.FsyncOnFlush())
+	// The fleet is a fixture, seeded before the clock starts: the
+	// fsync of each of the ten thousand Creates is the durability a
+	// live session wants, not what the list budget prices.
+	st, err := sqlite.Open(db)
 	if err != nil {
 		t.Fatal(err)
 	}

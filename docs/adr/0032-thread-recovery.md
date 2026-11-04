@@ -69,7 +69,8 @@ middleware's decision was never written). Recovery that read every
 issued call as "may have run" retried a parked `ReplayKeyed` call on
 the session's own approval: it ran with nobody's. So the gate records
 before acting: after the step is on file and the fence holds, it
-appends an `approval_audit` entry with step `dispatch` (CallID, RunID)
+appends an `approval_audit` entry with step `dispatch` (CallID, RunID,
+and Detail the tool's replay class as it starts — review 3 P2-5)
 and flushes, then lets the handler run; a failed append or flush fails
 the call closed. The step entry carries `dispatch_recorded`. A call of
 such a step with no dispatch record under the cut-off run never
@@ -257,12 +258,40 @@ retried: do not repeat it`.
   `BreakLock`.
 - `ReplayKeyed` holds for a session's own calls; inside a `Subagent`,
   the `Subagent` tool's class decides (ADR 0031).
+- **The replay class is the one at dispatch (review 3 P2-5).** A call
+  with a dispatch record is recovered under the class its record names
+  — a tool relabeled `ReplaySafe` or `ReplayKeyed` across a deploy does
+  not make a call that started `ReplayNever` "not run again" or retried
+  on the session's say. A `ReplaySafe` call is not recorded (that is the
+  point of the class), so the other direction is a **deploy rule**: do
+  not relabel a tool from `ReplaySafe` to another class, or drop a
+  `ReplaySafe` tool (or the `ToolSource` that serves it — recovery reads
+  a tool the agent no longer holds as `ReplayNever`), while sessions
+  are cut off or parked on it: its cut-off call, which ran unrecorded,
+  reads "cut off before it started" and parks as an ordinary request.
+  It was a read, so approving it is harmless, but the reason text is
+  wrong. Recording safe calls too would cost a write per read on the
+  hot path (R13), which buys no safety.
+- **The gate holds the session's lock across its append, flush and
+  fence (review 3 P2-6).** The dispatch record, its sync and the fence
+  read run under `s.mu`, so a call's gate serializes with Interrupt,
+  Rollback and Close (that is what makes the felled-turn rule exact)
+  and with the other calls' gates of the step: parallel non-safe calls
+  of one step pay their syncs one after another, and a `Decide` or a
+  `Pending` waits out a slow disk. A known cost, kept: releasing the
+  lock across the sync would reopen the window the felled-turn rule
+  closes.
 
 ## Amendment (2026-11-04 — never guess at dispatch: WR-4, WR-6)
 
 **Flushed, not only appended (WR-1).** Under a backend that defers
 its sync (jsonl's `FsyncOnFlush`), the gate flushes (`Flusher`) before a
-risky call starts; a failed flush fails the call closed.
+risky call starts; a failed flush fails the call closed. sqlite defers
+nothing (review 3 P2-4): every commit runs under `synchronous=FULL` in
+WAL mode, `FsyncOnFlush` included — its `Flush` used to be a passive
+checkpoint, which syncs nothing while a reader holds an old snapshot, so
+the dispatch record was not provably durable before the handler. A
+failed sync fails the commit, and the gate with it.
 
 **The self-fence (WR-4).** Rule A's gate also asks the storage, with
 no write, whether this writer still holds the session's lock — before

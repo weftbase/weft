@@ -90,16 +90,15 @@ const connParams = "_txlock=immediate" +
 // either fsync policy. What the policy decides is power loss and
 // kernel crashes:
 //
-//   - thread.FsyncEveryAppend, the default: synchronous=FULL. Each
-//     commit fsyncs the write-ahead log before Append returns — an
-//     accepted entry survives losing power, the same promise jsonl
-//     makes for its default.
-//   - thread.FsyncOnFlush: synchronous=NORMAL. A commit is written
-//     but not fsynced; the entries since the last sync can be lost to
-//     a power cut (the database stays consistent — WAL's guarantee —
-//     it only ends earlier). Flush is the sync point: it checkpoints
-//     the log, which fsyncs it. SQLite also checkpoints on its own
-//     as the log grows.
+//   - every policy is synchronous=FULL: each commit fsyncs the
+//     write-ahead log before Append returns — an accepted entry
+//     survives losing power, the same promise jsonl makes for its
+//     default. thread.FsyncOnFlush is accepted and changes nothing
+//     here: SQLite has no sync point a Flush can force without a
+//     checkpoint, and a passive checkpoint that a reader holds back
+//     syncs nothing — a dispatch record must be durable before its
+//     handler starts (ADR 0032), so commits are never left unsynced.
+//     A failed sync fails the commit, and the Append with it.
 //
 // ":memory:" has nothing to sync and ignores both.
 //
@@ -164,14 +163,9 @@ func Open(path string, opts ...thread.OpenOption) (thread.Storage, error) {
 		default:
 			return nil, err
 		}
-		// The fsync policy is SQLite's synchronous level (see
-		// Durability on Open): FULL fsyncs the log at every commit,
-		// NORMAL leaves it to checkpoints — and to Flush.
-		level := "FULL"
-		if !cfg.SyncEveryAppend {
-			level = "NORMAL"
-		}
-		dsn = "file:" + escapeURIPath(path) + "?" + connParams + "&_pragma=synchronous(" + level + ")"
+		// Every commit fsyncs the log (see Durability on Open), under
+		// either fsync policy.
+		dsn = "file:" + escapeURIPath(path) + "?" + connParams + "&_pragma=synchronous(FULL)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -187,9 +181,6 @@ func Open(path string, opts ...thread.OpenOption) (thread.Storage, error) {
 		alive:   pidAlive,
 		startOf: procStart,
 		held:    map[string]*lease{},
-		// Flush has commits to sync only where commits do not sync
-		// themselves: a file database under FsyncOnFlush.
-		syncOnFlush: !memory && !cfg.SyncEveryAppend,
 	}
 	b.started = b.startOf(b.pid)
 	if memory {
@@ -310,9 +301,6 @@ type backend struct {
 	// that counted a session's rows keeps the count only if nothing
 	// was written while it looked.
 	writes uint64
-	// syncOnFlush says commits are not fsynced as they land
-	// (FsyncOnFlush on a file database), so Flush owes the sync.
-	syncOnFlush bool
 }
 
 // lease is this instance's hold on one session: the lock row is ours,
@@ -832,18 +820,10 @@ func (b *backend) Delete(ctx context.Context, id string) (err error) {
 }
 
 // Flush is the thread.Flusher capability. It answers whether the
-// session exists (ErrNotFound for one the database does not hold),
-// and under thread.FsyncOnFlush it is the sync point for everything
-// committed so far: it checkpoints the write-ahead log, which fsyncs
-// the log and then the database file — the whole database's, not one
-// session's; there is one log — and costs next to nothing when the
-// log holds nothing new. Under the default policy every commit
-// already fsynced, and Flush has nothing to add.
-//
-// The checkpoint is SQLite's passive one: it never waits for a reader.
-// A reader holding a snapshot from before the previous checkpoint — a
-// long read transaction in another process — can leave it nothing to
-// do, and the sync then waits for the Flush after that reader ends.
+// session exists (ErrNotFound for one the database does not hold).
+// Every commit already fsynced the write-ahead log (synchronous=FULL,
+// under either fsync policy), so there is nothing left to sync: what
+// Append returned is durable.
 func (b *backend) Flush(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -856,14 +836,7 @@ func (b *backend) Flush(ctx context.Context, id string) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmtNotFound(id)
 	}
-	if err != nil || !b.syncOnFlush {
-		return err
-	}
-	var busy, logged, checkpointed int
-	if err := b.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).Scan(&busy, &logged, &checkpointed); err != nil {
-		return fmt.Errorf("sqlite: flush checkpoint: %w", err)
-	}
-	return nil
+	return err
 }
 
 // Release is the thread.Releaser capability: it deletes this

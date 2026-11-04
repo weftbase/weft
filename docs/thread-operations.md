@@ -41,14 +41,16 @@ live, never in what they say.
   to the turn's end — the session flushes the prompt before the run
   and again when the turn lands — which is cheaper and can lose the
   unsynced tail of a turn in a crash, never a synced one.
-- **sqlite** commits every `Append` as one transaction, in WAL mode.
-  The fsync policy is SQLite's `synchronous` level. The default,
-  `thread.FsyncEveryAppend()`, is `synchronous=FULL`: the log is
+- **sqlite** commits every `Append` as one transaction, in WAL mode,
+  under `synchronous=FULL` whatever the fsync policy: the log is
   fsynced at every commit, so an entry survives a power cut as well as
-  the process dying. `thread.FsyncOnFlush()` is `synchronous=NORMAL`:
-  durable against the process dying, and a power loss or kernel crash
-  can roll back the most recent commits (the database is not
-  corrupted); `Flush` checkpoints the log, which syncs it.
+  the process dying, and a failed sync fails the `Append`.
+  `thread.FsyncOnFlush()` is accepted and changes nothing: SQLite has
+  no sync point a `Flush` could force without a checkpoint, and a
+  passive checkpoint a reader holds back syncs nothing — a dispatch
+  record must be durable before its handler starts (ADR 0032).
+  (Before, `FsyncOnFlush` was `synchronous=NORMAL` and `Flush` a
+  passive checkpoint.)
 - An `Append` batch is atomic against the writer's death: after a
   crash a load returns all of it or none of it.
 
@@ -128,6 +130,24 @@ has moved past — fails its write with `thread.ErrStale` instead.
 
 Consequences for a deployment:
 
+- **Upgrading from 0.21: drain the 0.21 workers first.** This version
+  writes every assistant step that calls a tool as format 6
+  (`dispatch_recorded`, and a `dispatch` record per call that is not
+  `ReplaySafe`). A 0.21 reader refuses format 6 (`ErrNewerFormat`), so
+  once a session has run a tool under this version, a 0.21 worker can
+  no longer open it — by design: it would answer a cut-off call
+  "interrupted". In a rolling deploy, stop routing sessions to 0.21
+  workers (drain them: let their turns end, `Close` their sessions)
+  before the first worker of this version takes traffic; never run the
+  two side by side on one store. A rollback to 0.21 strands every
+  session this version touched with a tool call.
+- **Do not relabel a tool's replay class while sessions are cut off
+  or parked on it.** Recovery reads a recorded call's class from its
+  dispatch record (the class it started under), but a `ReplaySafe`
+  call is not recorded: relabeling a `ReplaySafe` tool, dropping it,
+  or removing the `ToolSource` (an MCP server) that served it makes
+  its cut-off call read "cut off before it started" (ADR 0032). Change
+  replay classes once the sessions using the tool are settled.
 - **Containers.** A restarted container that keeps its hostname
   reclaims its sqlite sessions on its own (same pid, new process
   token). A *replacement* container with a new hostname — the default
