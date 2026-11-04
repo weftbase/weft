@@ -289,6 +289,12 @@ func (s *Session) Send(ctx context.Context, msg core.Message, opts ...SendOption
 	if err := s.admitLocked(); err != nil {
 		return nil, err
 	}
+	// A cut-off run left a call that may have run without its result:
+	// a new turn would repair it into a synthetic result and let the
+	// model ask for it again. RecoverTurn first.
+	if err := s.errRecoveryRequiredLocked(); err != nil {
+		return nil, err
+	}
 	// A runner whose turn has landed is between items: the turn's Wait
 	// has returned, and what the runner still does — the between-turn
 	// compaction, its next item — is not a turn to be busy with.
@@ -560,6 +566,9 @@ func recoverTurnSeq(session string, entries []Entry) int {
 			see(e.RunID)
 		case ApprovalAuditEntry:
 			see(e.RunID)
+			if e.Step == StepRecover {
+				see(e.Detail) // a continuation's run id
+			}
 		}
 	}
 	return seq
@@ -1010,6 +1019,13 @@ func (s *Session) runResume(item workItem) {
 			startErr = fmt.Errorf("%w: %w: the boundary this resume was armed for is gone (branched away?)", ErrNotRun, ErrNotPending)
 			return
 		}
+		// Every resume run passes here, whichever path armed it (G5):
+		// a cut-off run's call of unknown outcome is never run again
+		// by a resume — RecoverTurn decides it first.
+		if err := s.errRecoveryRequiredLocked(); err != nil {
+			startErr = fmt.Errorf("%w: %w", ErrNotRun, err)
+			return
+		}
 		// The audit trail says a resume started before the run does: a
 		// crash between the two leaves the boundary resumable, the
 		// audit honest about the attempt.
@@ -1124,6 +1140,9 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 		// Each executed call's key is recovery-stable: derived from the
 		// assistant entry holding it (IdempotencyKey).
 		runOpts = append(runOpts, s.idempotencyKeys(sp))
+		// Rule A (ADR 0032): a call that is not ReplaySafe starts only
+		// once the step entry holding it is durable.
+		runOpts = append(runOpts, s.dispatchGate(persist, sp))
 		// The session's identity rides every run (ADR 0024 S5), appended
 		// after the caller's options and before the transcript — a later
 		// core.Metadata wins (S1.1), so the session's keys win over a

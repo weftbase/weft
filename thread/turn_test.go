@@ -25,7 +25,7 @@ func blockingTool() (*core.ToolDef, *release) {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
-	}), r
+	}, core.Replay(core.ReplaySafe)), r // a blocking probe, no side effect: a cut-off one is re-run, not recovered (ADR 0032)
 }
 
 type release struct {

@@ -181,7 +181,7 @@ res2, err := agt.Generate(ctx, weft.Messages(res.Messages...), weft.Prompt("And 
 //     weft.ResumeOf(res.ID) links the resume to the parked run (weft.resumed_from; Studio's
 //     parked row reads resumed_by) — the core cannot infer it; thread and runtime pass it.
 //     weft.ApproveBy(id, by, grantID) is Approve naming its provenance (reporting only): the call's
-//     execute_tool span carries weft.tool.approved_by (thread: user|grant|approver|quorum|policy; runtime: runtime) + weft.grant.id.
+//     execute_tool span carries weft.tool.approved_by (thread: user|grant|approver|quorum|policy|recovery) + weft.grant.id.
 //     weft.Metadata(map[string]string{"weft.approval.actor": who}) names the decider. A denied call's
 //     execute_tool span is zero-length, weft.tool.denied (+ denied_kind denied|no_decision).
 //     Middleware parks any call by returning an error wrapping ErrApprovalRequired.
@@ -262,6 +262,10 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
 //    p.Decide(ctx, parent, ds...) error records and arms, p.Wait(ctx, parent, id) follows; p.Cancel,
 //    p.Forward, p.Recover(ctx, parent) after a restart, p.Close(ctx); pool.Receipts, Children, Descendants.
+//    Crash recovery (ADR 0032): a call that is not ReplaySafe starts only once its step entry is on file (else
+//    ErrNotDispatched); after a crash a cut-off turn with a call of unknown outcome refuses Send/Continue/Resume/arming
+//    (ErrRecoveryRequired) until s.RecoverTurn(ctx) — Open → Claim → RecoverTurn: ReplayKeyed calls retry with their
+//    same key, ReplayNever calls park as recovery requests (Request.Recovery: approve = retry, deny = skip, no edit).
 //    Errors: retry ErrBusy, ErrLocked · reopen ErrStale, ErrClosed · terminal ErrCorrupt, ErrNewerFormat.
 
 // 8. Observability pipeline (package weft/otel; several destinations at once,

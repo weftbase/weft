@@ -622,14 +622,15 @@ func TestNestedResumeHoldsTheBound(t *testing.T) {
 	}
 }
 
-// A restart while the grandchild's approved call runs re-runs that
-// call (Recover's godoc, docs/thread-operations.md §10): the approval
-// was recorded and replayed down the chain before the process died,
-// the call's result was not, and the grandchild's boundary is still
-// the one to resume — decided, so Recover's pump resumes it, and the
-// approved call executes again. Nothing in the pool or the session
-// can tell a call that never started from one cut off half-way.
-func TestNestedRestartMidApprovedCallRunsItAgain(t *testing.T) {
+// A restart while the grandchild's approved call runs does not run
+// that call again on its own: the approval was recorded and replayed
+// down the chain before the process died, the call
+// is not ReplaySafe and its result was not recorded: its outcome is
+// unknown. The grandchild's resume is refused (thread.ErrRecoveryRequired)
+// and recovered instead (thread.Session.RecoverTurn): the call parks as a
+// recovery request, mirrored up to the lead like any nested park, and only a
+// new approval — the human's "retry" — runs it again.
+func TestNestedRestartMidApprovedCallParksForRecovery(t *testing.T) {
 	ctx := context.Background()
 	st, err := jsonl.Open(t.TempDir())
 	if err != nil {
@@ -686,12 +687,23 @@ func TestNestedRestartMidApprovedCallRunsItAgain(t *testing.T) {
 	if err := p2.Recover(ctx, open); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
+	waitFor(t, p2, open, pool.Receipts(open)[0].ID, pool.Parked)
+	if got := ran.snapshot(); len(got) != 0 {
+		t.Fatalf("the cut-off refund ran again unasked: %v", got)
+	}
+	pend := open.Pending()
+	if len(pend) != 1 || !pend[0].Recovery {
+		t.Fatalf("Pending after Recover = %+v, want the refund as a recovery request", pend)
+	}
+	if err := p2.Decide(ctx, open, thread.Approve(pend[0].CallID)); err != nil {
+		t.Fatalf("Decide the retry: %v", err)
+	}
 	rc := waitFor(t, p2, open, pool.Receipts(open)[0].ID, pool.Done)
 	if rc.Stop != "finance: settled after the restart" {
 		t.Errorf("finance receipt = %+v", rc)
 	}
 	if got := ran.snapshot(); len(got) != 1 || !got[0] {
-		t.Errorf("post-restart refund runs = %v, want the approved call run again", got)
+		t.Errorf("post-restart refund runs = %v, want the retried call run once", got)
 	}
 	// The dead process's goroutines end now. What they still try to
 	// write is refused by the one-writer rule, and none of it reaches
@@ -712,7 +724,7 @@ func TestNestedRestartMidApprovedCallRunsItAgain(t *testing.T) {
 }
 
 // deadLogs records a process's log lines with their err attribute:
-// what TestNestedRestartMidApprovedCallRunsItAgain's old process says
+// what TestNestedRestartMidApprovedCallParksForRecovery's old process says
 // once its goroutines are canceled.
 type deadLogs struct {
 	mu  sync.Mutex

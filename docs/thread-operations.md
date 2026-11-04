@@ -239,11 +239,42 @@ skips data from a newer weft.
 `ErrCorrupt` on line 1 and is not repaired; `thread.Delete` it and
 create the session again.
 
-**The interrupted turn.** Its prompt and every message its steps
-emitted are in the file. A tool call left without a result is given
-an error result by the loop's input repair, so the next turn's model
-sees a complete transcript. The turn entry may be missing; the run id
-is not reused (it is on the prompt entry).
+**The cut-off turn** (ADR 0032). Its prompt and every message its steps
+emitted are in the file; its turn entry is missing. The run id is not
+reused (it is on the prompt entry). No call that is not
+`weft.ReplaySafe` ever starts before the step entry holding it is in
+the file (rule A: otherwise it fails closed with `weft.ErrNotDispatched`
+— a storage error, or `ErrLocked`/`ErrStale` because another process
+took the session over), so the file names every side effect that may
+have run. Such a call left without a result has an **unknown
+outcome**, and until the turn is recovered `Send`, `Continue`,
+`Resume` and every path that would arm a resume (`Decide`,
+`DecideSigned`, the pool's replay) refuse with
+`thread.ErrRecoveryRequired`. A cut-off turn whose unanswered calls are
+all `ReplaySafe` is not refused: the next turn's input repair answers
+them.
+
+Boot recovery is **Open → Claim → RecoverTurn**: `Open` takes no lock,
+so a turn another worker is running reads exactly like a cut-off one;
+`s.Claim(ctx)` takes the lease (`ErrLocked`: it is alive elsewhere —
+leave it). `s.RecoverTurn(ctx)` then handles the turn once:
+
+| The turn was cut off… | `RecoverTurn` |
+|---|---|
+| in a model call, between steps, or after a resume's results landed | closes it (`TurnEntry.CutOff`) and runs a continuation from the last finished step, no new prompt, a fresh run id |
+| with its last step's calls unanswered, all `ReplaySafe` | drops that step (the leaf moves back before it) and continues — the model is asked again |
+| with its last step's calls unanswered, some not | parks them: a `weft.ReplayKeyed` (and a `ReplaySafe`) call is approved by the session itself (Via `recovery`) and retried with its same `IdempotencyKey`; a `ReplayNever` call parks as a **recovery request** (`Request.Recovery`) — `Approve` retries it with the same key, `Deny` or `Resolve` skips it, an edit or `ApproveAlways` is refused; a call whose tool requires approval parks as an ordinary request |
+| during a resume, before its results landed | its approved calls of unknown outcome park again the same way; the rest keep their decisions |
+| after its final answer, before its end | writes the end; runs nothing |
+
+A `Send`'s own run options are not on file: a continuation or a
+recovery resume runs under the session's run metadata and the
+boundary's recorded settings. A gate that must hold after a crash
+belongs on the tool (`weft.RequireApproval`) or the agent
+(`weft.ParkSource`), not on a per-Send `ParkOn`. Recovery is audited
+(`Audit()`: a `recover` step per run, a `recover`/`retry` step beside
+each of the session's own approvals) and the session file is written in
+format 6 from then on (a reader before 0.22 refuses it).
 
 **Accepted input that never ran** is back in `s.Queue()` after `Open`
 (§8). `Open` never runs anything on its own.

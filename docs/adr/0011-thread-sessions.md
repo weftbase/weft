@@ -562,7 +562,7 @@ older reader can safely ignore is added without a version.
 | `type` | Since | `"v"` | Fields (optional ones in *italics*) | In the model's context |
 |---|---|---|---|---|
 | `message` | 1 | — | `message` (the ADR 0001 message wire), *`run_id`* (on a turn's prompt entry) | yes |
-| `turn` | 1 | — | `run_id`, `usage`, *`stop_reason`*, *`steps`*, *`err`*, *`pending`* (tool-call parts), *`canceled`*, *`policy`*, *`rerun`*, *`last_input`*, *`late_steps`* | no |
+| `turn` | 1 | — (6 with `cut_off`) | `run_id`, `usage`, *`stop_reason`*, *`steps`*, *`err`*, *`pending`* (tool-call parts), *`canceled`*, *`policy`*, *`rerun`*, *`last_input`*, *`late_steps`*, *`cut_off`* (a run cut off by a crash or a shutdown, ADR 0032) | no |
 | `compaction` | 1 | — (5 with `trim`) | `first_kept`, `tokens_before`, *`summary`*, *`reason`* (`manual`, `threshold`, `overflow`, `from_hook`, `trim`), *`summarizer_usage`*, *`summarizer_model`*, *`files_read`*, *`files_modified`* (read, never written), *`pinned`*, *`range_hash`*, *`trim`* = `{stubs: [{entry, call_id, content, is_error}]}` | the summary |
 | `branch_summary` | 1 | — | `summary`, `from_entry` | yes |
 | `leaf` | 1 | — | `entry` (the entry the leaf moves to; empty is the root), *`abandoned`* (`true` on a failed or refused send's leaf move back — no navigation: it names no branch) | no |
@@ -570,7 +570,7 @@ older reader can safely ignore is added without a version.
 | `info` | 1 | — | *`title`*, *`meta`* | no |
 | `custom` | 1 | — | `kind`, *`data`* (any JSON) | no |
 | `custom_message` | 1 | — | `kind`, `message` | yes |
-| `approval_request` | 2 | 2 | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata` — the session's run metadata merged under the send's own, since 0.22), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1) | no |
+| `approval_request` | 2 | 2 (6 with `recovery`) | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata` — the session's run metadata merged under the send's own, since 0.22), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1), *`recovery`* (a recovery request, ADR 0032) | no |
 | `approval_decision` | 2 | 2 | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`* | no |
 | `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
 | `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`*, *`who`* (the grantor), *`via`* (the door it came through) | no |
@@ -580,7 +580,8 @@ older reader can safely ignore is added without a version.
 
 "Since" is the format step that introduced the kind: 1 is thread
 v0.1, 2 approvals (v0.2), 3 steering receipts (v0.3), 4 the pool
-(v0.5), 5 the trim record (the 2026-10-01 fix train). Fields and
+(v0.5), 5 the trim record (the 2026-10-01 fix train), 6 recovery —
+the cut-off turn and the recovery request (ADR 0032, v0.22). Fields and
 status values added without a version, because an older reader loses
 nothing by ignoring them: `message.run_id`; `turn.policy`, `rerun`,
 `late_steps`; `approval_request.child`, `wrapper`, `run`, `schema_sha256`, `quorum`;
@@ -594,7 +595,8 @@ not enforce it, and one from before `run` resumes a parked boundary
 or a restored send without the settings it recorded.
 
 Goldens: one file per kind and variant under
-`thread/testdata/format1` … `format5`, with a whole session in
+`thread/testdata/format1` … `format6`, with a whole session in
 `format1/session.jsonl`; `TestReadEveryGolden` (formats 1–4) and
-`TestTrimRecordGolden` (format 5) read them back and re-marshal them
+`TestTrimRecordGolden` (format 5) and `TestRecoveryFormatGoldens`
+(format 6) read them back and re-marshal them
 to the same bytes.

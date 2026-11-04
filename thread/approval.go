@@ -48,6 +48,7 @@ const (
 	StepExpiry   = "expiry"   // an expired request denied
 	StepResume   = "resume"   // the boundary's resume run: one entry "started" before the run, one "completed" or "failed" with its end
 	StepSigned   = "signed"   // a signed decision refused; Detail names why, no decision recorded
+	StepRecover  = "recover"  // RecoverTurn: per run, Outcome continued (Detail: the new run), parked, resumed or closed; per call, "retry" (Detail: the replay class) beside the session's own approval
 )
 
 // The channels a decision entry's Via names. Decide records "user",
@@ -62,6 +63,7 @@ const (
 	viaChild     = "child"
 	viaParent    = "parent" // a pool child's record of a decision its parent session took (ADR 0022 §7)
 	viaQuorum    = "quorum"
+	viaRecovery  = "recovery" // RecoverTurn's own retry of a cut-off ReplaySafe or ReplayKeyed call (ADR 0032)
 )
 
 // ErrInvalidDecision is returned by Decide for a batch that cannot
@@ -150,6 +152,13 @@ type Request struct {
 	// key), readable by whichever process reopens the session. weft
 	// never reads it. A copy; nil when the run carried none.
 	Metadata map[string]string
+	// Recovery marks a recovery request (ADR 0032): a call a crash or
+	// a shutdown left without a result, parked by Session.RecoverTurn
+	// under the run that was cut off. Approve retries it with the same
+	// IdempotencyKey; Deny or Resolve skips it; ApproveAlways is
+	// refused (ErrInvalidDecision). Reason says what is known of its
+	// outcome.
+	Recovery bool
 	// IdempotencyKey is the key the call runs under when it is
 	// approved (IdempotencyKey: from the session, the assistant entry
 	// holding the call and the call id) — the handler reads the same
@@ -554,6 +563,9 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q: decided over arguments %s, the request holds %s",
 				ErrArgsChanged, d.CallID, d.ArgsSHA256, req.ArgsSHA256)
 		}
+		if err := recoveryDecisionErr(req, d.Decision); err != nil {
+			return err
+		}
 	}
 	// One atomic Append carries every decision — and every grant an
 	// Always decision makes: a partial recording of a batch cannot
@@ -810,6 +822,11 @@ func (s *Session) Resume(ctx context.Context) (*Turn, error) {
 func (s *Session) armResumeLocked(ctx context.Context) (*Turn, error) {
 	if s.await.resumed != nil {
 		return s.await.resumed, nil // one boundary resumes once
+	}
+	if err := s.errRecoveryRequiredLocked(); err != nil {
+		// A resume a crash cut short after it started an approved
+		// call: running the boundary again could repeat the call.
+		return nil, err
 	}
 	t := s.mintResumeLocked()
 	if s.running {
@@ -1274,7 +1291,7 @@ func requestFromEntry(session string, e ApprovalRequestEntry) Request {
 		ID: e.ID, Session: session, CallID: e.CallID, Tool: e.Tool,
 		Args: slices.Clone(e.Args), ArgsSHA256: e.ArgsSHA256,
 		RunID: e.RunID, Reason: e.Reason, Expiry: e.Expiry, Created: e.Created,
-		Child: e.Child, Quorum: e.Quorum,
+		Child: e.Child, Quorum: e.Quorum, Recovery: e.Recovery,
 	}
 	if e.Run != nil && len(e.Run.Metadata) > 0 {
 		r.Metadata = maps.Clone(e.Run.Metadata)
@@ -1637,6 +1654,11 @@ func effectiveDecision(decisions []ApprovalDecisionEntry, quorum int) (ApprovalD
 			}
 			resolve = &decisions[i]
 		case OutcomeApprove:
+			if d.Via == viaRecovery && resolve == nil {
+				// The session's own retry of a cut-off call that is
+				// safe to run again (ADR 0032): one decision, no quorum.
+				return d, true
+			}
 			if resolve != nil {
 				// An approve beside a resolve is the same split verdict
 				// the other order is — the fold's words, both ways.
@@ -1963,6 +1985,7 @@ const (
 	approvedByApprover = "approver" // the WithApprover policy step
 	approvedByQuorum   = "quorum"   // a Quorum(n > 1) of approvals
 	approvedByPolicy   = "policy"   // any other session path (a pool parent's or child's record)
+	approvedByRecovery = "recovery" // RecoverTurn's retry of a cut-off ReplaySafe or ReplayKeyed call
 )
 
 // approvalSourceLocked is an effective approval's provenance: the class
@@ -1980,6 +2003,8 @@ func (s *Session) approvalSourceLocked(d ApprovalDecisionEntry) (by, grant strin
 		return approvedByApprover, ""
 	case viaQuorum:
 		return approvedByQuorum, ""
+	case viaRecovery:
+		return approvedByRecovery, ""
 	case viaUser, viaSigned, "":
 		quorum := s.cfg.quorum
 		if i, ok := s.byID[d.RequestID]; ok && d.RequestID != "" {
@@ -1993,4 +2018,20 @@ func (s *Session) approvalSourceLocked(d ApprovalDecisionEntry) (by, grant strin
 		return approvedByUser, ""
 	}
 	return approvedByPolicy, ""
+}
+
+// recoveryDecisionErr refuses a decision a recovery request does not
+// take (ADR 0032 rule D): it is approved — retry the call as it ran,
+// with the same idempotency key — or denied or resolved — skip it. A
+// standing approval (Always) would let the call run again unasked on a
+// later turn; it is refused. Nil for every other request.
+func recoveryDecisionErr(req Request, d Decision) error {
+	if !req.Recovery {
+		return nil
+	}
+	if d.Always {
+		return fmt.Errorf("%w: call %q is a recovery request: approve retries it, deny or resolve skips it; ApproveAlways is refused",
+			ErrInvalidDecision, d.CallID)
+	}
+	return nil
 }

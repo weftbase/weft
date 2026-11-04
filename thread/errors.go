@@ -85,6 +85,17 @@ var (
 	// session never records a decision it cannot apply.
 	ErrNotPending = errors.New("thread: call is not pending")
 
+	// ErrRecoveryRequired is returned by Send, Continue, Resume and
+	// every path that would start a resume run (Decide under
+	// AutoResume, the pool's replay) when the session's file shows a
+	// run that was cut off — a crash, or a shutdown — leaving a call
+	// whose outcome is unknown: a call that is not core.ReplaySafe,
+	// started (or approved to start) and without a recorded result. A
+	// new turn would answer it with a synthetic result and the model
+	// could ask for it again; a resume could run it again. Call
+	// Session.RecoverTurn first (ADR 0032).
+	ErrRecoveryRequired = errors.New("thread: a cut-off turn must be recovered first")
+
 	// The approval failures (ADR 0021 §3, §5) follow, each its own
 	// error because each is its own operational answer. All are
 	// fail-closed: nothing is recorded until every check passes.

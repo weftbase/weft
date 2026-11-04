@@ -270,6 +270,9 @@ func (s *Session) ReplayDecisions(ctx context.Context, ds ...ApprovalDecisionEnt
 	if s.header.Lineage == nil {
 		return nil, fmt.Errorf("thread: ReplayDecisions on session %s, which is not a pool child", s.header.ID)
 	}
+	if err := s.errRecoveryRequiredLocked(); err != nil {
+		return nil, err // the pool recovers the child instead (RecoverTurn)
+	}
 	if _, err := s.resolveExpiredLocked(ctx); err != nil {
 		return nil, err
 	}

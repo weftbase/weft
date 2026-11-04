@@ -380,3 +380,18 @@ case; none changes a model-visible byte.
   metadata wins per key with the decider's merged under it, and the
   parked park rule only adds up with whatever the decider's context
   carries.
+
+## Amendment (2026-11-04 — the recovery request; ADR 0032)
+
+`RecoverTurn` parks a call a crash or a shutdown cut off as a
+**recovery request** (`ApprovalRequestEntry.Recovery`, `"v":6`) under
+the run that was cut off. It takes approve (retry the call as it ran,
+same idempotency key) or deny / resolve (skip it); an edit and
+`ApproveAlways` are refused with `ErrInvalidDecision`. The session's
+own retry of a cut-off `ReplayKeyed` or `ReplaySafe` call is a decision
+with Via `recovery` and Who `thread`, preceded by an audit entry of the
+new step `recover` (Outcome `retry`, Detail the replay class); it
+resolves alone under any quorum, and the call's span reads
+`weft.tool.approved_by = recovery`. The step `recover` without a call
+id records RecoverTurn's handling of a run (Outcome `continued` — Detail
+the continuation's run id —, `parked`, `resumed`, `closed`).

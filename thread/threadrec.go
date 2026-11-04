@@ -323,6 +323,9 @@ func (s *Session) reportEntryLocked(e Entry) {
 			"entry": e.ID, "call_id": e.CallID, "tool": e.Tool, "args_sha256": e.ArgsSHA256,
 			"child_session": e.Child, "wrapper_call": e.Wrapper,
 		}
+		if e.Recovery {
+			f["recovery"] = true
+		}
 		if !e.Expiry.IsZero() {
 			f["expiry"] = e.Expiry.UTC().Format(time.RFC3339Nano)
 		}

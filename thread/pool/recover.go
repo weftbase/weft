@@ -27,13 +27,16 @@ import (
 //     are recorded and its boundary was never closed by a finished
 //     run (the session's rule — a resume that started and did not
 //     finish leaves the boundary resumable), so the pump at the end
-//     of Recover resumes it again, and an approved call whose result
-//     was not recorded runs again. Nothing on file tells a call that
-//     never started from one cut off half-way; a tool that must not
-//     run twice has to be idempotent itself (the playground's
-//     side-effect classes, core.Replay, do not gate a session resume).
-//     The same holds at any depth: a grandchild whose approved call was
-//     running resumes through its parent's recovered delegation. A
+//     of Recover resumes it again — except an approved call whose
+//     result was not recorded and that is not core.ReplaySafe: its
+//     outcome is unknown, so the child's resume is refused
+//     (thread.ErrRecoveryRequired) and the child is recovered instead
+//     (thread.Session.RecoverTurn): the call parks as a recovery
+//     request mirrored onto the parent, for a person to retry (same
+//     idempotency key) or skip; a core.ReplayKeyed call is retried at
+//     once. The same holds at any depth: a grandchild whose approved
+//     call was running parks through its parent's recovered
+//     delegation. A
 //     sync delegation whose delegating run died before its turn ended
 //     — the child parked and mirrored, the parent's park never
 //     recorded — has no delegating call to resolve: nothing parked it

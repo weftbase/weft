@@ -1583,6 +1583,9 @@ func (s *Session) Continue(ctx context.Context) (*Turn, error) {
 	if err := s.admitLocked(); err != nil {
 		return nil, err
 	}
+	if err := s.errRecoveryRequiredLocked(); err != nil {
+		return nil, err
+	}
 	// A restored send answers to this call from here on: whoever
 	// continues the session is the caller its turn runs for.
 	for i := range s.queue {

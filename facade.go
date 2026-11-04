@@ -2023,10 +2023,22 @@ const (
 	// ReplaySafe vouches that the call is idempotent and side-effect
 	// free (a read): a re-run may execute it for real.
 	ReplaySafe = core.ReplaySafe
+
+	// ReplayKeyed vouches that the call has side effects and is
+	// deduplicated on its Call.IdempotencyKey (the handler passes the
+	// key to an API that applies one request once): executing it again
+	// with the same key takes effect once. weft/thread retries such a
+	// call on its own when a crash or a shutdown cut it off
+	// (Session.RecoverTurn, ADR 0032); a re-run of a recorded
+	// conversation treats it as ReplayNever — a new run has new keys.
+	// It holds for a session's own calls: inside a Subagent, the child
+	// run's keys are run-scoped and the Subagent tool's own class
+	// decides (ADR 0031).
+	ReplayKeyed = core.ReplayKeyed
 )
 
-// Replay sets the tool's ReplayPolicy. Only ReplaySafe needs to be
-// said: ReplayNever is the zero value and the default, and any other
+// Replay sets the tool's ReplayPolicy. Only ReplaySafe and ReplayKeyed
+// need to be said: ReplayNever is the zero value and the default, and any other
 // value counts as never rather than being trusted (an unknown class is
 // never's, the safe default). Like every tool option the last one
 // wins, so Replay(ReplayNever) after an earlier Replay(ReplaySafe) —

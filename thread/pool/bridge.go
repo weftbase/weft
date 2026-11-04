@@ -381,7 +381,7 @@ func (p *Pool) awaitNested(ctx context.Context, d *delegate, n *nestWait, sl *sl
 		}
 		if !live {
 			regain() // the replay may start the resume: the slot first
-			return d.child.ReplayDecisions(ctx)
+			return replayOrRecover(ctx, d.child)
 		}
 		if !yielded {
 			yielded = true
@@ -652,7 +652,7 @@ func mirrorRequests(reqs []thread.Request, child, wrapper string) []thread.Appro
 		e := thread.ApprovalRequestEntry{
 			CallID: mirrorCallID(child, r.CallID), Tool: r.Tool, Args: r.Args, ArgsSHA256: r.ArgsSHA256,
 			RunID: r.RunID, Reason: r.Reason, Expiry: r.Expiry, Quorum: r.Quorum,
-			Child: child, Wrapper: wrapper,
+			Child: child, Wrapper: wrapper, Recovery: r.Recovery,
 		}
 		if len(r.Metadata) > 0 {
 			// The child run's labels ride the mirror, so the parent's
@@ -1263,7 +1263,7 @@ func (p *Pool) arm(d *delegate, gen uint64, replay []thread.ApprovalDecisionEntr
 		defer p.wg.Done()
 		p.awaitWrapper(ctx, d)
 		p.run(ctx, d, r, func(ctx context.Context) (*thread.Turn, error) {
-			return d.child.ReplayDecisions(ctx, replay...)
+			return replayOrRecover(ctx, d.child, replay...)
 		})
 	}()
 	return nil
@@ -1857,4 +1857,19 @@ func (p *Pool) Forward(ctx context.Context, parent *thread.Session, receiptID st
 		return nil, fmt.Errorf("%w: %s in session %s", ErrUnknownReceipt, receiptID, parent.ID())
 	}
 	return nil, &StateError{Receipt: receiptID, State: rc.State, Orphan: !ok && !rc.Settled()}
+}
+
+// replayOrRecover resumes a child under the decisions replayed into
+// it — unless the child's last run was cut off by a crash or a
+// shutdown leaving a call of unknown outcome (thread.ErrRecoveryRequired):
+// then the child is recovered instead (Session.RecoverTurn), which parks
+// such a call as a recovery request — mirrored onto the parent like any
+// child park, for a person to retry or skip — or retries a ReplayKeyed
+// one with its same key.
+func replayOrRecover(ctx context.Context, child *thread.Session, replay ...thread.ApprovalDecisionEntry) (*thread.Turn, error) {
+	t, err := child.ReplayDecisions(ctx, replay...)
+	if errors.Is(err, thread.ErrRecoveryRequired) {
+		return child.RecoverTurn(ctx)
+	}
+	return t, err
 }

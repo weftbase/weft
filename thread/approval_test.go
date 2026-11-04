@@ -899,7 +899,7 @@ func TestApprovalEntryGoldens(t *testing.T) {
 // TestApprovalEntryLoud: the approvals kinds refuse a newer version of
 // themselves and stay unknown-kind-loud for names near theirs.
 func TestApprovalEntryLoud(t *testing.T) {
-	if _, err := thread.UnmarshalEntry([]byte(`{"type":"approval_request","v":3,"id":"e_1"}`)); !errors.Is(err, thread.ErrNewerFormat) {
+	if _, err := thread.UnmarshalEntry([]byte(`{"type":"approval_request","v":7,"id":"e_1"}`)); !errors.Is(err, thread.ErrNewerFormat) {
 		t.Fatalf("newer approval v: %v, want ErrNewerFormat", err)
 	}
 	if _, err := thread.UnmarshalEntry([]byte(`{"type":"approval","id":"e_1"}`)); !errors.Is(err, thread.ErrNewerFormat) {

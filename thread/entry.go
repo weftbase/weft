@@ -94,6 +94,16 @@ type TurnEntry struct {
 	// had already emitted. Zero, and absent on the wire, for a turn
 	// whose every step landed as it joined.
 	LateSteps int `json:"late_steps,omitempty"`
+	// CutOff marks a turn that did not end on its own and whose calls
+	// may be left without a result (ADR 0032): written by
+	// Session.RecoverTurn for a run a crash cut short (the file had no
+	// turn entry for it), and by a turn felled with the cause
+	// ErrShutdown. Pending then holds the calls whose outcome is not on
+	// file; Err says why; Canceled is false — the turn was not
+	// abandoned, it is recoverable. An entry carrying it is written with
+	// "v":6, so a reader from before recovery fails loudly instead of
+	// answering those calls with a synthetic result.
+	CutOff bool `json:"cut_off,omitempty"`
 }
 
 // Reason is why a compaction ran (ADR 0020 §1) — the value a
@@ -327,6 +337,13 @@ type ApprovalRequestEntry struct {
 	// reopened without Quorum, or with a lower one, still asks this
 	// many — the stricter of the two holds.
 	Quorum int `json:"quorum,omitempty"`
+	// Recovery marks a recovery request (ADR 0032): Session.RecoverTurn
+	// parked a call a crash or a shutdown left without a result, under
+	// the run that was cut off (RunID). Approve retries the call with
+	// its same idempotency key, Deny or Resolve skips it; an edit is
+	// refused. Reason says what is known of its outcome. An entry
+	// carrying it is written with "v":6.
+	Recovery bool `json:"recovery,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021
@@ -829,6 +846,13 @@ const poolReceiptV = 4
 // record stays a format-1 line with no "v".
 const trimRecordV = 5
 
+// recoveryV is the entry version a cut-off turn entry and a recovery
+// request carry on the wire (ADR 0011 §6, ADR 0032): the recovery
+// format is 6, so a reader from before it fails loudly on a session
+// whose cut-off calls wait for recovery, instead of answering them
+// with a synthetic result or running a call that may have run.
+const recoveryV = 6
+
 // MarshalJSON encodes the entry with its "type" discriminator.
 func (e MessageEntry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
@@ -837,12 +861,19 @@ func (e MessageEntry) MarshalJSON() ([]byte, error) {
 	}{kindMessage, messageEntryWire(e)})
 }
 
-// MarshalJSON encodes the entry with its "type" discriminator.
+// MarshalJSON encodes the entry with its "type" discriminator. A
+// cut-off turn (CutOff) carries "v":6, its minimum reader version;
+// every other turn entry is a format-1 line with no "v".
 func (e TurnEntry) MarshalJSON() ([]byte, error) {
+	v := 0
+	if e.CutOff {
+		v = recoveryV
+	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
+		V    int    `json:"v,omitempty"`
 		turnEntryWire
-	}{kindTurn, turnEntryWire(e)})
+	}{kindTurn, v, turnEntryWire(e)})
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator. A
@@ -913,13 +944,17 @@ func (e CustomMessageEntry) MarshalJSON() ([]byte, error) {
 // above omit "v" and always will.
 
 // MarshalJSON encodes the entry with its "type" discriminator and
-// "v":2.
+// "v":2 — "v":6 on a recovery request (Recovery).
 func (e ApprovalRequestEntry) MarshalJSON() ([]byte, error) {
+	v := approvalEntryV
+	if e.Recovery {
+		v = recoveryV
+	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
 		V    int    `json:"v"`
 		approvalRequestEntryWire
-	}{kindApprovalRequest, approvalEntryV, approvalRequestEntryWire(e)})
+	}{kindApprovalRequest, v, approvalRequestEntryWire(e)})
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator and
@@ -994,13 +1029,19 @@ func (e PoolReceiptEntry) MarshalJSON() ([]byte, error) {
 // fails loudly (UnmarshalEntry) instead of guessing.
 func kindVersion(kind string) (int, bool) {
 	switch kind {
-	case kindMessage, kindTurn, kindBranchSummary,
+	case kindMessage, kindBranchSummary,
 		kindLeaf, kindLabel, kindInfo, kindCustom, kindCustomMessage:
 		return 1, true
+	case kindTurn:
+		// Born in format 1; read up to the cut-off turn's version.
+		return recoveryV, true
+	case kindApprovalRequest:
+		// Born in format 2; read up to the recovery request's version.
+		return recoveryV, true
 	case kindCompaction:
 		// Born in format 1; read up to the trim record's version.
 		return trimRecordV, true
-	case kindApprovalRequest, kindApprovalDecision, kindApprovalAudit,
+	case kindApprovalDecision, kindApprovalAudit,
 		kindGrant, kindGrantRevoked:
 		return approvalEntryV, true
 	case kindReceipt:
