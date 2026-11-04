@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -260,7 +261,7 @@ func challengeMAC(key []byte, sd SignedDecision) []byte {
 	if sd.Always {
 		kindTok += "+always"
 	}
-	return macFields(key,
+	fields := []string{
 		challengeDomain,
 		sd.Session,
 		sd.RequestID,
@@ -275,7 +276,19 @@ func challengeMAC(key []byte, sd SignedDecision) []byte {
 		sd.Reason,
 		sd.Content,
 		sd.Who,
-	)
+	}
+	// Fields only some decisions carry are appended, tagged, only when
+	// present: every other decision's MAC is the bytes it always was.
+	if sd.Kind == OutcomeEdit {
+		// The edited arguments' canonical hash: a signature over one
+		// edit never runs another, whatever escaping the bytes took.
+		fields = append(fields, "edited_args", canonicalHash(sd.EditedArgs))
+	}
+	if len(sd.Cosigners) > 0 {
+		fields = append(fields, "cosigners", strconv.Itoa(len(sd.Cosigners)))
+		fields = append(fields, sd.Cosigners...)
+	}
+	return macFields(key, fields...)
 }
 
 // mintNonce returns a fresh challenge nonce for one request: 16
@@ -356,9 +369,15 @@ type SignedDecision struct {
 	// signed ApproveAlways (Decision.Always carries it through
 	// SignDecision).
 	Always bool
-	Nonce  string
-	KeyID  string
-	MAC    []byte
+	// EditedArgs are an OutcomeEdit's arguments; the MAC covers their
+	// canonical hash.
+	EditedArgs json.RawMessage
+	// Cosigners are the deciders a remote authority counted for this
+	// decision (Decision.Cosigners); the MAC covers them when present.
+	Cosigners []string
+	Nonce     string
+	KeyID     string
+	MAC       []byte
 }
 
 // SignDecision signs d over r's challenge under key — the client-side
@@ -386,6 +405,13 @@ func SignDecision(key []byte, r Request, d Decision) SignedDecision {
 		Always:     d.Always,
 		Nonce:      r.Nonce,
 		KeyID:      r.KeyID,
+		Cosigners:  slices.Clone(d.Cosigners),
+	}
+	if d.Kind == OutcomeEdit {
+		sd.EditedArgs = slices.Clone(d.EditedArgs)
+		if c, err := canonicalArgs(d.EditedArgs); err == nil {
+			sd.EditedArgs = c
+		}
 	}
 	if sd.Who == "" {
 		sd.Who = r.KeyID
@@ -559,6 +585,7 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 			CallID: sd.CallID, Kind: sd.Kind, Reason: sd.Reason, Content: sd.Content,
 			Who: sd.Who, Via: viaSigned, Always: sd.Always,
 			RequestID: sd.RequestID, ArgsSHA256: sd.ArgsSHA256, // verified above
+			EditedArgs: sd.EditedArgs, Cosigners: sd.Cosigners,
 		}
 		v.err = s.recordDecisionsLocked(ctx, []recordedDecision{{Decision: d, nonce: sd.Nonce, keyID: sd.KeyID}}, true)
 		if v.err == nil {
@@ -754,5 +781,7 @@ func (s *Session) auditSignedRefusalLocked(ctx context.Context, sd SignedDecisio
 func sameSigned(d ApprovalDecisionEntry, sd SignedDecision) bool {
 	return d.CallID == sd.CallID && d.Outcome == sd.Kind && d.Reason == sd.Reason && d.Content == sd.Content &&
 		d.Who == sd.Who && d.KeyID == sd.KeyID && d.RequestID == sd.RequestID && d.ArgsSHA256 == sd.ArgsSHA256 &&
-		d.Always == (sd.Always && sd.Kind == OutcomeApprove)
+		d.Always == (sd.Always && sd.Kind == OutcomeApprove) &&
+		d.EditedArgsSHA256 == editedHash(Decision{Kind: sd.Kind, EditedArgs: sd.EditedArgs}) &&
+		slices.Equal(d.Cosigners, sd.Cosigners)
 }

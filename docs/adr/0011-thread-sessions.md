@@ -570,8 +570,8 @@ older reader can safely ignore is added without a version.
 | `info` | 1 | — | *`title`*, *`meta`* | no |
 | `custom` | 1 | — | `kind`, *`data`* (any JSON) | no |
 | `custom_message` | 1 | — | `kind`, `message` | yes |
-| `approval_request` | 2 | 2 (6 with `recovery`) | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata` — the session's run metadata merged under the send's own, since 0.22), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1), *`recovery`* (a recovery request, ADR 0032) | no |
-| `approval_decision` | 2 | 2 | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`, `recovery`, `reconcile`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`* | no |
+| `approval_request` | 2 | 2 (6 with `recovery`) | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata` — the session's run metadata merged under the send's own, since 0.22), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1), *`recovery`* (a recovery request, ADR 0032), *`revision_of`* (an edit's revision, 6) | no |
+| `approval_decision` | 2 | 2 (6 with `edit`) | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`, `edit`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`, `recovery`, `reconcile`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`*, *`edited_args`*, *`edited_args_sha256`* (an edit's, canonical), *`cosigners`* | no |
 | `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`, `recover`), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
 | `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`*, *`who`* (the grantor), *`via`* (the door it came through) | no |
 | `grant_revoked` | 2 | 2 | `grant_id` | no |
@@ -580,8 +580,10 @@ older reader can safely ignore is added without a version.
 
 "Since" is the format step that introduced the kind: 1 is thread
 v0.1, 2 approvals (v0.2), 3 steering receipts (v0.3), 4 the pool
-(v0.5), 5 the trim record (the 2026-10-01 fix train), 6 recovery —
-the cut-off turn and the recovery request (ADR 0032, v0.22). Fields and
+(v0.5), 5 the trim record (the 2026-10-01 fix train), 6 recovery and
+edits — the cut-off turn, the recovery request, the edit decision and
+its revision request (ADR 0032, ADR 0021's 2026-11-04 amendment, v0.22).
+`approval_decision.cosigners` is additive (no version). Fields and
 status values added without a version, because an older reader loses
 nothing by ignoring them: `message.run_id`; `turn.policy`, `rerun`,
 `late_steps`; `approval_request.child`, `wrapper`, `run`, `schema_sha256`, `quorum`;

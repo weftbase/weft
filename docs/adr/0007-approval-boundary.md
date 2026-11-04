@@ -128,3 +128,15 @@ fixes, reported in the error's text.
 channel: `Call.Approved` stays the middleware-parking contract, and
 `mcp.Serve` still refuses `RequireApproval` tools — MCP has no resolve
 verb either.
+
+## Amendment (2026-11-04 — an edited call says what ran)
+
+`core.ApproveEdited(callID, args, by)` approves a parked call on the
+arguments its decider edited. The call runs through the ordinary chain
+on those arguments; the model's own call stays in the transcript as it
+wrote it, and the call's result — model-visible — starts with the
+pinned line `EDITED: the call ran with the arguments <args>` and a
+newline, so the model knows which arguments took effect. weft/thread
+drives it from an edit's revision request (ADR 0021's 2026-11-04
+amendment). The prefix is unexported, like the other pinned texts
+(`DENIED: …`); its bytes are pinned by `TestApproveEditedPinnedPrefix`.

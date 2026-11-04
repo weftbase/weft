@@ -326,6 +326,9 @@ func (s *Session) reportEntryLocked(e Entry) {
 		if e.Recovery {
 			f["recovery"] = true
 		}
+		if e.RevisionOf != "" {
+			f["revision_of"] = e.RevisionOf
+		}
 		if !e.Expiry.IsZero() {
 			f["expiry"] = e.Expiry.UTC().Format(time.RFC3339Nano)
 		}
@@ -340,6 +343,12 @@ func (s *Session) reportEntryLocked(e Entry) {
 		}
 		if e.Always {
 			f["always"] = true
+		}
+		if e.EditedArgsSHA256 != "" {
+			f["edited_args_sha256"] = e.EditedArgsSHA256
+		}
+		if len(e.Cosigners) > 0 {
+			f["cosigners"] = len(e.Cosigners)
 		}
 		if a, ok := s.precedingLocked(e.ID).(ApprovalAuditEntry); ok && a.Step == StepGrant && a.CallID == e.CallID {
 			// The chain's grant step: the grant that decided, and — a

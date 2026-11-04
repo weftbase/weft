@@ -409,3 +409,40 @@ fields are equal) as applied: nil, no entry, no `signed` audit; a
 different decision under that nonce stays `ErrReplay`. A decision with
 no request id can never take the no-op path, so a retry is never
 applied to a later occurrence of the call (G4).
+
+## Amendment (2026-11-04 — an edit is a revision; cosigners; D1, D2, G1, G2)
+
+**Edit (D1, G1).** `thread.Edit(callID, args)` (`OutcomeEdit`) corrects
+a parked call's arguments. In one append it records the edit decision
+over the request shown (`edited_args` in canonical JSON — keys sorted,
+no insignificant space, no HTML escaping — and `edited_args_sha256`,
+beside `args_sha256`, the arguments shown), a **revision**: a new
+request for the same call on the edited arguments (`revision_of` the old
+request; same run, expiry, quorum and settings), and the editor's
+approval of the revision. A new request starts the call's decisions
+afresh, so approvals of the old arguments never count: under
+`Quorum(n)` the revision needs n distinct approvers, the editor one of
+them; with no quorum the edit resolves it at once. The resume runs the
+call on the revision's arguments (`core.ApproveEdited`, ADR 0007's
+amendment) only while they hash to what the revision recorded, under
+an idempotency key that also covers them (ADR 0031). The canonical form
+is what is hashed, signed (`SignedDecision.EditedArgs`, MAC-covered),
+recorded and run, so escaping on a wire or in a file never breaks the
+hash. Refused with `ErrInvalidDecision`: an edit of a recovery request
+(ADR 0032 rule D), of a delegated pool child's request (an edit is not
+forwarded to a child), an edit with `Always`, edited arguments that are
+not a JSON object. An Approver that answers with an edit declines.
+Re-checking policy against the edited arguments is the decider's.
+
+**Old readers (G2).** The edit decision and the revision are written
+with `"v":6`; a 0.21 reader refuses such a session (`ErrNewerFormat`) —
+checked against the v0.21.0 reader itself — instead of folding `edit`
+as no decision and running the model's original arguments.
+
+**Cosigners (D2).** `Decision.Cosigners` (and `SignedDecision.Cosigners`,
+covered by the MAC when present) names every decider a remote authority
+counted before it forwarded one decision — Weftbase counts its own
+quorum, separation of duties and eligibility and forwards once. The
+decision entry records them (`cosigners`, additive); weft never counts
+them toward its own `Quorum`. Sessions Weftbase manages run without
+weft's `Quorum`.

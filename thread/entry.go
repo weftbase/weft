@@ -344,6 +344,12 @@ type ApprovalRequestEntry struct {
 	// refused. Reason says what is known of its outcome. An entry
 	// carrying it is written with "v":6.
 	Recovery bool `json:"recovery,omitempty"`
+	// RevisionOf is the id of the request this one revises: an edit
+	// (OutcomeEdit) closed that request and opened this one on the
+	// edited arguments (Args, ArgsSHA256). An entry carrying it is
+	// written with "v":6, so a reader from before edits fails loudly
+	// instead of running the model's original arguments.
+	RevisionOf string `json:"revision_of,omitempty"`
 }
 
 // ApprovalDecisionEntry is one decision over a parked call (ADR 0021
@@ -399,6 +405,16 @@ type ApprovalDecisionEntry struct {
 	// with the completing approval under one — and never when the
 	// verdict is anything else.
 	Always bool `json:"always,omitempty"`
+	// EditedArgs and EditedArgsSHA256 are an OutcomeEdit's: the edited
+	// arguments in canonical form and their hex SHA-256 (ArgsSHA256
+	// stays the hash of the arguments the editor was shown). An edit
+	// entry is written with "v":6. Empty on every other outcome.
+	EditedArgs       json.RawMessage `json:"edited_args,omitempty"`
+	EditedArgsSHA256 string          `json:"edited_args_sha256,omitempty"`
+	// Cosigners are the deciders a remote authority counted for this
+	// one decision (Decision.Cosigners): recorded, never counted toward
+	// the session's Quorum. Additive: an older reader ignores it.
+	Cosigners []string `json:"cosigners,omitempty"`
 }
 
 // ApprovalAuditEntry is the chain's own trail (ADR 0021 §2): every step
@@ -846,11 +862,13 @@ const poolReceiptV = 4
 // record stays a format-1 line with no "v".
 const trimRecordV = 5
 
-// recoveryV is the entry version a cut-off turn entry and a recovery
-// request carry on the wire (ADR 0011 §6, ADR 0032): the recovery
-// format is 6, so a reader from before it fails loudly on a session
-// whose cut-off calls wait for recovery, instead of answering them
-// with a synthetic result or running a call that may have run.
+// recoveryV is the entry version a cut-off turn entry, a recovery
+// request, an edit decision and an edit's revision request carry on
+// the wire (ADR 0011 §6, ADR 0032, ADR 0021's 2026-11-04 amendment):
+// format 6, so a reader from before it fails loudly on such a session,
+// instead of answering a cut-off call with a synthetic result, running
+// a call that may have run, or running an edited call on the model's
+// original arguments.
 const recoveryV = 6
 
 // MarshalJSON encodes the entry with its "type" discriminator.
@@ -947,7 +965,7 @@ func (e CustomMessageEntry) MarshalJSON() ([]byte, error) {
 // "v":2 — "v":6 on a recovery request (Recovery).
 func (e ApprovalRequestEntry) MarshalJSON() ([]byte, error) {
 	v := approvalEntryV
-	if e.Recovery {
+	if e.Recovery || e.RevisionOf != "" {
 		v = recoveryV
 	}
 	return json.Marshal(struct {
@@ -958,13 +976,19 @@ func (e ApprovalRequestEntry) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator and
-// "v":2.
+// "v":2 — "v":6 on an edit (OutcomeEdit), so a reader from before
+// edits refuses the session instead of folding an unknown outcome as
+// no decision and running the original arguments (G2).
 func (e ApprovalDecisionEntry) MarshalJSON() ([]byte, error) {
+	v := approvalEntryV
+	if e.Outcome == OutcomeEdit {
+		v = recoveryV
+	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
 		V    int    `json:"v"`
 		approvalDecisionEntryWire
-	}{kindApprovalDecision, approvalEntryV, approvalDecisionEntryWire(e)})
+	}{kindApprovalDecision, v, approvalDecisionEntryWire(e)})
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator and
@@ -1041,8 +1065,10 @@ func kindVersion(kind string) (int, bool) {
 	case kindCompaction:
 		// Born in format 1; read up to the trim record's version.
 		return trimRecordV, true
-	case kindApprovalDecision, kindApprovalAudit,
-		kindGrant, kindGrantRevoked:
+	case kindApprovalDecision:
+		// Born in format 2; read up to the edit's version.
+		return recoveryV, true
+	case kindApprovalAudit, kindGrant, kindGrantRevoked:
 		return approvalEntryV, true
 	case kindReceipt:
 		return receiptEntryV, true

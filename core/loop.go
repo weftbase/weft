@@ -1465,8 +1465,13 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 		return nil, nil, nil, err
 	}
 	var approved []ToolCallPart
+	edited := map[string]bool{}
 	for _, c := range calls {
 		if d, ok := cfg.decisions[c.ID]; ok && d.approved {
+			if d.args != nil {
+				c.Args = cloneRaw(d.args) // the decider's arguments, executed as given
+				edited[c.ID] = true
+			}
 			approved = append(approved, c)
 		}
 	}
@@ -1504,6 +1509,11 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 			continue
 		}
 		if r, ok := byID[c.ID]; ok {
+			if edited[c.ID] {
+				// The model wrote other arguments: its result says
+				// which ones ran.
+				r.Content = editedPrefix + string(cfg.decisions[c.ID].args) + "\n" + r.Content
+			}
 			results = append(results, r)
 			continue
 		}

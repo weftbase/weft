@@ -78,7 +78,7 @@ func TestIdempotencyKeySurvivesRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := s.ID()
-			want := thread.IdempotencyKey(id, callEntry(t, s, "call_1"), "call_1")
+			want := thread.IdempotencyKey(id, callEntry(t, s, "call_1"), "call_1", "")
 			if p := s.Pending(); len(p) != 1 || p[0].IdempotencyKey != want {
 				t.Fatalf("pending = %+v, want the key %s on the request", p, want)
 			}
@@ -146,7 +146,7 @@ func TestIdempotencyKeyInStep(t *testing.T) {
 	if _, err := turn.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if want := thread.IdempotencyKey(s.ID(), callEntry(t, s, "c"), "c"); len(probe.keys["c"]) != 1 || probe.keys["c"][0] != want {
+	if want := thread.IdempotencyKey(s.ID(), callEntry(t, s, "c"), "c", ""); len(probe.keys["c"]) != 1 || probe.keys["c"][0] != want {
 		t.Fatalf("keys = %v, want %s", probe.keys["c"], want)
 	}
 }
@@ -188,7 +188,7 @@ func TestSubagentChildKeysAreRunScoped(t *testing.T) {
 	if _, err := turn.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if want := thread.IdempotencyKey(s.ID(), callEntry(t, s, "d1"), "d1"); len(outer) != 1 || outer[0] != want {
+	if want := thread.IdempotencyKey(s.ID(), callEntry(t, s, "d1"), "d1", ""); len(outer) != 1 || outer[0] != want {
 		t.Fatalf("the Subagent call's key = %v, want the session's %s", outer, want)
 	}
 	inner := probe.keys["inner"]

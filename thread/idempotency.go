@@ -10,7 +10,12 @@ import (
 // IdempotencyKey is the recovery-stable key of one tool call in a
 // session (ADR 0031): 32 lowercase hex digits, the first 128 bits of
 // the SHA-256 of the session id, the id of the assistant message entry
-// that holds the call, and the call id, NUL-separated. Every run of a
+// that holds the call, and the call id, NUL-separated — and, for a call
+// that runs on edited arguments (an edit's revision), the edited
+// arguments' hash after them, so a receiver that deduplicates on the
+// key neither rejects nor replays the edited request as the original
+// one; editedArgsSHA256 is "" for every other call. A recovery retry
+// of an edited call keeps its edited key. Every run of a
 // Session hands it to the loop (core.IdempotencyKeys), so a tool reads
 // it as core.Call.IdempotencyKey: the same call keeps it across a
 // crash, a restart, a resume after an approval and a recovery retry,
@@ -22,9 +27,45 @@ import (
 //
 // Request.IdempotencyKey carries it for a parked call; a platform
 // computes it itself only to name a key outside the session.
-func IdempotencyKey(sessionID, entryID, callID string) string {
-	h := sha256.Sum256([]byte(sessionID + "\x00" + entryID + "\x00" + callID))
+func IdempotencyKey(sessionID, entryID, callID, editedArgsSHA256 string) string {
+	in := sessionID + "\x00" + entryID + "\x00" + callID
+	if editedArgsSHA256 != "" {
+		in += "\x00" + editedArgsSHA256
+	}
+	h := sha256.Sum256([]byte(in))
 	return hex.EncodeToString(h[:16])
+}
+
+// callKeyLocked is the key a call runs under: from the entry holding it
+// and, when its request runs it on edited arguments, their hash.
+// Callers hold s.mu.
+func (s *Session) callKeyLocked(entry, callID string) string {
+	edited := ""
+	if c, ok := s.callInEntryLocked(entry, callID); ok {
+		if _, sha, isEdited, _ := editedArgsOf(s.approvalWalkLocked().requests[callID], c); isEdited {
+			edited = sha
+		}
+	}
+	return IdempotencyKey(s.header.ID, entry, callID, edited)
+}
+
+// callInEntryLocked returns the call part callID of the message entry
+// with id entry. Callers hold s.mu.
+func (s *Session) callInEntryLocked(entry, callID string) (core.ToolCallPart, bool) {
+	i, ok := s.byID[entry]
+	if !ok {
+		return core.ToolCallPart{}, false
+	}
+	me, ok := s.order[i].(MessageEntry)
+	if !ok {
+		return core.ToolCallPart{}, false
+	}
+	for _, p := range me.Message.Content {
+		if c, ok := p.(core.ToolCallPart); ok && c.ID == callID {
+			return c, true
+		}
+	}
+	return core.ToolCallPart{}, false
 }
 
 // idempotencyKeys is the run option naming each executed call's key
@@ -42,7 +83,10 @@ func (s *Session) idempotencyKeys(sp *stepPersist) core.RunOption {
 		if entry == "" {
 			return ""
 		}
-		return IdempotencyKey(s.header.ID, entry, c.CallID)
+		if !sp.resume {
+			return IdempotencyKey(s.header.ID, entry, c.CallID, "") // the step's own call: never edited
+		}
+		return s.callKeyLocked(entry, c.CallID)
 	})
 }
 
@@ -77,6 +121,6 @@ func (s *Session) requestKeyLocked(r *Request) {
 		return
 	}
 	if entry := s.callEntryLocked(r.CallID); entry != "" {
-		r.IdempotencyKey = IdempotencyKey(s.header.ID, entry, r.CallID)
+		r.IdempotencyKey = s.callKeyLocked(entry, r.CallID)
 	}
 }

@@ -110,6 +110,9 @@ type decision struct {
 	content  string
 	resolved bool
 	isError  bool
+	// args, on an approval, replaces the call's arguments for its
+	// execution (ApproveEdited): the decider edited them.
+	args json.RawMessage
 }
 
 func (c *runConfig) decide(id string, d decision) {
@@ -145,6 +148,33 @@ func Approve(callID string) RunOption { return approveOption{id: callID} }
 func ApproveBy(callID, by, grantID string) RunOption {
 	return approveOption{id: callID, by: by, grant: grantID}
 }
+
+type approveEditedOption struct {
+	id, by string
+	args   json.RawMessage
+}
+
+func (o approveEditedOption) applyRun(c *runConfig) {
+	c.decide(o.id, decision{approved: true, by: o.by, args: append(json.RawMessage(nil), o.args...)})
+}
+
+// ApproveEdited approves a pending call with the arguments its decider
+// edited: the call executes like an Approve — through the tool chain,
+// Call.Approved set — but on args instead of the arguments the model
+// wrote, and its result tells the model so: it starts with the pinned
+// line "EDITED: the call ran with the arguments <args>" (ADR 0007's
+// 2026-11-04 amendment; the model's own call stays as it wrote it in
+// the transcript). by names the decider's class, as ApproveBy's. The
+// arguments are validated as any call's are (decode, StrictInput): a
+// call whose edited arguments do not fit its tool fails as a call with
+// bad arguments would.
+func ApproveEdited(callID string, args json.RawMessage, by string) RunOption {
+	return approveEditedOption{id: callID, by: by, args: args}
+}
+
+// editedPrefix is the line an edited call's result starts with
+// (ApproveEdited), before the edited arguments and a newline.
+const editedPrefix = "EDITED: the call ran with the arguments "
 
 type denyOption struct{ id, reason, by, grant string }
 

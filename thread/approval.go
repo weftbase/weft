@@ -37,6 +37,15 @@ const (
 	// OutcomeResolveError is OutcomeResolve with the result marked as
 	// an error.
 	OutcomeResolveError Outcome = "resolve_error"
+	// OutcomeEdit corrects the call's arguments (Edit): the request is
+	// closed and a revision opened — a new request for the same call on
+	// the edited arguments (Request.RevisionOf), which the editor's
+	// decision approves once. It resolves like any request: alone under
+	// no quorum, with n distinct approvers in all, the editor counted,
+	// under Quorum(n); approvals of the old arguments never count. The
+	// resume runs the call on the revision's arguments
+	// (core.ApproveEdited). A recovery request takes no edit.
+	OutcomeEdit Outcome = "edit"
 )
 
 // The audit entry's steps (ADR 0021 §2): every step the session takes
@@ -152,6 +161,10 @@ type Request struct {
 	// key), readable by whichever process reopens the session. weft
 	// never reads it. A copy; nil when the run carried none.
 	Metadata map[string]string
+	// RevisionOf names the request this one revises (OutcomeEdit): its
+	// Args are an editor's, not the model's, and the resume runs them.
+	// Empty on every other request.
+	RevisionOf string
 	// Recovery marks a recovery request (ADR 0032): a call a crash or
 	// a shutdown left without a result, parked by Session.RecoverTurn
 	// under the run that was cut off. Approve retries it with the same
@@ -219,6 +232,34 @@ type Decision struct {
 	// saw; DecideSigned fills both from the verified challenge.
 	RequestID  string
 	ArgsSHA256 string
+	// EditedArgs are an OutcomeEdit's arguments: a JSON object, recorded
+	// and hashed in canonical form (Edit). Empty on every other outcome.
+	EditedArgs json.RawMessage
+	// Cosigners names everyone a remote authority counted for this
+	// decision — the deciders behind one forwarded decision (Weftbase
+	// counts its quorum and forwards once). Recorded on the decision
+	// entry and covered by a signature's MAC when present; weft never
+	// counts it toward its own Quorum. Opaque ids, never addresses.
+	Cosigners []string
+}
+
+// Edit returns a Decision that corrects the call's arguments (ADR
+// 0021's 2026-11-04 amendment): the request is closed and a revision
+// opened on args, in canonical JSON (keys sorted, no insignificant
+// space, no HTML escaping), and the decision counts as the editor's
+// approval of the revision. Under Quorum(n) the revision still needs
+// n distinct approvers, the editor one of them; approvals of the old
+// arguments never count. The resume runs the call on the edited
+// arguments and tells the model so. Re-checking policy against the
+// edited arguments is the decider's (an edit from 40 to 900); the
+// tool validates them as any call's. Bind it to the request shown, as
+// every Decide decision.
+func Edit(callID string, args json.RawMessage) Decision {
+	d := Decision{CallID: callID, Kind: OutcomeEdit, EditedArgs: slices.Clone(args)}
+	if c, err := canonicalArgs(args); err == nil {
+		d.EditedArgs = c
+	}
+	return d
 }
 
 // Approve returns a Decision that resumes the call: the run executes
@@ -591,6 +632,14 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		if err := recoveryDecisionErr(req, d.Decision); err != nil {
 			return err
 		}
+		if d.Kind == OutcomeEdit {
+			if _, err := canonicalArgs(d.EditedArgs); err != nil || !jsonObject(d.EditedArgs) {
+				return fmt.Errorf("%w: the edit of call %q carries no JSON object of arguments", ErrInvalidDecision, d.CallID)
+			}
+			if d.Always {
+				return fmt.Errorf("%w: the edit of call %q asks for a standing grant; grant the edited arguments with Grant", ErrInvalidDecision, d.CallID)
+			}
+		}
 	}
 	// One atomic Append carries every decision — and every grant an
 	// Always decision makes: a partial recording of a batch cannot
@@ -626,6 +675,37 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			// Only an approval grants: a Deny or Resolve built with
 			// Always set records no wish for a standing approval.
 			Always: d.Always && d.Kind == OutcomeApprove,
+		}
+		e.Cosigners = slices.Clone(d.Cosigners)
+		if d.Kind == OutcomeEdit {
+			// An edit closes the request and opens a revision on the
+			// edited arguments, which the editor approves once (D1): the
+			// edit entry, the revision, the editor's approval — one
+			// append, so no reader ever sees the one without the others.
+			edited, _ := canonicalArgs(d.EditedArgs)
+			e.EditedArgs, e.EditedArgsSHA256 = edited, hashArgs(edited)
+			if e.ArgsSHA256 == "" {
+				e.ArgsSHA256 = req.ArgsSHA256
+			}
+			e.ID, e.ParentID, e.Created = s.mintIDLocked(), parent, now
+			entries = append(entries, e)
+			old := walk.requests[req.CallID]
+			if old.ID != req.ID {
+				old = ApprovalRequestEntry{CallID: req.CallID, Tool: req.Tool, RunID: req.RunID, Reason: req.Reason,
+					Expiry: req.Expiry, Quorum: req.Quorum}
+			}
+			rev := old
+			rev.Args, rev.ArgsSHA256, rev.RevisionOf, rev.Recovery = edited, hashArgs(edited), req.ID, false
+			rev.Run = old.Run.Clone()
+			rev.ID, rev.ParentID, rev.Created = s.mintIDLocked(), e.ID, now
+			entries = append(entries, rev)
+			ap := ApprovalDecisionEntry{CallID: d.CallID, Outcome: OutcomeApprove, Reason: d.Reason, Who: d.Who, Via: d.Via,
+				RunID: rev.RunID, KeyID: d.keyID, RequestID: rev.ID, ArgsSHA256: rev.ArgsSHA256, Cosigners: slices.Clone(d.Cosigners)}
+			ap.ID, ap.ParentID, ap.Created = s.mintIDLocked(), rev.ID, now
+			entries = append(entries, ap)
+			parent = ap.ID
+			held[d.CallID] = []ApprovalDecisionEntry{ap}
+			continue
 		}
 		e.ID, e.ParentID, e.Created = s.mintIDLocked(), parent, now
 		entries = append(entries, e)
@@ -910,7 +990,7 @@ func (s *Session) settleResumeLocked(t *Turn) {
 // validOutcome reports whether o is one of the four decision outcomes.
 func validOutcome(o Outcome) bool {
 	switch o {
-	case OutcomeApprove, OutcomeDeny, OutcomeResolve, OutcomeResolveError:
+	case OutcomeApprove, OutcomeDeny, OutcomeResolve, OutcomeResolveError, OutcomeEdit:
 		return true
 	}
 	return false
@@ -1045,6 +1125,12 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			}
 			s.locked(func() { s.requestKeyLocked(&req) })
 			d, decided, outcome := s.consultApprover(ctx, req)
+			if decided && d.Kind == OutcomeEdit {
+				// An edit opens a revision a person decides through
+				// Decide; the chain's Approver approves, denies or
+				// resolves. The call parks.
+				decided, outcome = false, "declined"
+			}
 			steps = append(steps, ApprovalAuditEntry{
 				CallID: c.ID, Step: StepApprover, Outcome: outcome, RunID: t.runID,
 			})
@@ -1336,7 +1422,7 @@ func requestFromEntry(session string, e ApprovalRequestEntry) Request {
 		ID: e.ID, Session: session, CallID: e.CallID, Tool: e.Tool,
 		Args: slices.Clone(e.Args), ArgsSHA256: e.ArgsSHA256,
 		RunID: e.RunID, Reason: e.Reason, Expiry: e.Expiry, Created: e.Created,
-		Child: e.Child, Quorum: e.Quorum, Recovery: e.Recovery,
+		Child: e.Child, Quorum: e.Quorum, Recovery: e.Recovery, RevisionOf: e.RevisionOf,
 	}
 	if e.Run != nil && len(e.Run.Metadata) > 0 {
 		r.Metadata = maps.Clone(e.Run.Metadata)
@@ -1698,6 +1784,10 @@ func effectiveDecision(decisions []ApprovalDecisionEntry, quorum int) (ApprovalD
 				return conflict(d)
 			}
 			resolve = &decisions[i]
+		case OutcomeEdit:
+			// An edit closed its request: the revision after it holds
+			// the call's decisions. Alone it decides nothing.
+			continue
 		case OutcomeApprove:
 			if d.Via == viaRecovery && resolve == nil {
 				// The session's own retry of a cut-off call that is
@@ -1992,6 +2082,17 @@ func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) [
 			if by == approvedByUser && onBehalf != "" {
 				by = onBehalf
 			}
+			if args, _, edited, ok := editedArgsOf(walk.requests[c.ID], c); edited {
+				// A revision (or a recovery retry of one): the call runs on
+				// the recorded edited arguments, and only while they still
+				// hash to what was recorded.
+				if !ok {
+					opts = append(opts, core.Deny(c.ID, "the edited arguments do not match their recorded hash"))
+					continue
+				}
+				opts = append(opts, core.ApproveEdited(c.ID, args, by))
+				continue
+			}
 			opts = append(opts, core.ApproveBy(c.ID, by, grant))
 		case OutcomeDeny:
 			// A deny grant's refusal names its grant on the call's
@@ -2071,8 +2172,16 @@ func (s *Session) approvalSourceLocked(d ApprovalDecisionEntry) (by, grant strin
 // standing approval (Always) would let the call run again unasked on a
 // later turn; it is refused. Nil for every other request.
 func recoveryDecisionErr(req Request, d Decision) error {
+	if d.Kind == OutcomeEdit && req.Child != "" {
+		return fmt.Errorf("%w: call %q is a delegated child's request: an edit is not forwarded to a pool child; approve or deny it",
+			ErrInvalidDecision, d.CallID)
+	}
 	if !req.Recovery {
 		return nil
+	}
+	if d.Kind == OutcomeEdit {
+		return fmt.Errorf("%w: call %q is a recovery request: the call may have run with its arguments, so it is retried as it ran (approve) or skipped (deny); an edit is refused",
+			ErrInvalidDecision, d.CallID)
 	}
 	if d.Always {
 		return fmt.Errorf("%w: call %q is a recovery request: approve retries it, deny or resolve skips it; ApproveAlways is refused",
@@ -2095,7 +2204,8 @@ func (s *Session) alreadyDecidedLocked(d recordedDecision) bool {
 			continue
 		}
 		if de.Outcome == d.Kind && de.Reason == d.Reason && de.Content == d.Content && de.Who == d.Who &&
-			de.ArgsSHA256 == d.ArgsSHA256 && de.Always == (d.Always && d.Kind == OutcomeApprove) && de.KeyID == d.keyID {
+			de.ArgsSHA256 == d.ArgsSHA256 && de.Always == (d.Always && d.Kind == OutcomeApprove) && de.KeyID == d.keyID &&
+			de.EditedArgsSHA256 == editedHash(d.Decision) && slices.Equal(de.Cosigners, d.Cosigners) {
 			return true
 		}
 	}

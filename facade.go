@@ -1390,6 +1390,20 @@ func Approve(callID string) RunOption { return core.Approve(callID) }
 // with Approve.
 func ApproveBy(callID, by, grantID string) RunOption { return core.ApproveBy(callID, by, grantID) }
 
+// ApproveEdited approves a pending call with the arguments its decider
+// edited: the call executes like an Approve — through the tool chain,
+// Call.Approved set — but on args instead of the arguments the model
+// wrote, and its result tells the model so: it starts with the pinned
+// line "EDITED: the call ran with the arguments <args>" (ADR 0007's
+// 2026-11-04 amendment; the model's own call stays as it wrote it in
+// the transcript). by names the decider's class, as ApproveBy's. The
+// arguments are validated as any call's are (decode, StrictInput): a
+// call whose edited arguments do not fit its tool fails as a call with
+// bad arguments would.
+func ApproveEdited(callID string, args json.RawMessage, by string) RunOption {
+	return core.ApproveEdited(callID, args, by)
+}
+
 // Deny resolves a pending call without running it: the model sees an
 // error result reading "DENIED: <reason>" and the loop continues.
 // Pending calls given neither Approve nor Deny are denied with the

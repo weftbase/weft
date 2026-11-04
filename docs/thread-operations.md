@@ -609,6 +609,20 @@ not the numbers themselves.
   (`DecideSigned`, same nonce) are applied, not `ErrReplay`, and not
   audited. A different decision on a decided request is `ErrNotPending`;
   another one under a spent nonce `ErrReplay`.
+- **Edits.** `thread.Edit(callID, args).Bind(r)` corrects a parked
+  call: the request closes and a revision opens on the edited arguments
+  (`Request.RevisionOf`), approved once by the editor — under
+  `Quorum(n)` it still needs n distinct approvers, and approvals of the
+  old arguments do not count. The arguments are canonical JSON; the
+  resume runs them only while they hash to what was recorded, under a
+  key that covers them, and the model's result starts with
+  `EDITED: the call ran with the arguments …`. A recovery request takes
+  no edit. Re-checking policy on the edited arguments is the decider's.
+  A session that holds an edit is format 6: a 0.21 reader refuses it.
+- **Cosigners.** A platform that counts its own quorum forwards one
+  decision naming every decider in `Decision.Cosigners` (MAC-covered
+  when signed); the session records them and never counts them toward
+  its own `Quorum`.
 - **Idempotency keys.** Every call a session runs carries
   `weft.Call.IdempotencyKey` = `thread.IdempotencyKey(session id,
   assistant entry id, call id)` (ADR 0031): a tool with side effects

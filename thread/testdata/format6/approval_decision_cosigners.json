@@ -1,0 +1,1 @@
+{"type":"approval_decision","v":2,"id":"e_01J8X9M2K7QW4R5N8T6V2B3C6E","parent":"e_01J8X9M2K7QW4R5N8T6V2B3C6D","created":"2026-09-28T12:01:00.123456789Z","call_id":"call_1","outcome":"approve","who":"weftbase","via":"signed","run_id":"s_1-t1","request_id":"e_01J8X9M2K7QW4R5N8T6V2B3C6D","cosigners":["usr_alice","usr_carol"]}

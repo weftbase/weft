@@ -32,6 +32,22 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 			CallID: "call_1", Tool: "charge", Args: json.RawMessage(`{"order_id":"1"}`),
 			ArgsSHA256: "f505666b8690e04ec1b2fc27dd7389ae0adb9f8c9fe7ec141b5b1f47818a0d7e", RunID: "s_1-t1",
 			Reason: "cut off: the call may have run; approve to retry it with the same idempotency key, deny to skip it", Recovery: true}, `"type":"approval_request","v":6,`},
+		// The edit (G2): the edit decision and its revision carry "v":6,
+		// so a 0.21 reader — which reads the decision and request kinds
+		// at "v":2 and would fold "edit" as no decision, then run the
+		// model's arguments on a later approval — refuses the session.
+		{"approval_decision_edit.json", thread.ApprovalDecisionEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6C", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6B", Created: ts,
+			CallID: "call_1", Outcome: thread.OutcomeEdit, Who: "bob", Via: "user", RunID: "s_1-t1", RequestID: "e_01J8X9M2K7QW4R5N8T6V2B3C6B",
+			ArgsSHA256:       "f505666b8690e04ec1b2fc27dd7389ae0adb9f8c9fe7ec141b5b1f47818a0d7e",
+			EditedArgs:       json.RawMessage(`{"order_id":"2"}`),
+			EditedArgsSHA256: "0f6d1e5c6a9f0e1d3f2a9fd0e5c8b74d5a4e6f8f2b0c4b3d0a8b6c1e9d2f7a3b"}, `"type":"approval_decision","v":6,`},
+		{"approval_request_revision.json", thread.ApprovalRequestEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6C", Created: ts,
+			CallID: "call_1", Tool: "charge", Args: json.RawMessage(`{"order_id":"2"}`),
+			ArgsSHA256: "0f6d1e5c6a9f0e1d3f2a9fd0e5c8b74d5a4e6f8f2b0c4b3d0a8b6c1e9d2f7a3b", RunID: "s_1-t1",
+			Reason: "tool requires approval", RevisionOf: "e_01J8X9M2K7QW4R5N8T6V2B3C6B"}, `"type":"approval_request","v":6,`},
+		{"approval_decision_cosigners.json", thread.ApprovalDecisionEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6E", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D", Created: ts,
+			CallID: "call_1", Outcome: thread.OutcomeApprove, Who: "weftbase", Via: "signed", RunID: "s_1-t1", RequestID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D",
+			Cosigners: []string{"usr_alice", "usr_carol"}}, `"type":"approval_decision","v":2,`},
 	}
 	for _, c := range cases {
 		b, err := json.Marshal(c.e)
@@ -49,6 +65,9 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 		again, _ := json.Marshal(back)
 		if !bytes.Equal(b, again) {
 			t.Errorf("%s re-marshal differs\n got %s\nwant %s", c.file, again, b)
+		}
+		if !bytes.Contains(b, []byte(`"v":6`)) {
+			continue
 		}
 		newer := bytes.Replace(b, []byte(`"v":6`), []byte(`"v":7`), 1)
 		if _, err := thread.UnmarshalEntry(newer); !errors.Is(err, thread.ErrNewerFormat) {

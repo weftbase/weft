@@ -2153,6 +2153,8 @@ func cloneEntry(e Entry) Entry {
 		e.Run = e.Run.Clone()
 		return e
 	case ApprovalDecisionEntry:
+		e.EditedArgs = slices.Clone(e.EditedArgs)
+		e.Cosigners = slices.Clone(e.Cosigners)
 		return e
 	case ApprovalAuditEntry:
 		e.Decisions = slices.Clone(e.Decisions)

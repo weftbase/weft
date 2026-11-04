@@ -77,7 +77,7 @@ func (s *Session) reconcileLocked(ctx context.Context, calls []core.ToolCallPart
 		if entry == "" {
 			continue
 		}
-		asks = append(asks, ask{call: c, fn: def.Reconciler(), key: IdempotencyKey(s.header.ID, entry, c.ID)})
+		asks = append(asks, ask{call: c, fn: def.Reconciler(), key: s.callKeyLocked(entry, c.ID)})
 	}
 	if len(asks) == 0 {
 		return nil
@@ -160,7 +160,11 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 				return fmt.Errorf("the session's lock is not held: %w", err)
 			}
 		}
-		if c.IdempotencyKey != IdempotencyKey(s.header.ID, entry, c.CallID) {
+		want := IdempotencyKey(s.header.ID, entry, c.CallID, "")
+		if sp.resume {
+			want = s.callKeyLocked(entry, c.CallID)
+		}
+		if c.IdempotencyKey != want {
 			// The loop named the call before its step was durable: its
 			// key is run-scoped, not the session's.
 			return fmt.Errorf("call %q carries no recovery-stable key", c.CallID)
