@@ -751,7 +751,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 			}
 		default:
 			var retried []string
-			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries)
+			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch)
 			for _, name := range retried {
 				state.retries[name]++
 			}
@@ -1225,7 +1225,7 @@ func (a *Agent) modelInfo() ModelInfo { return InfoOf(a.model) }
 // rec is the run's recorder, told each call's truncation before its
 // ToolFinish is emitted (the tool_finish record's
 // weft.tool.truncated_bytes); nil records nothing.
-func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
+func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
 	outcomes := make([]ToolResultPart, len(calls))
 	parked := make([]bool, len(calls))
 	sem := make(chan struct{}, parallelism)
@@ -1337,6 +1337,12 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 		prov, ok := approved[call.ID]
 		isApproved := ok && prov.approved
 		c := Call{RunID: runID, Step: step, CallID: call.ID, Name: call.Name, Approved: isApproved}
+		if keys != nil {
+			c.IdempotencyKey = keys(c)
+		}
+		if c.IdempotencyKey == "" {
+			c.IdempotencyKey = defaultIdempotencyKey(runID, call.ID)
+		}
 		wg.Add(1)
 		inflight.Add(1)
 		go func() {
@@ -1345,6 +1351,9 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			defer func() { <-sem }()
 			n := nestFor(call)
 			callCtx := withNest(withCall(ctx, c), n)
+			if dispatch != nil {
+				callCtx = withDispatch(callCtx, dispatch)
+			}
 			// The tool call's own reporting: one execute_tool span, on the
 			// handler's context — a span the handler starts is its child,
 			// and a child run's invoke_agent hangs under it — ended with
@@ -1455,7 +1464,7 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 			approved = append(approved, c)
 		}
 	}
-	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil)
+	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch)
 	byID := make(map[string]ToolResultPart, len(ran))
 	for _, r := range ran {
 		byID[r.CallID] = r
@@ -1760,6 +1769,17 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 					mark.park(by)
 				}
 				return "", fmt.Errorf("%w: tool %q", ErrApprovalRequired, call.Name)
+			}
+		}
+		// The dispatch gate (BeforeDispatch): the last word before the
+		// handler runs, past every middleware and the approval
+		// boundary. It is cleared from the handler's context, so a
+		// child run or a CallTool inside the handler never inherits it.
+		if gate := dispatchFrom(ctx); gate != nil {
+			ctx = withDispatch(ctx, nil)
+			c, _ := CallFromContext(ctx)
+			if err := gate(ctx, c, def); err != nil {
+				return "", fmt.Errorf("%w: %w", ErrNotDispatched, err)
 			}
 		}
 		if mark == nil {

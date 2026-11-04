@@ -781,6 +781,20 @@ type Call struct {
 	// defers calls with ErrApprovalRequired reads it to let the
 	// approved call through.
 	Approved bool
+	// IdempotencyKey identifies this call for the side effects it
+	// causes: pass it to an API that deduplicates (a payment
+	// provider's Idempotency-Key, a database's unique request id) so a
+	// call executed twice — retried after a crash, re-run by a resume —
+	// takes effect once. The loop sets it on every call it executes:
+	// the IdempotencyKeys option's key, else a run-scoped one — 32
+	// lowercase hex digits, the first 128 bits of the SHA-256 of the
+	// run id and the call id, NUL-separated — stable within one run.
+	// Under weft/thread it is stable across crash, restart and resume
+	// (thread.IdempotencyKey). A Subagent's child run has keys of its
+	// own, scoped to the child run: a child re-run after a crash asks
+	// its model again and issues new calls with new keys. Empty
+	// outside the loop.
+	IdempotencyKey string
 }
 
 type callKey struct{}

@@ -1038,7 +1038,7 @@ func TestCallFromContextInsideTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := core.Call{RunID: "run-1", Step: 0, CallID: "call_xyz", Name: "peek"}
+	want := core.Call{RunID: "run-1", Step: 0, CallID: "call_xyz", Name: "peek", IdempotencyKey: core.DefaultIdempotencyKeyForTest("run-1", "call_xyz")}
 	if !ok || got != want {
 		t.Errorf("CallFromContext = %+v (ok=%v), want %+v", got, ok, want)
 	}

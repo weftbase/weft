@@ -14,6 +14,8 @@ module, ADR 0005).
 
 - otel: the default resource carries the build's version-control stamp, `weft.build.vcs.revision` and `weft.build.vcs.modified`, read from `debug.ReadBuildInfo` (nothing when the binary has no stamp). No option and no hashing: a platform that identifies a deployable by its digest stamps it with `otel.Resource` or `OTEL_RESOURCE_ATTRIBUTES`.
 
+- core: the dispatch seam (ADR 0031). `Call.IdempotencyKey` — every call the loop executes carries a key to pass to an API that deduplicates: the `IdempotencyKeys(fn)` run option's, else a run-scoped key (32 hex digits of the SHA-256 of the run id and the call id). `BeforeDispatch(fn)` (`DispatchFunc`) — a gate called right before each call's handler, past the middleware and the approval check; a refusal stops the call with an error result wrapping `ErrNotDispatched`. A `Subagent`'s child run inherits neither. Facade: `weft.IdempotencyKeys`, `weft.BeforeDispatch`, `weft.DispatchFunc`, `weft.ErrNotDispatched`.
+
 ### Changed
 
 - thread: a parked request (`ApprovalRequestEntry.Run`) and a queued receipt (`ReceiptEntry.Run`) record the session's run metadata beside the send's own, so the resume or the restored send runs under the labels it was started with — the recorded pairs winning over the reopening Session's, as the parked settings already did. Before, only the send's own pairs were recorded and a reopen by a process with other run metadata lost them.

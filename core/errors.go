@@ -90,6 +90,12 @@ var (
 	// the call on RunResult.Pending; resume with Approve or Deny.
 	ErrApprovalRequired = errors.New("weft: tool call requires approval")
 
+	// ErrNotDispatched is the cause on the error result of a call whose
+	// dispatch gate (BeforeDispatch) refused it: the handler never ran.
+	// weft/thread refuses a call that is not ReplaySafe when the step
+	// entry holding it is not durable.
+	ErrNotDispatched = errors.New("weft: tool call not dispatched")
+
 	// ErrApprovalDenied is the cause on the error result the model sees
 	// for a pending call that was denied (Deny, or no decision on
 	// resume). It is a tool error — data — never a run error.

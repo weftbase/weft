@@ -47,6 +47,13 @@ type runConfig struct {
 	// OnMessages; the loop calls them as messages join the transcript.
 	// Empty on an ordinary run, and never inherited by a child.
 	onMessages []func(context.Context, int, []Message)
+	// keys names each executed call's IdempotencyKey (IdempotencyKeys);
+	// nil means the run-scoped key (defaultIdempotencyKey). Never
+	// inherited by a child run.
+	keys func(Call) string
+	// dispatch is BeforeDispatch's gate; nil on an ordinary run, never
+	// inherited by a child run.
+	dispatch DispatchFunc
 	// metadata is the run's own caller pairs, merged across its Metadata
 	// options (later key winning); execute overlays it on the context's
 	// inherited metadata before any span starts (metadata.go).
@@ -597,6 +604,84 @@ func (o onMessagesOption) applyRun(c *runConfig) {
 // join.
 func OnMessages(fn func(ctx context.Context, step int, msgs []Message)) RunOption {
 	return onMessagesOption{fn}
+}
+
+type idempotencyKeysOption struct{ fn func(Call) string }
+
+func (o idempotencyKeysOption) applyRun(c *runConfig) {
+	if o.fn != nil {
+		c.keys = o.fn
+	}
+}
+
+// IdempotencyKeys returns the RunOption naming each tool call's
+// Call.IdempotencyKey. The loop calls fn once per call it is about to
+// execute — an ordinary step's and an approved call a resume runs —
+// with the Call as the handler will see it (IdempotencyKey still
+// empty), before the tool's middleware chain starts; a non-empty
+// result is the key the middleware and the handler read, an empty one
+// falls back to the run-scoped key (Call.IdempotencyKey). Calls are
+// made on the dispatching goroutine, in call order; fn must be fast and
+// safe for concurrent use with the run's other observers. weft/thread
+// passes it on every turn, so a session's key is recovery-stable: the
+// same call keeps its key across a crash, a restart and the resume
+// that runs it. A Subagent's child run does not inherit it: its calls
+// carry run-scoped keys, so a ReplayKeyed tool inside a Subagent is
+// recovery-stable only within one child run. The last option wins
+// (ADR 0031, the dispatch seam).
+func IdempotencyKeys(fn func(c Call) string) RunOption { return idempotencyKeysOption{fn} }
+
+// DispatchFunc is the gate BeforeDispatch installs: called right
+// before a tool call's handler runs, with the Call the handler will
+// see (its IdempotencyKey set) and the tool's definition. It answers
+// one question — may this call start now? — and does nothing else the
+// loop knows of: nil lets the call run; a non-nil error stops it, the
+// handler never runs, and the model sees an error result wrapping
+// ErrNotDispatched and the gate's error.
+type DispatchFunc func(ctx context.Context, c Call, def *ToolDef) error
+
+type dispatchOption struct{ fn DispatchFunc }
+
+func (o dispatchOption) applyRun(c *runConfig) {
+	if o.fn != nil {
+		c.dispatch = o.fn
+	}
+}
+
+// BeforeDispatch returns the RunOption installing fn as the run's
+// dispatch gate (ADR 0031): the loop calls it for every call about to
+// execute — past the agent's and the tool's middleware and the
+// approval boundary, so a parked call is never gated, immediately
+// before the arguments are decoded and the handler runs — on the
+// call's goroutine. It is a gate, not a hook to do work in: fail
+// closed when a precondition of starting a side effect does not hold.
+// weft/thread's gate refuses a call that is not ReplaySafe unless the
+// step entry holding it is durable, so a crash never leaves a side
+// effect the session file does not show was issued. A middleware that
+// calls next more than once passes the gate once per attempt. Neither
+// a Subagent's child run nor a CallTool from inside the handler
+// inherits it. The last option wins.
+func BeforeDispatch(fn DispatchFunc) RunOption { return dispatchOption{fn} }
+
+type dispatchKey struct{}
+
+func withDispatch(ctx context.Context, fn DispatchFunc) context.Context {
+	return context.WithValue(ctx, dispatchKey{}, fn)
+}
+
+func dispatchFrom(ctx context.Context) DispatchFunc {
+	fn, _ := ctx.Value(dispatchKey{}).(DispatchFunc)
+	return fn
+}
+
+// defaultIdempotencyKey is the key a call carries when no
+// IdempotencyKeys option names one (Call.IdempotencyKey documents the
+// format). Stable for one run; a call resumed by another run (an
+// approval resume) gets another unless the caller names its own —
+// weft/thread does.
+func defaultIdempotencyKey(runID, callID string) string {
+	h := sha256.Sum256([]byte(runID + "\x00" + callID))
+	return hex.EncodeToString(h[:16])
 }
 
 // newRunID returns a random 128-bit hex identifier.

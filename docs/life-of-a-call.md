@@ -71,6 +71,9 @@ slot acquisition (Parallelism(n); Sequential() = one at a time;
 ToolStart (Seq assigned under the ordering lock)
         │
         ▼
+Call.IdempotencyKey set (IdempotencyKeys' name, else the run-scoped key)
+        │
+        ▼
 ── containment boundary: panics and Timeout are handled here, outside ──
         │
         ▼
@@ -90,6 +93,7 @@ per-tool WrapTools chain (Tool(..., weft.WrapTools(...)))
 base
   resolve name ─────────── unknown → NO_SUCH_TOOL
   RequireApproval? ──────── not Call.Approved → ErrApprovalRequired → pending
+  BeforeDispatch gate ───── refused → ErrNotDispatched; the handler never runs
   decode (StrictInput) ──── failure → INVALID_INPUT naming the field
   handler ───────────────── string verbatim / JSON; error or *ToolError
         │
@@ -108,6 +112,21 @@ cap: MaxResultBytes (per tool, else per agent) + visible marker
         ▼
 ToolFinish (Seq) → ToolResultPart, in call order, on the step's tool message
 ```
+
+**The idempotency key and the gate** (ADR 0031, the dispatch seam).
+Every call the loop executes carries `Call.IdempotencyKey` (read it with
+`weft.CallFromContext`): pass it to an API that deduplicates (a payment
+provider's `Idempotency-Key`) so a call executed twice takes effect
+once. Without a session it is run-scoped — 32 hex digits of the SHA-256
+of the run id and the call id, stable for one run. Under `weft/thread`
+it is the session's (`thread.IdempotencyKey`): the same call keeps it
+across a crash, a restart, an approval resume and a recovery retry. The
+`BeforeDispatch` gate sits after every middleware and the approval
+check, right before the handler: a parked call never reaches it, and a
+refusal is an error result the model reads. `weft/thread`'s gate
+refuses a call that is not `ReplaySafe` unless the step entry holding
+it is durable. A `Subagent`'s child run inherits neither the key option
+nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.
 The `Subagent` handler calls the child agent's `execute` on the call's

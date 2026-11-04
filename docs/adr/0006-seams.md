@@ -234,3 +234,13 @@ after Wait" (a), and growing `RunResult` into an incremental handle
 internals into the result type. Pinned by `TestOnMessages*` in
 `onmessages_test.go`; the consumer it ships for is `weft/thread`'s
 per-step durability (ADR 0011 §7).
+
+## Note (2026-11-04 — the dispatch phase: keys and a gate; ADR 0031)
+
+Two run options act at the dispatch phase, after both chains and the
+approval check, right before the handler: `IdempotencyKeys(fn)` names
+each call's `Call.IdempotencyKey`, and `BeforeDispatch(fn)` is a gate
+that may refuse the call (`ErrNotDispatched`). Neither is a third
+seam: the key is context decoration read through `CallFromContext`,
+and the gate changes nothing but whether the handler starts. ADR 0031
+records them.

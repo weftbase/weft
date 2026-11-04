@@ -11,3 +11,7 @@ var (
 
 // SourceRel is the manifest's machine-independent source path (U23.1-fix).
 var SourceRel = sourceRel
+
+// DefaultIdempotencyKeyForTest is the run-scoped key a call carries
+// without an IdempotencyKeys option.
+var DefaultIdempotencyKeyForTest = defaultIdempotencyKey

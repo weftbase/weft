@@ -134,6 +134,8 @@ res, err := agt.Generate(ctx, weft.Prompt("Where is order 1234?"))
 //   weft.WithMetadata(ctx, kv)      // the context-carried twin of weft.Metadata: pairs for every run started under ctx, the run option winning
 //   weft.StripContent(ev)           // the one content-shaping table: what a content-off destination receives
 //   weft.SettingsOf(ctx, opts...)   // what a run would run under, as data (RunSettings; .Options() puts it back)
+//   weft.IdempotencyKeys(fn)        // name each call's Call.IdempotencyKey (default: run-scoped); thread passes a recovery-stable one
+//   weft.BeforeDispatch(fn)         // a gate right before each handler (past middleware and approval): an error → ErrNotDispatched result (ADR 0031)
 // A changed run carries weft.override.hash + weft.override.* on its invoke_agent span (the experiment's fingerprint).
 // res.Text(), res.Messages (full transcript), res.Steps, res.Usage, res.ID
 // Cancel with a cause: ctx, cancel := context.WithCancelCause(ctx); cancel(weft.CancelCause("app.shutdown"))
