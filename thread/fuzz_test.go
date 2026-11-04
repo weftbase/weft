@@ -44,7 +44,7 @@ func FuzzDecodeEntry(f *testing.F) {
 		}
 	}
 	f.Add([]byte(`{"type":"approval","id":"e_1"}`))                      // unknown kind
-	f.Add([]byte(`{"type":"message","v":2,"id":"e_1"}`))                 // newer version
+	f.Add([]byte(`{"type":"message","v":7,"id":"e_1"}`))                 // newer version
 	f.Add([]byte(`{"type":"approval_request","v":3,"id":"e_1"}`))        // newer approvals v
 	f.Add([]byte(`{"type":"pool_receipt","v":5,"id":"e_1"}`))            // newer pool v
 	f.Add([]byte(`{"type":"pool_receipt","id":"e_1","status":"weird"}`)) // hostile status

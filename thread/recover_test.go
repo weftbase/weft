@@ -193,11 +193,12 @@ func TestRecoverParksAnUnknownOutcome(t *testing.T) {
 }
 
 // Rules C and E over a mixed step: a ReplaySafe, a ReplayKeyed and a
-// ReplayNever call cut off together. RecoverTurn approves the safe and
-// the keyed call itself — Via "recovery", each beside a "retry" audit
-// step — and parks the never call for a person; the person's approval
-// runs all three, the keyed and the never call under their first
-// keys. Both file backends.
+// ReplayNever call cut off together, all three dispatched. RecoverTurn
+// approves the keyed call itself — Via "recovery", beside a "retry"
+// audit step — answers the safe one "not run again" (a park rule may
+// have held it: the model asks again if it still needs it), and parks
+// the never call for a person; the person's approval runs the keyed
+// and the never call under their first keys. Both file backends.
 func TestRecoverMixedReplayClasses(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
@@ -228,7 +229,7 @@ func TestRecoverMixedReplayClasses(t *testing.T) {
 			if len(p) != 1 || p[0].CallID != "c_mail" || !p[0].Recovery {
 				t.Fatalf("Pending = %+v, want only the ReplayNever call", p)
 			}
-			retries, recoveryApprovals := 0, 0
+			retries, recoveryApprovals, notRerun := 0, 0, 0
 			for _, e := range s.Audit() {
 				switch e := e.(type) {
 				case thread.ApprovalAuditEntry:
@@ -239,10 +240,13 @@ func TestRecoverMixedReplayClasses(t *testing.T) {
 					if e.Via == "recovery" && e.Outcome == thread.OutcomeApprove && e.RequestID != "" {
 						recoveryApprovals++
 					}
+					if e.Via == "recovery" && e.Outcome == thread.OutcomeResolveError && e.CallID == "c_read" {
+						notRerun++
+					}
 				}
 			}
-			if retries != 2 || recoveryApprovals != 2 {
-				t.Fatalf("audit: %d retry steps, %d recovery approvals; want 2 and 2", retries, recoveryApprovals)
+			if retries != 1 || recoveryApprovals != 1 || notRerun != 1 {
+				t.Fatalf("audit: %d retry steps, %d recovery approvals, %d safe calls not re-run; want 1, 1 and 1", retries, recoveryApprovals, notRerun)
 			}
 			rt, err := s.Decide(bg, bound(s, thread.Approve("c_mail")))
 			if err != nil || rt == nil {
@@ -256,8 +260,8 @@ func TestRecoverMixedReplayClasses(t *testing.T) {
 					t.Fatalf("%s keys = %v, want one key twice", tool.name, keys)
 				}
 			}
-			if keys := read.ran(); len(keys) != 2 {
-				t.Fatalf("read ran %d times, want twice", len(keys))
+			if keys := read.ran(); len(keys) != 1 {
+				t.Fatalf("read ran %d times, want once: a cut-off ReplaySafe call is not run again", len(keys))
 			}
 			_ = s.Close(bg)
 		})

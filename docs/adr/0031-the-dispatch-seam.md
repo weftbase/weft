@@ -61,9 +61,11 @@ ADR 0006 says a phase turned into a hook needs an ADR. This is that ADR.
    model reads an error result wrapping `ErrNotDispatched` and the
    gate's error (data, rule 1 — siblings keep running). The gate is
    for preconditions, not work: it is not where a session writes
-   anything. `weft/thread`'s gate is Rule A of crash recovery (ADR
-   0032): a call that is not `ReplaySafe` starts only when the step
-   entry holding it is durable.
+   anything — except `weft/thread`'s, which records the dispatch it is
+   about to allow (ADR 0032's dispatch records). `weft/thread`'s gate
+   is Rule A of crash recovery (ADR 0032): a call that is not
+   `ReplaySafe` starts only when the step entry holding it, and its own
+   dispatch record, are durable.
 4. **Neither is inherited.** A `Subagent`'s child run, and a `CallTool`
    from inside a handler, get neither the key option nor the gate: the
    gate is cleared from the handler's context. A child run's calls carry
@@ -89,6 +91,13 @@ ADR 0006 says a phase turned into a hook needs an ADR. This is that ADR.
   after a crash, and it hid safety state in an opaque custom entry an
   older reader could not see (ADR 0032 has the whole argument). The
   gate's signature stays able to refuse; it is documented as a gate.
+  Amended (2026-11-04, review P0-1): `weft/thread`'s gate does write
+  one record per dispatched call that is not `ReplaySafe` — a typed
+  format-6 `dispatch` audit entry, appended and flushed before the
+  handler runs — because a step entry says which calls were issued,
+  not which started past a park rule or a middleware (ADR 0032,
+  "Dispatch records"). The write is the session's, not the core's:
+  the gate stays the core's only word on dispatch.
 - **A key on the tool result or the transcript.** The key is not model
   input and changes nothing the model sees; it rides the call's context
   only.

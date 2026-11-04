@@ -28,7 +28,8 @@ import (
 const (
 	reasonOutcomeUnknown = "cut off: the call may have run; approve to retry it with the same idempotency key, deny to skip it"
 	reasonRetryKeyed     = "cut off: the call deduplicates on its idempotency key and is retried"
-	reasonRetrySafe      = "cut off: the call is ReplaySafe and runs again"
+	reasonSafeNotRerun   = "cut off: the call is ReplaySafe and is not run again; the model may ask for it again"
+	reasonNotStarted     = "cut off before it started: approve to run it, deny to skip it"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
@@ -43,6 +44,13 @@ const (
 	viaReconcile         = "reconcile"
 	reconcileTimeout     = 30 * time.Second
 )
+
+// safeNotRerunResult is the model-visible result of a cut-off
+// ReplaySafe call RecoverTurn does not run again (pinned bytes, ADR
+// 0032).
+func safeNotRerunResult(tool string) string {
+	return fmt.Sprintf("tool call %s was cut off before it answered and was not run again; call it again if you still need its result", tool)
+}
 
 // reconciled is what a tool's Reconcile said of one call (ADR 0032,
 // the ladder's second rung): found with its result, missing, or err.
@@ -150,14 +158,6 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		if entry == "" {
 			return fmt.Errorf("call %q is not in this run's recorded steps", c.CallID)
 		}
-		// Durable, not only appended (WR-1): under a backend that defers
-		// its sync (jsonl's FsyncOnFlush) the step is flushed before a
-		// side effect starts.
-		if f, ok := s.st.(Flusher); ok {
-			if err := f.Flush(ctx, s.header.ID); err != nil {
-				return fmt.Errorf("the step holding call %q is not durable: %w", c.CallID, err)
-			}
-		}
 		// The self-fence (WR-4): the writer still holds the session's
 		// lock, read now — a writer whose lock was broken or taken over
 		// since its step landed starts nothing.
@@ -176,6 +176,23 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 			// The loop named the call before its step was durable: its
 			// key is run-scoped, not the session's.
 			return fmt.Errorf("call %q carries no recovery-stable key", c.CallID)
+		}
+		// Record before acting: the dispatch is on file and, with the
+		// step before it, flushed (WR-1: under a backend that defers its
+		// sync, jsonl's FsyncOnFlush) before the handler runs. After a
+		// crash a call of a step that records its dispatches and has no
+		// record never started — a call a park rule or a middleware
+		// parked is never mistaken for one that may have run (ADR 0032).
+		if err := s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
+			return ApprovalAuditEntry{ID: id, ParentID: parent, Created: created,
+				CallID: c.CallID, Step: StepDispatch, RunID: c.RunID}
+		}); err != nil {
+			return fmt.Errorf("the dispatch of call %q is not recorded: %w", c.CallID, err)
+		}
+		if f, ok := s.st.(Flusher); ok {
+			if err := f.Flush(ctx, s.header.ID); err != nil {
+				return fmt.Errorf("the dispatch of call %q is not durable: %w", c.CallID, err)
+			}
 		}
 		sp.started[entry+"\x00"+c.CallID] = true
 		t.mu.Lock()
@@ -324,12 +341,55 @@ func (s *Session) replayOfLocked(name string) core.ReplayPolicy {
 	return core.ReplayNever
 }
 
+// callStart is what the file says of whether a cut-off call started.
+type callStart int
+
+const (
+	// startUnknowable: the step holding the call predates dispatch
+	// records (DispatchRecorded unset). It may have run, and whether a
+	// park rule or a middleware held it is not knowable: nothing
+	// automatic may run it.
+	startUnknowable callStart = iota
+	// startNever: the step records its dispatches and holds none for
+	// the call under the cut-off run — it never started (a park rule,
+	// a middleware or the approval boundary held it, or the crash came
+	// first).
+	startNever
+	// startMaybe: its dispatch is recorded — it may have run.
+	startMaybe
+)
+
+// callStartLocked reads what the file says of c's start in the cut-off
+// run x: the step entry holding it, and the dispatch records after it
+// under x's run. Callers hold s.mu.
+func (s *Session) callStartLocked(x cutOff, c core.ToolCallPart) callStart {
+	entry := x.ownEntry
+	if !x.own {
+		entry = s.callEntryLocked(c.ID)
+	}
+	i, ok := s.byID[entry]
+	if !ok {
+		return startUnknowable
+	}
+	if me, ok := s.order[i].(MessageEntry); !ok || !me.DispatchRecorded {
+		return startUnknowable
+	}
+	for _, e := range s.order[i+1:] {
+		if a, ok := e.(ApprovalAuditEntry); ok && a.Step == StepDispatch && a.CallID == c.ID && a.RunID == x.run {
+			return startMaybe
+		}
+	}
+	return startNever
+}
+
 // unknownLocked returns the cut-off run's calls whose outcome is
 // unknown (rule B): calls that are not ReplaySafe, without a result,
-// that the run may have started — its own step's calls, except those
-// its tool's RequireApproval parks before they start; for a resume,
-// the boundary's calls approved to run. A call delegating to a pool
-// child is the pool's to settle. Callers hold s.mu.
+// that the run may have started — its own step's calls whose dispatch
+// is recorded (or, in a step from before dispatch records, every one
+// its tool's RequireApproval does not park); for a resume, the
+// boundary's calls approved to run, except those whose step records
+// that they never started. A call delegating to a pool child is the
+// pool's to settle. Callers hold s.mu.
 func (s *Session) unknownLocked(x cutOff) []core.ToolCallPart {
 	if len(x.calls) == 0 {
 		return nil
@@ -347,8 +407,12 @@ func (s *Session) unknownLocked(x cutOff) []core.ToolCallPart {
 			// settles it (ADR 0022 §7).
 			continue
 		}
+		start := s.callStartLocked(x, c)
+		if start == startNever {
+			continue // never started: its handler never ran
+		}
 		if x.own {
-			if def != nil && def.RequiresApproval() {
+			if start == startUnknowable && def != nil && def.RequiresApproval() {
 				continue // parked before it could start
 			}
 		} else {
@@ -396,28 +460,41 @@ func (s *Session) errRecoveryRequiredLocked() error {
 //     before its assistant message, which stays on its own line — and a
 //     continuation run asks the model again.
 //   - Otherwise each unanswered call parks under the cut-off run, its
-//     outcome stated in the request's Reason: a call that is not
-//     ReplaySafe parks as a recovery request (Request.Recovery) — a
-//     core.ReplayKeyed one approved at once by the session (Via
-//     "recovery", a "retry" audit step), to run again with its same
-//     IdempotencyKey; a core.ReplayNever one waiting for a person to
-//     approve (retry, same key) or deny (skip) it. A ReplaySafe call
-//     beside them is approved at once; a call whose tool requires
-//     approval parks as an ordinary request — it never started. When
-//     that decides every call, the resume starts and is returned; else
+//     outcome stated in the request's Reason. What the file says of
+//     its start decides how. The step entry records its dispatches
+//     (MessageEntry.DispatchRecorded, a StepDispatch audit entry per
+//     call the gate let start, written before the handler ran), so a
+//     call with no record never started — a park rule (ParkSource,
+//     ParkOn, ParkAllExcept), a middleware or its tool's own approval
+//     held it, or the crash came first: it parks as an ordinary
+//     request for a person, never run on the session's own say. A
+//     call whose dispatch is recorded may have run: it parks as a
+//     recovery request (Request.Recovery) — a core.ReplayKeyed one
+//     approved at once by the session (Via "recovery", a "retry" audit
+//     step), to run again with its same IdempotencyKey; a
+//     core.ReplayNever one asks its tool's
+//     Reconcile, else waits for a person to approve (retry, same key)
+//     or deny (skip) it. A ReplaySafe call beside them is not run
+//     again: its result says so, and the model may ask again. In a
+//     step written before dispatch records, where whether a call was
+//     parked is not knowable, nothing runs on the session's own say:
+//     every call that may have run waits for a person. When that
+//     decides every call, the resume starts and is returned; else
 //     RecoverTurn returns nil and the boundary waits.
 //   - A resume run cut off before its results landed: the boundary's
-//     calls that were approved and are not ReplaySafe park again as
-//     recovery requests, as above; the rest keep their decisions; the
-//     resume starts again once all are decided.
+//     approved calls whose dispatch is recorded (or, before dispatch
+//     records, every approved one) and are not ReplaySafe park again
+//     as recovery requests, as above; the rest keep their decisions;
+//     the resume starts again once all are decided.
 //   - The run had answered and only its end was lost: the turn entry
 //     is written and nothing runs (nil).
 //
 // A Send's own run options do not survive a crash: a continuation runs
 // under the session's run metadata and the boundary's recorded
-// settings, not under a per-Send park rule. A gate that must hold after
-// a crash belongs on the tool (RequireApproval) or the agent
-// (ParkSource).
+// settings, not under a per-Send park rule. A call that rule parked
+// never started and parks again as an ordinary request; a call the
+// model asks for in a continuation is held only by the agent's own
+// gates (RequireApproval, ParkSource, middleware).
 //
 // RecoverTurn is an explicit start, like Resume: it starts its run
 // under OnReady too. It fails with ErrNotPending when no turn was cut
@@ -565,15 +642,27 @@ func (s *Session) recoverContinueLocked(ctx, persist context.Context, x cutOff) 
 	return t, nil
 }
 
-// recoveryEntries parks one cut-off call (rules B–E): its request —
-// a recovery request unless the tool's own approval gate parks it,
-// which never started — and, for a call safe to run again (ReplaySafe,
-// or ReplayKeyed: it deduplicates on its unchanged key), the session's
-// own approval with its "retry" audit step. args are the arguments the
-// call runs on; quorum the approvals a person's retry needs; ownStep
-// says the call is the cut-off run's own step's, not an approved
-// boundary call a resume was running. Callers hold s.mu.
-func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, ownStep bool, rc map[string]reconciled) []Entry {
+// recoveryEntries parks one cut-off call (rules B–E). start is what
+// the file says of its start:
+//
+//   - startNever: an ordinary request — it never started, and a park
+//     rule, a middleware or its tool's own gate may have held it, so
+//     only a person runs it;
+//   - a ReplaySafe call: not run again — the session resolves it with
+//     a result saying so, and the model may ask for it again (a park
+//     rule that held it holds it again then);
+//   - startUnknowable (a step from before dispatch records): a
+//     recovery request for a person, whatever the replay class —
+//     nothing automatic runs a call that may have been parked; only a
+//     system of record's "found" resolves it;
+//   - startMaybe: the ladder — a ReplayKeyed call is retried by the
+//     session under its unchanged key ("retry" audit step, Via
+//     "recovery"), a ReplayNever one asks its Reconcile answer (rc)
+//     and else waits for a person.
+//
+// args are the arguments the call runs on; quorum the approvals a
+// person's retry needs. Callers hold s.mu.
+func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, start callStart, rc map[string]reconciled) []Entry {
 	def := s.toolLocked(c.Name)
 	policy := core.ReplayNever
 	if def != nil {
@@ -585,46 +674,62 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 		Quorum: quorum, Recovery: true,
 	}
 	switch {
-	case ownStep && def != nil && def.RequiresApproval():
+	case policy == core.ReplaySafe:
+		req.Reason = reasonSafeNotRerun
+		return []Entry{req,
+			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeResolveError, Content: safeNotRerunResult(c.Name),
+				Who: "thread", Via: viaRecovery, RunID: run, ArgsSHA256: hashArgs(args)},
+		}
+	case start == startNever:
+		// It never started: whatever held it — its tool's own gate, a
+		// park rule, a middleware — a person decides it, as any call.
+		req.Recovery, req.Reason = false, reasonNotStarted
+		if def != nil && def.RequiresApproval() {
+			req.Reason = parkingReason(s, c.Name)
+		}
+		return []Entry{req}
+	case start == startUnknowable && def != nil && def.RequiresApproval():
 		// Its tool parks it before it starts: it never ran.
 		req.Recovery, req.Reason = false, parkingReason(s, c.Name)
 		return []Entry{req}
-	case policy == core.ReplaySafe:
-		req.Reason = reasonRetrySafe
-	case policy == core.ReplayKeyed:
+	case policy == core.ReplayKeyed && start == startMaybe:
 		req.Reason = reasonRetryKeyed
-	default:
-		r, asked := rc[c.ID]
-		switch {
-		case asked && r.err == nil && r.found:
-			// The system of record knows: its result is the call's.
-			req.Reason = reasonReconcileFound
-			return []Entry{req,
-				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileFound, RunID: run},
-				ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeResolve, Content: r.result, Who: "thread", Via: viaReconcile,
-					RunID: run, ArgsSHA256: hashArgs(args)},
-			}
-		case asked && r.err == nil:
-			req.Reason = reasonReconcileMiss
-			return []Entry{req,
-				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
-				ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
-					RunID: run, ArgsSHA256: hashArgs(args)},
-			}
-		case asked:
-			req.Reason = reasonOutcomeUnknown
-			return []Entry{req,
-				ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileError, Detail: r.err.Error(), RunID: run},
-			}
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: recoverRetry, Detail: string(policy), RunID: run},
+			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
+				RunID: run, ArgsSHA256: hashArgs(args)},
 		}
-		req.Reason = reasonOutcomeUnknown
-		return []Entry{req}
 	}
-	return []Entry{req,
-		ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: recoverRetry, Detail: string(policy), RunID: run},
-		ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
-			RunID: run, ArgsSHA256: hashArgs(args)},
+	req.Reason = reasonOutcomeUnknown
+	r, asked := rc[c.ID]
+	switch {
+	case asked && r.err == nil && r.found:
+		// The system of record knows: its result is the call's.
+		req.Reason = reasonReconcileFound
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileFound, RunID: run},
+			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeResolve, Content: r.result, Who: "thread", Via: viaReconcile,
+				RunID: run, ArgsSHA256: hashArgs(args)},
+		}
+	case asked && r.err == nil && start == startMaybe && policy == core.ReplayNever:
+		req.Reason = reasonReconcileMiss
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
+			ApprovalDecisionEntry{CallID: c.ID, Outcome: OutcomeApprove, Who: "thread", Via: viaRecovery,
+				RunID: run, ArgsSHA256: hashArgs(args)},
+		}
+	case asked && r.err == nil:
+		// Missing, but whether a park rule held it is not knowable: a
+		// person decides.
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileMissing, RunID: run},
+		}
+	case asked:
+		return []Entry{req,
+			ApprovalAuditEntry{CallID: c.ID, Step: StepRecover, Outcome: reconcileError, Detail: r.err.Error(), RunID: run},
+		}
 	}
+	return []Entry{req}
 }
 
 // recoverParkLocked parks the cut-off run's own unanswered calls
@@ -633,7 +738,7 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 func (s *Session) recoverParkLocked(ctx, persist context.Context, x cutOff, rc map[string]reconciled) (*Turn, error) {
 	var extra []Entry
 	for _, c := range x.calls {
-		extra = append(extra, s.recoveryEntries(c, x.run, c.Args, nil, s.parkQuorum(), true, rc)...)
+		extra = append(extra, s.recoveryEntries(c, x.run, c.Args, nil, s.parkQuorum(), s.callStartLocked(x, c), rc)...)
 	}
 	if err := s.recordRecoverLocked(persist, x, recoverParked, "", x.calls, extra...); err != nil {
 		return nil, err
@@ -661,7 +766,9 @@ func (s *Session) recoverResumeLocked(ctx, persist context.Context, x cutOff, rc
 			if len(re.Args) > 0 {
 				args = re.Args
 			}
-			extra = append(extra, s.recoveryEntries(c, x.run, args, settings, max(s.parkQuorum(), re.Quorum), false, rc)...)
+			// An approved boundary call: its park status is settled, so a
+			// step from before dispatch records reads as "may have run".
+			extra = append(extra, s.recoveryEntries(c, x.run, args, settings, max(s.parkQuorum(), re.Quorum), startMaybe, rc)...)
 		}
 	}
 	if err := s.recordRecoverLocked(persist, x, outcome, "", unknown, extra...); err != nil {

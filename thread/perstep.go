@@ -67,7 +67,7 @@ type stepPersist struct {
 	// calls maps each call id this attempt may execute to the
 	// assistant entry that holds it: the attempt's own steps' (as they
 	// land), and for a resume the boundary's dangling calls. A call's
-	// idempotency key and dispatch marker name only an entry from here
+	// idempotency key and dispatch record name only an entry from here
 	// — never an older message that reused the call id.
 	calls map[string]string
 	// started holds the calls the dispatch gate let start — not
@@ -209,7 +209,11 @@ func (s *Session) flushStepsLocked(ctx context.Context, sp *stepPersist) error {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, MessageEntry{ID: id, ParentID: parent, Created: now, Message: m})
+		// A step's calls are dispatched only from an entry written here
+		// (sp.calls), and the gate records each dispatch after it: the
+		// entry says so, and a call of it with no record never started.
+		recorded := m.Role == core.RoleAssistant && hasToolCall(m)
+		entries = append(entries, MessageEntry{ID: id, ParentID: parent, Created: now, Message: m, DispatchRecorded: recorded})
 		parent = id
 	}
 	if err := s.st.Append(ctx, s.header.ID, entries...); err != nil {

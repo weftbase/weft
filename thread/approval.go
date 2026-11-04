@@ -58,6 +58,7 @@ const (
 	StepResume   = "resume"   // the boundary's resume run: one entry "started" before the run, one "completed" or "failed" with its end
 	StepSigned   = "signed"   // a signed decision refused; Detail names why, no decision recorded
 	StepRecover  = "recover"  // RecoverTurn: per run, Outcome continued (Detail: the new run), parked, resumed or closed; per call, "retry" (Detail: the replay class) beside the session's own approval
+	StepDispatch = "dispatch" // the dispatch gate let a call that is not ReplaySafe start: appended and flushed before its handler runs (ADR 0032)
 )
 
 // The channels a decision entry's Via names. Decide records "user",
@@ -1075,7 +1076,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			var es []Entry
 			s.locked(func() {
 				rc := s.reconcileLocked(ctx, []core.ToolCallPart{c})
-				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), false, rc)
+				es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, rc)
 			})
 			cr.entries = append(cr.entries, es...)
 			if _, approved := es[len(es)-1].(ApprovalDecisionEntry); !approved {

@@ -34,7 +34,7 @@ func stepAgent(t *testing.T) (*core.Agent, *wefttest.Model) {
 		Text string `json:"text"`
 	}) (string, error) {
 		return "noted: " + in.Text, nil
-	})
+	}, core.Replay(core.ReplaySafe)) // read-only: the appends counted are the steps' own, no dispatch record
 	return core.New(m, note), m
 }
 
@@ -141,11 +141,15 @@ func TestPerStepDurableWhileRunning(t *testing.T) {
 	if report != nil {
 		t.Errorf("a mid-run load reported repairs: %+v", report)
 	}
-	// The prompt, the assistant with its call, and the tool's answer.
-	if len(entries) != 3 {
-		t.Fatalf("%d entries mid-run, want 3 (prompt, assistant, tool)", len(entries))
+	// The prompt, the assistant with its call, the call's dispatch
+	// record, and the tool's answer.
+	if len(entries) != 4 {
+		t.Fatalf("%d entries mid-run, want 4 (prompt, assistant, dispatch, tool)", len(entries))
 	}
-	tool := entries[2].(thread.MessageEntry)
+	if a, ok := entries[2].(thread.ApprovalAuditEntry); !ok || a.Step != thread.StepDispatch {
+		t.Errorf("entry 2 = %+v, want the dispatch record", entries[2])
+	}
+	tool := entries[3].(thread.MessageEntry)
 	if r, ok := tool.Message.Content[0].(core.ToolResultPart); !ok || r.Content != "noted: hi" {
 		t.Errorf("the tool message mid-run: %+v", tool.Message.Content)
 	}

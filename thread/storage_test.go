@@ -48,7 +48,7 @@ func TestMemoryHoldsRawBytes(t *testing.T) {
 	// The unknown kind and the newer version are loud, never a skip.
 	for name, line := range map[string]string{
 		"unknown kind": `{"type":"approval","id":"e_x"}`,
-		"newer v":      `{"type":"message","v":2,"id":"e_x"}`,
+		"newer v":      `{"type":"message","v":7,"id":"e_x"}`,
 	} {
 		if err := inj.Inject(ctx, id, []byte(line+"\n")); err != nil {
 			t.Fatal(err)

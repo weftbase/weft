@@ -236,7 +236,7 @@ func TestReadEveryGolden(t *testing.T) {
 	// One row per format directory: how many goldens it holds. A
 	// directory without a row, or a count that moved, fails here — a
 	// golden is added with its row and never silently lost.
-	counts := map[string]int{"format1": 15, "format2": 13, "format3": 6, "format4": 8, "format5": 1, "format6": 5}
+	counts := map[string]int{"format1": 15, "format2": 13, "format3": 6, "format4": 8, "format5": 1, "format6": 7}
 	dirs, err := filepath.Glob(filepath.Join("testdata", "format*"))
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +425,7 @@ func TestUnmarshalEntryLoud(t *testing.T) {
 		newer bool
 	}{
 		{"unknown kind", `{"type":"approval","id":"e_1"}`, true},
-		{"newer version of a known kind", `{"type":"message","v":2,"id":"e_1"}`, true},
+		{"newer version of a known kind", `{"type":"message","v":7,"id":"e_1"}`, true},
 		{"no type field", `{"id":"e_1"}`, false},
 		{"malformed json", `{"type":"message",`, false},
 		{"not an object", `[]`, false},

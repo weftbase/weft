@@ -40,6 +40,16 @@ type MessageEntry struct {
 	// end never lands, and a reopened session never mints it again.
 	// Empty on every other message entry.
 	RunID string `json:"run_id,omitempty"`
+	// DispatchRecorded marks an assistant entry holding tool calls
+	// whose dispatches the session records (ADR 0032): every call of
+	// it that is not core.ReplaySafe and that the dispatch gate let
+	// start has a StepDispatch audit entry after it, appended before
+	// its handler ran — so a call with none never started. Set by the
+	// step observer's append; absent on entries written before dispatch
+	// records existed, whose calls' start is not knowable. An entry
+	// carrying it is written with "v":6, so a reader from before
+	// recovery fails loudly on a session whose calls may have started.
+	DispatchRecorded bool `json:"dispatch_recorded,omitempty"`
 }
 
 // TurnEntry is the per-turn ledger: the run's id (<session>-t<n>), its
@@ -863,20 +873,28 @@ const poolReceiptV = 4
 const trimRecordV = 5
 
 // recoveryV is the entry version a cut-off turn entry, a recovery
-// request, an edit decision and an edit's revision request carry on
-// the wire (ADR 0011 §6, ADR 0032, ADR 0021's 2026-11-04 amendment):
+// request, an edit decision, an edit's revision request, a step whose
+// dispatches are recorded and a dispatch record carry on the wire (ADR 0011 §6, ADR 0032, ADR 0021's 2026-11-04 amendment):
 // format 6, so a reader from before it fails loudly on such a session,
 // instead of answering a cut-off call with a synthetic result, running
 // a call that may have run, or running an edited call on the model's
 // original arguments.
 const recoveryV = 6
 
-// MarshalJSON encodes the entry with its "type" discriminator.
+// MarshalJSON encodes the entry with its "type" discriminator. A step
+// whose dispatches are recorded (DispatchRecorded) carries "v":6, its
+// minimum reader version; every other message entry is a format-1
+// line with no "v".
 func (e MessageEntry) MarshalJSON() ([]byte, error) {
+	v := 0
+	if e.DispatchRecorded {
+		v = recoveryV
+	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
+		V    int    `json:"v,omitempty"`
 		messageEntryWire
-	}{kindMessage, messageEntryWire(e)})
+	}{kindMessage, v, messageEntryWire(e)})
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator. A
@@ -992,13 +1010,18 @@ func (e ApprovalDecisionEntry) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator and
-// "v":2.
+// "v":2 — "v":6 on a dispatch record (StepDispatch), so a reader from
+// before recovery refuses a session whose call may have started.
 func (e ApprovalAuditEntry) MarshalJSON() ([]byte, error) {
+	v := approvalEntryV
+	if e.Step == StepDispatch {
+		v = recoveryV
+	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
 		V    int    `json:"v"`
 		approvalAuditEntryWire
-	}{kindApprovalAudit, approvalEntryV, approvalAuditEntryWire(e)})
+	}{kindApprovalAudit, v, approvalAuditEntryWire(e)})
 }
 
 // MarshalJSON encodes the entry with its "type" discriminator and
@@ -1053,9 +1076,12 @@ func (e PoolReceiptEntry) MarshalJSON() ([]byte, error) {
 // fails loudly (UnmarshalEntry) instead of guessing.
 func kindVersion(kind string) (int, bool) {
 	switch kind {
-	case kindMessage, kindBranchSummary,
+	case kindBranchSummary,
 		kindLeaf, kindLabel, kindInfo, kindCustom, kindCustomMessage:
 		return 1, true
+	case kindMessage:
+		// Born in format 1; read up to the dispatch-recorded step's version.
+		return recoveryV, true
 	case kindTurn:
 		// Born in format 1; read up to the cut-off turn's version.
 		return recoveryV, true
@@ -1068,7 +1094,10 @@ func kindVersion(kind string) (int, bool) {
 	case kindApprovalDecision:
 		// Born in format 2; read up to the edit's version.
 		return recoveryV, true
-	case kindApprovalAudit, kindGrant, kindGrantRevoked:
+	case kindApprovalAudit:
+		// Born in format 2; read up to the dispatch record's version.
+		return recoveryV, true
+	case kindGrant, kindGrantRevoked:
 		return approvalEntryV, true
 	case kindReceipt:
 		return receiptEntryV, true

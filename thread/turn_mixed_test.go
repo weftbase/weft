@@ -278,8 +278,9 @@ func TestMixedBatchAcrossReopen(t *testing.T) {
 // order, and the context still equals the resume's transcript.
 func TestMixedBatchResumeSurvivesAFailedAppend(t *testing.T) {
 	// The resume's appends: 1 the decision, 2 the "started" audit entry,
-	// 3 the join, 4 the closing assistant message, 5 the turn's end.
-	for nth := 3; nth <= 4; nth++ {
+	// 3 the approved call's dispatch record, 4 the join, 5 the closing
+	// assistant message, 6 the turn's end.
+	for nth := 4; nth <= 5; nth++ {
 		t.Run(fmt.Sprintf("append_%d", nth), func(t *testing.T) {
 			ctx := context.Background()
 			st := &failNthAppend{Storage: thread.Memory()}

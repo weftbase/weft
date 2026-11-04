@@ -48,6 +48,15 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 		{"approval_decision_cosigners.json", thread.ApprovalDecisionEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6E", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D", Created: ts,
 			CallID: "call_1", Outcome: thread.OutcomeApprove, Who: "weftbase", Via: "signed", RunID: "s_1-t1", RequestID: "e_01J8X9M2K7QW4R5N8T6V2B3C6D",
 			Cosigners: []string{"usr_alice", "usr_carol"}}, `"type":"approval_decision","v":2,`},
+		// Dispatch records (ADR 0032): a step that records its
+		// dispatches and each dispatch record carry "v":6, so a 0.21
+		// reader — which would answer a dangling call "interrupted" and
+		// let the model ask for it again — refuses a session whose call
+		// may have started.
+		{"message_dispatch_recorded.json", thread.MessageEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6F", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C5Z", Created: ts,
+			Message: core.Message{Role: core.RoleAssistant, Content: []core.Part{call}}, DispatchRecorded: true}, `"type":"message","v":6,`},
+		{"approval_audit_dispatch.json", thread.ApprovalAuditEntry{ID: "e_01J8X9M2K7QW4R5N8T6V2B3C6G", ParentID: "e_01J8X9M2K7QW4R5N8T6V2B3C6F", Created: ts,
+			CallID: "call_1", Step: thread.StepDispatch, RunID: "s_1-t1"}, `"type":"approval_audit","v":6,`},
 	}
 	for _, c := range cases {
 		b, err := json.Marshal(c.e)
@@ -78,6 +87,14 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 	plain, _ := json.Marshal(thread.TurnEntry{ID: "e_x", RunID: "s_1-t2"})
 	if bytes.Contains(plain, []byte(`"v"`)) {
 		t.Errorf("a plain turn entry carries a version: %s", plain)
+	}
+	msg, _ := json.Marshal(thread.MessageEntry{ID: "e_z", Message: core.User("hi")})
+	if bytes.Contains(msg, []byte(`"v"`)) {
+		t.Errorf("a plain message entry carries a version: %s", msg)
+	}
+	audit, _ := json.Marshal(thread.ApprovalAuditEntry{ID: "e_w", Step: thread.StepPark})
+	if !bytes.Contains(audit, []byte(`"v":2,`)) {
+		t.Errorf("a plain audit entry = %s, want v 2", audit)
 	}
 	req, _ := json.Marshal(thread.ApprovalRequestEntry{ID: "e_y", CallID: "c", Tool: "t", RunID: "r"})
 	if !bytes.Contains(req, []byte(`"v":2,`)) {

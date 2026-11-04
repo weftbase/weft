@@ -32,6 +32,13 @@ entry) before every call that is not `ReplaySafe`. It was dropped:
   not see — that reader would resume the session and run the call
   again — and that application code could forge.
 
+The first argument proved wrong (review P0-1): "issued" is not
+"started" when a park rule or a middleware holds one call of a step
+and lets its sibling run. The record came back as a typed, format-6
+`dispatch` audit entry — see "Dispatch records" below — which answers
+the other two objections: it is a kind a 0.21 reader refuses, not an
+opaque custom entry, and the cost buys a guarantee.
+
 ## Decision
 
 **Rule A — no side effect without its step on file.** Every turn carries
@@ -46,11 +53,36 @@ append guarantee (`FsyncOnFlush` for jsonl's power-loss case). A
 resume's calls sit in the boundary's entry, already on file.
 
 **Rule B — outcome unknown.** After a crash, a call that is not
-`ReplaySafe` and has no recorded result has an unknown outcome: it may
-have run. That is a run's own last step's calls (except those its
-tool's `RequireApproval` parks before they start), and a resume run's
-boundary calls approved to run. A call delegating to a `thread/pool`
-child is the pool's to settle (its child session holds the outcome).
+`ReplaySafe` and has no recorded result has an unknown outcome when it
+may have run: its dispatch is recorded (below). That is a run's own
+last step's calls the gate let start, and a resume run's boundary
+calls approved to run and dispatched. A call delegating to a
+`thread/pool` child is the pool's to settle (its child session holds
+the outcome).
+
+**Dispatch records (amended 2026-11-04, review P0-1).** A step entry
+says which calls were *issued*, not which *started*: in one step a
+call can run while a sibling is held by the agent's `ParkSource`, a
+`ParkOn`/`ParkAllExcept` rule or a middleware's `ErrApprovalRequired`
+— none of which survives a crash (a per-Send rule is lost, a
+middleware's decision was never written). Recovery that read every
+issued call as "may have run" retried a parked `ReplayKeyed` call on
+the session's own approval: it ran with nobody's. So the gate records
+before acting: after the step is on file and the fence holds, it
+appends an `approval_audit` entry with step `dispatch` (CallID, RunID)
+and flushes, then lets the handler run; a failed append or flush fails
+the call closed. The step entry carries `dispatch_recorded`. A call of
+such a step with no dispatch record under the cut-off run never
+started: it parks as an **ordinary** request (`cut off before it
+started: approve to run it, deny to skip it`, or the tool's own
+`tool requires approval`), for a person. A step written before
+dispatch records (no `dispatch_recorded`) is not knowable: nothing
+automatic runs its calls — every one that may have run is a recovery
+request for a person, a `ReplayKeyed` one included, and a Reconcile
+"missing" is recorded but approves nothing. This costs one append per
+call that is not `ReplaySafe` (the first design's cost, now bought
+for a guarantee rather than for precision); `ReplaySafe` calls are not
+recorded.
 
 **The cut-off run.** The last run started on the leaf's path — a
 prompt's run id, a resume's `started` audit, a recovery's continuation,
@@ -80,15 +112,20 @@ atomic append ending with a `recover` audit entry:
 | after its final answer, before its end | writes the end; runs nothing |
 
 **Rule C — keyed retries, never parks.** A cut-off `ReplayKeyed` call
-is retried by the session on its own: a recovery request and the
-session's own approval (Via `recovery`, Who `thread`), so it runs again
-with its same idempotency key — a deduplicating receiver applies it
-once. A `ReplaySafe` call beside it is approved the same way. A
-`ReplayNever` call parks as a **recovery request**
-(`ApprovalRequestEntry.Recovery`, `Request.Recovery`) for a person. A
-call whose tool requires approval parks as an ordinary request (it never
-started). The session's own recovery approval resolves alone, under any
-quorum: the call was already approved, or is safe to run again.
+whose dispatch is recorded is retried by the session on its own: a
+recovery request and the session's own approval (Via `recovery`, Who
+`thread`), so it runs again with its same idempotency key — a
+deduplicating receiver applies it once. A `ReplaySafe` call beside it
+is not run again — a park rule may have held it, and that is not
+recorded — the session resolves it with the pinned result `tool call X
+was cut off before it answered and was not run again; call it again if
+you still need its result` (Via `recovery`), and the model may ask
+again under the agent's own gates. A `ReplayNever` call parks as a
+**recovery request** (`ApprovalRequestEntry.Recovery`,
+`Request.Recovery`) for a person. A call that never started parks as
+an ordinary request. The session's own recovery approval resolves
+alone, under any quorum: the call was already approved, or deduplicates
+on its key.
 
 **Rule D — retry or skip.** A recovery request is approved — retry the
 call as it ran, same key — or denied or resolved — skip it, or supply
@@ -114,8 +151,13 @@ and runs again`; the turn's `err`
 A dropped step changes the transcript the model sees: its assistant
 message leaves the path (it stays in the file on its own line).
 
-**Format 6.** A cut-off turn entry (`cut_off`) and a recovery request
-(`recovery`) are written with `"v":6`. A reader from before recovery
+**Format 6.** A cut-off turn entry (`cut_off`), a recovery request
+(`recovery`), a step that records its dispatches (`dispatch_recorded`)
+and a dispatch record (step `dispatch`) are written with `"v":6`.
+Every session this version writes a tool step to is therefore refused
+by a 0.21 reader (checked against v0.21.0): a rolling deploy cannot
+hand a crash file to an older worker that would answer a call that may
+have run "interrupted". A reader from before recovery
 fails loudly (`ErrNewerFormat`) on such a session instead of answering
 its cut-off calls with a synthetic result. A session that never
 recovered keeps its old versions.
@@ -131,14 +173,16 @@ any cut-off run.
 
 ## Consequences
 
-- No per-call write: recovery costs nothing until a crash, then one
-  atomic append per recovered session.
+- One append (and flush) per dispatched call that is not `ReplaySafe`
+  — the dispatch record; recovery then costs one atomic append per
+  recovered session.
 - A `Send`'s own run options do not survive a crash: a continuation runs
   under the session's run metadata and the boundary's recorded
-  settings. A middleware's park or a per-Send park rule is not seen
-  after a crash: a cut-off `ReplayKeyed` call is retried with the
-  session's approval. A gate that must hold after a crash belongs on the
-  tool (`RequireApproval`) or the agent (`ParkSource`).
+  settings. A call a per-Send park rule or a middleware held never
+  started, the dispatch records say so, and it parks as an ordinary
+  request for a person; a call the model asks for in a continuation is
+  held only by the agent's own gates (`RequireApproval`, `ParkSource`,
+  middleware).
 - A turn whose end could not be written in the same process (a panic in
   the writer) reads as cut off too: its call's result is not on file.
 - Across hosts the lease is the arbiter: recovery on another host needs

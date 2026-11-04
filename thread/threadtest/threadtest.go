@@ -1174,7 +1174,7 @@ func corrupt(open func(t *testing.T) thread.Storage) func(*testing.T) {
 
 		t.Run("NewerVIsNewerFormat", func(t *testing.T) {
 			mk(t, "s_c_newer")
-			if err := inj.Inject(ctx(), "s_c_newer", []byte(`{"type":"message","v":2,"id":"e_x"}`+"\n")); err != nil {
+			if err := inj.Inject(ctx(), "s_c_newer", []byte(`{"type":"message","v":7,"id":"e_x"}`+"\n")); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, _, err := st.Load(ctx(), "s_c_newer"); !errors.Is(err, thread.ErrNewerFormat) {

@@ -705,7 +705,7 @@ func matrixNote() *core.ToolDef {
 		Text string `json:"text"`
 	}) (string, error) {
 		return "noted: " + in.Text, nil
-	})
+	}, core.Replay(core.ReplaySafe)) // read-only: the matrix's write points are the session's, no dispatch record
 }
 
 // openMatrixSession reopens id under the matrix's follow-up agent and

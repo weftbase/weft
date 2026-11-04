@@ -125,7 +125,9 @@ across a crash, a restart, an approval resume and a recovery retry. The
 check, right before the handler: a parked call never reaches it, and a
 refusal is an error result the model reads. `weft/thread`'s gate
 refuses a call that is not `ReplaySafe` unless the step entry holding
-it is durable. A `Subagent`'s child run inherits neither the key option
+it is durable, and records the dispatch (a format-6 `dispatch` audit
+entry, flushed) before letting it start — after a crash a call with no
+such record never started. A `Subagent`'s child run inherits neither the key option
 nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.
