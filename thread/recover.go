@@ -150,6 +150,14 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		if entry == "" {
 			return fmt.Errorf("call %q is not in this run's recorded steps", c.CallID)
 		}
+		// Durable, not only appended (WR-1): under a backend that defers
+		// its sync (jsonl's FsyncOnFlush) the step is flushed before a
+		// side effect starts.
+		if f, ok := s.st.(Flusher); ok {
+			if err := f.Flush(ctx, s.header.ID); err != nil {
+				return fmt.Errorf("the step holding call %q is not durable: %w", c.CallID, err)
+			}
+		}
 		// The self-fence (WR-4): the writer still holds the session's
 		// lock, read now — a writer whose lock was broken or taken over
 		// since its step landed starts nothing.

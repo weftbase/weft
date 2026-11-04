@@ -600,6 +600,11 @@ not the numbers themselves.
 
 ## 11. Approvals operations
 
+- **Expiry is the caller's.** weft sets no default request expiry: a
+  request waits until it is decided unless the session was opened with
+  `thread.RequestExpiry(d)` (lazy: a lapsed request is denied — never
+  run — on the next touch). Choose one per deployment; a platform with
+  its own timers (Weftbase) runs without it.
 - **Deciding is bound and idempotent.** Every `Decide` decision names
   the request it answers — `thread.Approve(r.CallID).Bind(r)` sets
   `RequestID` and `ArgsSHA256` from the `Request` shown; an unbound

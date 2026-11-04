@@ -149,6 +149,10 @@ any cut-off run.
 
 ## Amendment (2026-11-04 — never guess at dispatch: WR-4, WR-6)
 
+**Flushed, not only appended (WR-1).** Under a backend that defers
+its sync (jsonl's `FsyncOnFlush`), the gate flushes (`Flusher`) before a
+risky call starts; a failed flush fails the call closed.
+
 **The self-fence (WR-4).** Rule A's gate also asks the storage, with
 no write, whether this writer still holds the session's lock — before
 every call that is not `ReplaySafe`, not once per step: the optional
