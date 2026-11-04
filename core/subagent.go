@@ -304,7 +304,9 @@ type subagentInput struct {
 // awaiting approval is SUBAGENT_PENDING (weft/thread/pool propagates
 // it to the parent session instead, ADR 0022); a child that is already
 // running above this call is refused with SUBAGENT_CYCLE. Subagent
-// panics if child is nil.
+// panics if child is nil, and when opts mark it Replay(ReplayKeyed):
+// its child run's calls carry run-scoped keys, so a retried delegation
+// would not be deduplicated.
 func Subagent(name, description string, child *Agent, opts ...ToolOption) *ToolDef {
 	if child == nil {
 		panic(fmt.Sprintf("weft: Subagent %q called with a nil agent", name))
@@ -343,6 +345,12 @@ func Subagent(name, description string, child *Agent, opts ...ToolOption) *ToolD
 	// same for its schema type).
 	if file, line, fn := callerSource(); file != "" {
 		t.sourceFile, t.sourceLine, t.sourceFunc = file, line, fn
+	}
+	if t.replay == ReplayKeyed {
+		// The child run's calls carry run-scoped keys: a retry of the
+		// delegation asks the child's model again and issues new calls
+		// under new keys, so nothing deduplicates it.
+		panic(fmt.Sprintf("weft: Subagent %q cannot be ReplayKeyed: its child run's calls carry run-scoped keys, so a retried delegation is not deduplicated", name))
 	}
 	t.subagent, t.subagentHash = child.name, child.treeHash
 	if t.origin == "" {

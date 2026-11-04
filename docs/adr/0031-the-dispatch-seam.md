@@ -66,13 +66,27 @@ ADR 0006 says a phase turned into a hook needs an ADR. This is that ADR.
    is Rule A of crash recovery (ADR 0032): a call that is not
    `ReplaySafe` starts only when the step entry holding it, and its own
    dispatch record, are durable.
-4. **Neither is inherited.** A `Subagent`'s child run, and a `CallTool`
-   from inside a handler, get neither the key option nor the gate: the
-   gate is cleared from the handler's context. A child run's calls carry
-   run-scoped keys. Nothing can make them recovery-stable: a child
-   re-run after a crash asks its model again and issues new calls. So
-   `ReplayKeyed` holds for a session's own calls; inside a `Subagent`,
-   the `Subagent` tool's own replay class decides recovery.
+4. **A child run inherits neither; a `CallTool` inherits both, derived
+   (amended 2026-11-04, review P1-5).** A `Subagent`'s child run gets
+   neither the key option nor the gate: the gate is cleared from the
+   handler's context. A child run's calls carry run-scoped keys.
+   Nothing can make them recovery-stable: a child re-run after a crash
+   asks its model again and issues new calls. So `ReplayKeyed` holds for
+   a session's own calls; inside a `Subagent`, the `Subagent` tool's own
+   replay class decides recovery — and `Subagent` panics when marked
+   `ReplayKeyed`, since nothing would deduplicate a retried delegation.
+   A `CallTool` from inside a handler is a call with effects like the
+   loop's own: its key is derived from the dispatching call's key and
+   its 1-based position among that handler's `CallTool` calls (the
+   first 128 bits of the SHA-256 of the two, NUL-separated) — the same
+   on a retry of the outer call that dispatches in the same order, so
+   an inner MCP call carries a key too — and it passes the run's gate,
+   `Call.Outer` naming the dispatching call. `weft/thread`'s gate lets
+   an inner call start only under an outer call it recorded as
+   dispatched (a `ReplaySafe` tool's handler starts no effect) and
+   while the writer holds the session. An inner handler cut off by the
+   run's cancellation before it answered returns an error wrapping
+   `ErrOutcomeUnknown`.
 5. **The last option wins**, for both; a nil function is ignored. A
    middleware that calls `next` more than once passes the gate once per
    attempt (harmless for a gate) and keeps the call's key.

@@ -5587,7 +5587,7 @@ func TestToolFailureKinds(t *testing.T) {
 	}
 	handlerPanics := core.Tool("handler_panics", "Panics.", func(context.Context, struct{}) (string, error) {
 		panic("kaboom")
-	})
+	}, core.Replay(core.ReplaySafe)) // a panic in a tool with effects is an unknown outcome (TestHandlerPanicIsAnUnknownOutcome)
 	mwPanics := core.Tool("mw_panics", "Fine, under a middleware that panics.", func(context.Context, struct{}) (string, error) {
 		return "never", nil
 	}, core.WrapTools(func(next core.ToolCaller) core.ToolCaller {

@@ -1730,7 +1730,16 @@ func deniedResult(reason string) string {
 // dispatching call ran under does not carry over — a RequireApproval
 // tool still returns ErrApprovalRequired, and so does a tool the run's
 // park rule names (ParkOn, ParkAllExcept, an agent ParkSource): the run
-// parks it for the loop, and it parks it for the handler too.
+// parks it for the loop, and it parks it for the handler too. It is a
+// call with effects like the loop's own: it carries an IdempotencyKey
+// derived from the dispatching call's key and its position among that
+// handler's CallTool calls (the same on a retry that dispatches in the
+// same order), passes the run's BeforeDispatch gate (Call.Outer names
+// the dispatching call; a refusal is an error wrapping
+// ErrNotDispatched), and a handler of a tool that is not ReplaySafe
+// cut off by the run's cancellation before it answered returns an
+// error wrapping ErrOutcomeUnknown — return it, and the dispatching
+// call's outcome is unknown too.
 func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error) {
 	tools, err := a.dispatchTools()
 	if err != nil {
@@ -1748,13 +1757,31 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	// in the same run and step. Outside the loop there is no Call, and
 	// none is invented.
 	if outer, ok := CallFromContext(ctx); ok {
-		ctx = withCall(ctx, Call{RunID: outer.RunID, Step: outer.Step, CallID: call.ID, Name: call.Name})
+		inner := Call{RunID: outer.RunID, Step: outer.Step, CallID: call.ID, Name: call.Name, Outer: outer.CallID}
+		if in := innerFrom(ctx); in != nil && in.outer.CallID == outer.CallID {
+			// Keyed from the outer call and its position, and gated like
+			// the loop's own calls: a retry of the outer call that
+			// dispatches in the same order reuses the same keys.
+			inner.IdempotencyKey = innerKey(in.outer.IdempotencyKey, in.n.Add(1))
+			if in.gate != nil {
+				ctx = withDispatch(ctx, in.gate)
+			}
+		}
+		ctx = withCall(ctx, inner)
 	}
 	// The run's park rule (ParkOn, ParkAllExcept, ParkSource) holds for
 	// a call dispatched from inside a handler as it does for the loop's
 	// own: a parked inner call returns an error wrapping
 	// ErrApprovalRequired to the handler, never runs unasked (WR-7).
-	return a.chain(def, strict, parkRuleFrom(ctx), nil, nil)(ctx, call)
+	mark := new(handlerMark)
+	out, err := a.chain(def, strict, parkRuleFrom(ctx), mark, nil)(ctx, call)
+	if err != nil && def != nil && def.ReplayPolicy() != ReplaySafe && mark.wasEntered() &&
+		ctx.Err() != nil && !errors.Is(err, ErrOutcomeUnknown) {
+		// The handler started and the run was cut off under it before
+		// it answered: its effect is unknown, never a plain failure.
+		err = fmt.Errorf("%w: tool %q was cut off before it answered: %w", ErrOutcomeUnknown, call.Name, err)
+	}
+	return out, err
 }
 
 type parkRuleKey struct{}
@@ -1810,13 +1837,21 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 		// The dispatch gate (BeforeDispatch): the last word before the
 		// handler runs, past every middleware and the approval
 		// boundary. It is cleared from the handler's context, so a
-		// child run or a CallTool inside the handler never inherits it.
-		if gate := dispatchFrom(ctx); gate != nil {
+		// child run never inherits it; a CallTool inside the handler
+		// passes it again, as an inner call (innerDispatch).
+		gate := dispatchFrom(ctx)
+		c, inLoop := CallFromContext(ctx)
+		if gate != nil {
 			ctx = withDispatch(ctx, nil)
-			c, _ := CallFromContext(ctx)
 			if err := gate(ctx, c, def); err != nil {
 				return "", fmt.Errorf("%w: %w", ErrNotDispatched, err)
 			}
+		}
+		if inLoop {
+			// A CallTool from inside the handler dispatches under this
+			// call: a key derived from its key and the inner call's
+			// position, through the same gate (P1-5).
+			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate})
 		}
 		if mark == nil {
 			return def.invoke(ctx, call.Args, strict)
@@ -2153,6 +2188,14 @@ func (m *handlerMark) note(p any) {
 	m.mu.Unlock()
 }
 
+// handlerPanicked reports whether the handler itself panicked (note),
+// not a method of the error it returned.
+func (m *handlerMark) handlerPanicked() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.panicked
+}
+
 func (m *handlerMark) enter() {
 	m.mu.Lock()
 	m.entered = true
@@ -2312,9 +2355,10 @@ func capResultN(s string, resultCap int) (string, int) {
 // and the pinned text the model reads for it (ADR 0032, WR-6): a tool
 // that is not ReplaySafe whose handler started and gave no answer of
 // its own — its Timeout passed (the handler is abandoned and may still
-// complete), or the run was canceled under it (a cancel, an interrupt,
-// a close). A failure the handler returned while the run was live is
-// its own answer and keeps its words.
+// complete), the run was canceled under it (a cancel, an interrupt, a
+// close), or it panicked (whatever it did first, it did). A failure the
+// handler returned while the run was live is its own answer and keeps
+// its words.
 func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail toolFailure, mark *handlerMark, timeout time.Duration) (string, bool) {
 	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
 		return "", false
@@ -2324,6 +2368,11 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 	}
 	if ctx.Err() != nil {
 		return fmt.Sprintf("%s: tool %q was cut off before it answered; it may have run; outcome unknown", CodeOutcomeUnknown, call.Name), true
+	}
+	if pe, ok := errors.AsType[*toolPanicError](fail.err); ok && mark.handlerPanicked() {
+		// The handler was entered and panicked: whatever it did before
+		// the panic, it did — the effect is unknown, not failed.
+		return fmt.Sprintf("%s: tool %q panicked before it answered (%v); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, pe.value), true
 	}
 	if errors.Is(fail.err, ErrOutcomeUnknown) {
 		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, fail.text), true

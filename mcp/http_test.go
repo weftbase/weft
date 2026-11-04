@@ -96,3 +96,35 @@ func TestToolsStreamableHTTPErrorKinds(t *testing.T) {
 		t.Errorf("closed session = %q, want mcp_transport", got)
 	}
 }
+
+// Review P2: a tools/call that provably never left the client — the
+// server refused the connection, the arguments did not encode — is a
+// plain failure, not an unknown outcome: nothing can have run. A
+// failure after the request may have been sent stays unknown.
+func TestToolsUnsentCallIsAPlainFailure(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "http", Version: "0"}, nil)
+	addRemoteTool(srv, "pay", false, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "paid"}}}, nil
+	})
+	ts := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil))
+	sess, err := sdk.NewClient(&sdk.Implementation{Name: "c", Version: "0"}, nil).Connect(context.Background(),
+		&sdk.StreamableClientTransport{Endpoint: ts.URL, MaxRetries: -1, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	tools, err := Tools(context.Background(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := tools[0].Invoke(ctx, json.RawMessage(`{"q":`)); err == nil || errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Errorf("arguments that do not encode = %v, want a plain failure", err)
+	}
+	ts.Close() // the server is gone: the next dial is refused
+	_, err = tools[0].Invoke(ctx, json.RawMessage(`{}`))
+	if err == nil || errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Errorf("a refused connection = %v, want a plain failure", err)
+	}
+}

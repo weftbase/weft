@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -367,6 +369,11 @@ func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) fu
 		if trimmed := strings.TrimSpace(string(args)); trimmed == "" || trimmed == "null" {
 			args = json.RawMessage("{}")
 		}
+		if !json.Valid(args) {
+			// The request cannot be encoded: it is never sent, so
+			// nothing ran — a plain failure, not an unknown outcome.
+			return "", &unsentError{err: errors.New("the arguments are not valid JSON")}
+		}
 		params := &sdk.CallToolParams{Name: remoteName, Arguments: args}
 		if sendCaller {
 			params.Meta = callerMeta(ctx)
@@ -398,6 +405,9 @@ func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) fu
 			var rpc *jsonrpc.Error
 			if errors.As(err, &rpc) && !transportCode(rpc.Code) {
 				return "", &rpcError{err: err}
+			}
+			if notSent(err) {
+				return "", &unsentError{err: err}
 			}
 			return "", &transportError{err: err}
 		}
@@ -445,6 +455,30 @@ func (e *transportError) ErrorType() string { return "mcp_transport" }
 // not ReplaySafe is never told "failed" — the loop records it as
 // OUTCOME_UNKNOWN, and a session sends it down its recovery ladder.
 func (e *transportError) Is(target error) bool { return target == core.ErrOutcomeUnknown }
+
+// unsentError is a tools/call that provably never left the client —
+// the server refused the connection, the request could not be encoded:
+// nothing ran, so it is a plain failure, not an unknown outcome. It
+// reads "mcp: <err>" and is error.type mcp_transport, like any call
+// that got no answer.
+type unsentError struct{ err error }
+
+func (e *unsentError) Error() string     { return "mcp: " + e.err.Error() }
+func (e *unsentError) Unwrap() error     { return e.err }
+func (e *unsentError) ErrorType() string { return "mcp_transport" }
+
+// notSent reports whether a tools/call failure provably happened before
+// the request was written: a dial that failed (a refused or unreachable
+// connection — streamable HTTP dials per request). Anything else — a
+// closed session, a dropped stream, a timeout — may have reached the
+// server, and stays an unknown outcome.
+func notSent(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
 
 // transportCode says a JSON-RPC error code is the go-sdk's own word for
 // a transport failure, never a server's answer: ErrRejected (-32005,

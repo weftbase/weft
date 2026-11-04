@@ -239,6 +239,23 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 			}
 			return err
 		}
+		if c.Outer != "" {
+			// A call a handler dispatched with CallTool: the outer call
+			// is what the file and recovery know — its step, its
+			// dispatch record, its key, from which the inner key is
+			// derived. The inner call starts only under an outer call
+			// this gate let start (a ReplaySafe tool's handler starts no
+			// effect), and while the writer still holds the session.
+			if !sp.started[sp.calls[c.Outer]+"\x00"+c.Outer] {
+				return fmt.Errorf("call %q is dispatched from call %q, which this session did not record as dispatched (a ReplaySafe tool starts no effect)", c.CallID, c.Outer)
+			}
+			if f, ok := s.st.(Fencer); ok {
+				if err := f.Fence(ctx, s.header.ID); err != nil {
+					return refuse(fmt.Errorf("the session's lock is not held: %w", err))
+				}
+			}
+			return nil
+		}
 		entry := sp.calls[c.CallID]
 		if entry == "" {
 			if err := s.flushStepsLocked(ctx, sp); err != nil {

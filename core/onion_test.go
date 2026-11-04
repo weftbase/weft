@@ -583,7 +583,7 @@ func TestDeniedSpanNamesItsDecider(t *testing.T) {
 // and a middleware's alike — and nowhere otherwise (ADR 0016's
 // 2026-10-12 amendment parked it behind the switch).
 func TestPanicStackUnderDevDetail(t *testing.T) {
-	boom := core.Tool("boom", "", func(context.Context, struct{}) (string, error) { panic("handler exploded") })
+	boom := core.Tool("boom", "", func(context.Context, struct{}) (string, error) { panic("handler exploded") }, core.Replay(core.ReplaySafe))
 	mwBoom := func(next core.ToolCaller) core.ToolCaller {
 		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
 			if call.Name == "guarded" {

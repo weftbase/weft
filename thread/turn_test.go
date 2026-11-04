@@ -712,7 +712,7 @@ func TestSendToolPanicRecordsTurn(t *testing.T) {
 			),
 			core.Tool("bang", "", func(ctx context.Context, in struct{}) (string, error) {
 				panic("tool blew up")
-			}),
+			}, core.Replay(core.ReplaySafe)), // with effects, a panic is an unknown outcome and parks for the ladder
 		)
 		s, _ := thread.Create(ctx, st, agent)
 		t1, _ := s.Send(ctx, core.User("use the tool"))

@@ -99,6 +99,8 @@ base
         │
         ▼
 ── containment boundary ── panic → "tool X panicked"; Timeout → "timed out"
+                           (not ReplaySafe and the handler started: a
+                           panic, a Timeout or a cancel → OUTCOME_UNKNOWN)
         │
         ▼
 render: *ToolError → "CODE: message"; other error → its text
@@ -127,8 +129,10 @@ refusal is an error result the model reads. `weft/thread`'s gate
 refuses a call that is not `ReplaySafe` unless the step entry holding
 it is durable, and records the dispatch (a format-6 `dispatch` audit
 entry, flushed) before letting it start — after a crash a call with no
-such record never started. A `Subagent`'s child run inherits neither the key option
-nor the gate.
+such record never started. A `CallTool` from inside a handler is
+keyed (from the dispatching call's key and its position) and passes
+the same gate, `Call.Outer` naming the dispatching call. A `Subagent`'s
+child run inherits neither the key option nor the gate.
 
 Where a **subagent's child run** sits: inside the handler line above.
 The `Subagent` handler calls the child agent's `execute` on the call's

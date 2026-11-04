@@ -831,9 +831,19 @@ type Call struct {
 	// Under weft/thread it is stable across crash, restart and resume
 	// (thread.IdempotencyKey). A Subagent's child run has keys of its
 	// own, scoped to the child run: a child re-run after a crash asks
-	// its model again and issues new calls with new keys. Empty
+	// its model again and issues new calls with new keys. A call a
+	// handler dispatches with Agent.CallTool carries a key derived from
+	// its outer call's key and its position among that handler's
+	// CallTool calls (the first 128 bits of the SHA-256 of the outer key
+	// and the 1-based position, NUL-separated, in hex): the same on a
+	// retry of the outer call that dispatches in the same order. Empty
 	// outside the loop.
 	IdempotencyKey string
+	// Outer is the id of the call whose handler dispatched this one
+	// with Agent.CallTool; empty for a call the loop dispatched. A
+	// BeforeDispatch gate sees inner calls too, and tells them apart
+	// by it.
+	Outer string
 }
 
 type callKey struct{}

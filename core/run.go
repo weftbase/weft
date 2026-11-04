@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -723,6 +724,34 @@ func withDispatch(ctx context.Context, fn DispatchFunc) context.Context {
 func dispatchFrom(ctx context.Context) DispatchFunc {
 	fn, _ := ctx.Value(dispatchKey{}).(DispatchFunc)
 	return fn
+}
+
+// innerKey is the key of the n-th (1-based) call a handler dispatches
+// with CallTool, derived from its outer call's key (Call.IdempotencyKey
+// documents the format).
+func innerKey(outer string, n int64) string {
+	h := sha256.Sum256([]byte(outer + "\x00" + strconv.FormatInt(n, 10)))
+	return hex.EncodeToString(h[:16])
+}
+
+// innerDispatch is what a handler's CallTool inherits from the call it
+// serves: that call's key and id, the run's dispatch gate, and the
+// count of calls it has dispatched so far (their positions).
+type innerDispatch struct {
+	outer Call
+	gate  DispatchFunc
+	n     atomic.Int64
+}
+
+type innerKeyCtx struct{}
+
+func withInner(ctx context.Context, in *innerDispatch) context.Context {
+	return context.WithValue(ctx, innerKeyCtx{}, in)
+}
+
+func innerFrom(ctx context.Context) *innerDispatch {
+	in, _ := ctx.Value(innerKeyCtx{}).(*innerDispatch)
+	return in
 }
 
 // defaultIdempotencyKey is the key a call carries when no

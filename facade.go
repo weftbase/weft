@@ -1839,7 +1839,9 @@ func AgentFromContext(ctx context.Context) *Agent { return core.AgentFromContext
 // awaiting approval is SUBAGENT_PENDING (weft/thread/pool propagates
 // it to the parent session instead, ADR 0022); a child that is already
 // running above this call is refused with SUBAGENT_CYCLE. Subagent
-// panics if child is nil.
+// panics if child is nil, and when opts mark it Replay(ReplayKeyed):
+// its child run's calls carry run-scoped keys, so a retried delegation
+// would not be deduplicated.
 func Subagent(name, description string, child *Agent, opts ...ToolOption) *ToolDef {
 	return core.Subagent(name, description, child, opts...)
 }
