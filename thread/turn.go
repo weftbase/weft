@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -1916,9 +1917,9 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	if end.shutdown {
 		// Not abandoned: stopped, and recoverable (RecoverTurn).
 		te.Canceled, te.CutOff = false, true
-		te.Pending = append(te.Pending, unsettled...)
+		te.Pending = appendCallsOnce(te.Pending, unsettled)
 	} else if len(end.unknown) > 0 {
-		te.Pending = append(te.Pending, unsettled...)
+		te.Pending = appendCallsOnce(te.Pending, unsettled)
 	}
 	entries = append(entries, te)
 	parent = te.ID
@@ -2561,11 +2562,14 @@ func cloneMessage(m core.Message) core.Message {
 
 // shutdownTranscriptLocked is a shut-down turn's transcript as it is
 // recorded (ADR 0032): in its last step, the result of every call that
-// is not ReplaySafe and came back as an error — the handler felled by
-// the cancellation, its effect unknown — is taken out of the tool
-// message, so the call stays unanswered for RecoverTurn; a call with no
-// result at all stays so too. The calls left unanswered return.
-// Callers hold s.mu.
+// is not ReplaySafe and that the core marked of unknown outcome (the
+// OUTCOME_UNKNOWN code: the handler felled by the cancellation, its
+// effect unknown) is taken out of the tool message, so the call stays
+// unanswered for RecoverTurn; a call with no result at all — the core
+// parked it under ParkUnknown — stays so too. Any other error result is
+// kept: a handler's own failure is its answer (it ran, and said so), and
+// a refusal before the handler (the gate, a middleware) says it never
+// ran. The calls left unanswered return. Callers hold s.mu.
 func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message, []core.ToolCallPart) {
 	ai := -1
 	for i := len(full) - 1; i >= 0 && ai < 0; i-- {
@@ -2587,7 +2591,7 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 	if ai+1 < len(full) && full[ai+1].Role == core.RoleTool {
 		for _, p := range full[ai+1].Content {
 			r, ok := p.(core.ToolResultPart)
-			if ok && risky[r.CallID] && r.IsError {
+			if ok && risky[r.CallID] && r.IsError && strings.HasPrefix(r.Content, core.CodeOutcomeUnknown+":") {
 				continue // felled mid-call: unknown, not failed
 			}
 			if ok {
@@ -2610,6 +2614,25 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 		out = append(out, core.Message{Role: core.RoleTool, Content: keptResults})
 	}
 	return out, unsettled
+}
+
+// appendCallsOnce returns pending followed by the calls of more it
+// does not already list (by call id), on a fresh slice: a call the core
+// parked as of unknown outcome is on the run's Pending and among the
+// calls the turn leaves unanswered too, and a turn entry lists it once.
+func appendCallsOnce(pending, more []core.ToolCallPart) []core.ToolCallPart {
+	out := slices.Clone(pending)
+	seen := make(map[string]bool, len(out))
+	for _, c := range out {
+		seen[c.ID] = true
+	}
+	for _, c := range more {
+		if !seen[c.ID] {
+			seen[c.ID] = true
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // startedUnanswered returns the calls of a failed run's last step that

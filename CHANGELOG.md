@@ -14,6 +14,11 @@ A wire change: the next release is 0.23.0.
 
 - mcp: the `params._meta` keys drop the old `weftgo` name. `mcp.MetaCaller` is `"ai.weftbase/caller"` (was `"dev.weftgo/caller"`) and `mcp.MetaIdempotencyKey` is `"ai.weftbase/idempotency_key"` (was `"dev.weftgo/idempotency_key"`). weft sends only the new keys. For one release the old names stay readable: `mcp.Serve` (and `AddTools`' tools) read a caller under the new key, falling back to the old one when the new key is absent (the new key wins when both are present), so a 0.22 client stays linked; the old names are exported as `mcp.LegacyMetaCaller` and `mcp.LegacyMetaIdempotencyKey` and go in the next release. weft itself reads no idempotency key: an MCP server that deduplicates on the old `dev.weftgo/idempotency_key` must read `ai.weftbase/idempotency_key` — during the transition read both, the new key first, so 0.22 and 0.23 clients are deduplicated alike.
 
+### Fixed
+
+- thread: a step a shutdown cut off with one call answered and a sibling still running was never recovered. The answered result's tool message sat last on the line and the cut-off check read only the last message, so `Send` was accepted, the unanswered call was offered as an ordinary request and a skip read `DENIED` to the model. The check now looks past a step's partial results: the unanswered call is the cut-off run's own, `Send` is refused with `ErrRecoveryRequired`, and `RecoverTurn` parks it as a recovery request. The turn entry's `pending` lists such a call once (it was listed twice).
+- thread: a shutdown took every error result of a call that is not `ReplaySafe` out of the cut-off step, including a handler's own definite failure (a declined card), so recovery offered a call whose outcome was known as one that "may have run". Only a result the core marked `OUTCOME_UNKNOWN` is taken out now; a handler's own error, and a refusal before the handler ran, stay the call's answer.
+
 ## 0.22.1 — 2026-11-05
 
 Upgrade from 0.22.0 is recommended for anyone whose tools have side effects and a short `Timeout`. No API or format change.

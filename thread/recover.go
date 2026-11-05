@@ -446,11 +446,15 @@ func (s *Session) cutOffLocked() (cutOff, bool) {
 	}
 	x.hasTurn = hasTurn
 
-	// The run's last message on the path, and the calls it left.
+	// The run's last message on the path, and the calls it left. A tool
+	// message after a step is skipped: a step cut off with one call
+	// answered and a sibling unanswered (a shutdown keeps the answered
+	// results, ADR 0032) leaves its partial results last, and the
+	// unanswered calls are still the step's own.
 	lastCalls := -1
 	for j := len(path) - 1; j > x.start; j-- {
 		me, ok := path[j].(MessageEntry)
-		if !ok {
+		if !ok || me.Message.Role == core.RoleTool {
 			continue
 		}
 		if me.Message.Role == core.RoleAssistant {
