@@ -73,9 +73,9 @@ and span ids are lowercase hex (`traceId` 32 digits, `spanId` 16).
   `weft.build.vcs.revision` and `weft.build.vcs.modified` (bool) — the Go
   build's version-control stamp, absent when the binary carries none
   (`go test`, `-buildvcs=false`). weft does not hash the executable: a
-  platform that names a deployable by its digest stamps that itself
-  (Weftbase: `weft.build.digest` through `otel.Resource` or
-  `OTEL_RESOURCE_ATTRIBUTES`). The instrumentation
+  platform that names a deployable by its digest stamps that itself,
+  through `otel.Resource` or `OTEL_RESOURCE_ATTRIBUTES`, under a key
+  of its own. The instrumentation
   scope is `github.com/weftbase/weft/core` with the core's version.
 - Trace and span ids are **correlation, not identity**: they are zero
   without a tracer SDK, and a span the SDK sampled out still has both
