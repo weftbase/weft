@@ -346,6 +346,15 @@ type Session struct {
 	// never called while s.mu is held. nil until an entry point took
 	// one: toolLocked then reads the static set.
 	tools *toolView
+	// cutOffClear says a full cutOffFileLocked found no cut-off run, and
+	// every entry adopted since kept that answer (noteCutOffLocked) —
+	// appended in a line from the leaf, no navigation, no CutOff turn,
+	// no recovery — except for the runs in runsOpen, started since and
+	// not ended by a turn entry yet. While it holds and runsOpen is
+	// empty the file reads as it did: the runner's per-item check costs
+	// nothing instead of a walk of the whole session (R13).
+	cutOffClear bool
+	runsOpen    map[string]bool
 	// orphans are the entries accepted under Salvage whose parent the
 	// file does not hold (a skipped line took it): each is the root of
 	// what survives of its line, and the one place a path may end
@@ -2115,6 +2124,7 @@ func (s *Session) flushLocked(ctx context.Context) error {
 // append order, the id index, and the leaf — a leaf entry moves the
 // leaf to its target, any other entry becomes it.
 func (s *Session) adoptLocked(e Entry) {
+	s.noteCutOffLocked(e)
 	s.order = append(s.order, e)
 	id := idOf(e)
 	if id != "" {

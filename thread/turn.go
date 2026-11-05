@@ -516,6 +516,7 @@ func (s *Session) abandonLocked(ctx context.Context, prev string, receipts ...st
 		}
 	}
 	s.leaf = prev
+	s.cutOffClear = false // the leaf moved back: the next check reads the file
 	if err != nil {
 		s.agent.Logger().Error("thread: a failed send's drop and leaf move not recorded; the file's leaf stays on the failed entry until the next write, and an undropped accepted receipt without a prompt is restored by a reopen",
 			"session", s.header.ID, "receipts", receipts, "err", err)

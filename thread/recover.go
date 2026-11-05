@@ -438,9 +438,75 @@ func (s *Session) cutOffLocked() (cutOff, bool) {
 // send before its prompt — where the last run on the path is the one
 // before it. Callers hold s.mu.
 func (s *Session) cutOffFileLocked() (cutOff, bool) {
+	if s.cutOffClear && len(s.runsOpen) == 0 {
+		// Nothing adopted since the last full read could have cut a
+		// run off (noteCutOffLocked): the answer stands.
+		return cutOff{}, false
+	}
+	x, ok, read := s.readCutOffLocked()
+	if read && !ok {
+		s.cutOffClear, s.runsOpen = true, nil
+	}
+	return x, ok
+}
+
+// noteCutOffLocked keeps cutOffClear honest as e is adopted: a run
+// started (a message of a run, a resume's "started" audit) joins
+// runsOpen until its turn entry ends it — an overflow's re-run joining
+// in its place — and anything else that could change the answer clears
+// the flag, so the next check reads the file: a navigation (a leaf
+// entry, an entry not appended at the leaf), a CutOff turn entry, a
+// recovery audit. Conservative by construction: an entry it does not
+// know never makes a cut-off run read as none. Callers hold s.mu.
+func (s *Session) noteCutOffLocked(e Entry) {
+	if !s.cutOffClear {
+		return
+	}
+	if _, ok := e.(LeafEntry); ok {
+		s.cutOffClear = false
+		return
+	}
+	if idOf(e) != "" && parentOf(e) != s.leaf {
+		s.cutOffClear = false
+		return
+	}
+	open := func(run string) {
+		if s.runsOpen == nil {
+			s.runsOpen = map[string]bool{}
+		}
+		s.runsOpen[run] = true
+	}
+	switch e := e.(type) {
+	case MessageEntry:
+		if e.RunID != "" {
+			open(e.RunID)
+		}
+	case ApprovalAuditEntry:
+		switch {
+		case e.Step == StepResume && e.Outcome == "started":
+			open(e.RunID)
+		case e.Step == StepRecover && e.CallID == "":
+			s.cutOffClear = false
+		}
+	case TurnEntry:
+		if e.CutOff {
+			s.cutOffClear = false
+			return
+		}
+		delete(s.runsOpen, e.RunID)
+		if e.ReRun != "" {
+			open(e.ReRun)
+		}
+	}
+}
+
+// readCutOffLocked is cutOffFileLocked's full read of the file; read
+// is false when the leaf's path could not be walked (no answer to
+// keep). Callers hold s.mu.
+func (s *Session) readCutOffLocked() (_ cutOff, _ bool, read bool) {
 	path, err := s.walkLocked(s.leaf)
 	if err != nil {
-		return cutOff{}, false
+		return cutOff{}, false, false
 	}
 	x := cutOff{start: -1}
 	recovered := map[string]bool{}
@@ -463,7 +529,7 @@ func (s *Session) cutOffFileLocked() (cutOff, bool) {
 		}
 	}
 	if x.run == "" {
-		return cutOff{}, false
+		return cutOff{}, false, true
 	}
 	// An overflow attempt's turn entry names its re-run, which has no
 	// start record of its own: follow the chain to the run that ran
@@ -482,11 +548,11 @@ func (s *Session) cutOffFileLocked() (cutOff, bool) {
 		x.run = te.ReRun
 	}
 	if recovered[x.run] {
-		return cutOff{}, false
+		return cutOff{}, false, true
 	}
 	te, hasTurn := turns[x.run]
 	if hasTurn && !te.CutOff {
-		return cutOff{}, false
+		return cutOff{}, false, true
 	}
 	x.hasTurn = hasTurn
 
@@ -517,7 +583,7 @@ func (s *Session) cutOffFileLocked() (cutOff, bool) {
 	if !x.own && !x.resume {
 		x.calls = nil // the dangling calls are an older boundary's, not this run's
 	}
-	return x, true
+	return x, true, true
 }
 
 func hasToolCall(m core.Message) bool {
