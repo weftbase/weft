@@ -664,3 +664,76 @@ under the old name when the new one is absent, and the old names stay
 exported as `mcp.LegacyMetaCaller` / `mcp.LegacyMetaIdempotencyKey` for
 servers that deduplicate during the transition. The rest of the
 decision is unchanged.
+
+## Amendment (2026-11-05 — the runner reads the file; torn batches; shutdown's partial step)
+
+**A step's partial results do not hide its cut-off call (R1).** A
+shutdown keeps the results of a step's calls that answered and leaves
+the others unanswered ("Shutdown" above), so a step cut off with one
+call answered and a sibling still running ends in a partial tool
+message. The cut-off check read only the run's last message — that
+tool message — and saw no call of the run's own: `Send` was accepted
+and the unanswered call was offered as an ordinary request, its skip
+reading `DENIED`. The check now looks past tool messages to the step's
+assistant message: the unanswered call is the cut-off run's own, and
+RecoverTurn decides it as any. The turn entry's `pending` lists it
+once.
+
+**Only an unknown outcome is taken out (R5).** The shutdown's rule
+"whose handler the cancellation felled (an error result, effect
+unknown)" is read literally: a result is taken out of the cut-off step
+only when the core marked it `OUTCOME_UNKNOWN` (without `ParkUnknown`;
+a session's run parks such a call with no result instead). A handler's
+own error — a declined card — is its answer and stays, and so does a
+refusal before the handler ran (the gate, a middleware): recovery never
+offers a call whose outcome is known as one that "may have run".
+
+**The runner asks the check on its own transitions (R2).** The check
+answered "not cut off" while the session's runner was alive, and the
+runner itself never asked it: a turn whose end could not be written
+(`ErrNotPersisted`) or that panicked (`ErrTurnPanicked`) after it
+dispatched a call of unknown outcome handed the queue on, the next
+send's input repaired the call into "interrupted", and recovery lost it
+for good. "A turn whose end could not be written in the same process
+reads as cut off" (Consequences) now holds in the process that wrote
+it: the check skips only a turn in flight, not a runner between items;
+the runner holds the queue behind such a turn (a steer's follow-up
+included); a queued send is put back before its prompt; a resume reads
+the file before it starts; the failed turn's error carries
+`ErrRecoveryRequired`; and RecoverTurn — its run, the boundary it
+parks, or, when it starts nothing, the queue's head at once — takes
+the held sends on.
+
+**A torn batch reads as not done (R4).** jsonl can keep a prefix of a
+batch's complete lines after a crash (a kill inside a large write, a
+power cut); only a torn last line is dropped. "Atomic against the
+writer's death" was true of sqlite and Memory, not of jsonl. The turn
+entry was first in a turn's end batch, so a prefix could hold the turn
+without the recovery request the in-process ladder wrote for its call
+of unknown outcome: the call read as an ordinary request. The turn
+entry now goes last — after the chain's entries, the delivered steers'
+receipts and a resume's end audit — so any prefix reads as the turn
+cut off. RecoverTurn's own batch already ends with its `recover` audit,
+so a prefix of it reads as not recovered (a torn request is superseded
+by the next recovery's; a torn `retry` audit counts toward the cap: the
+safe side). No format change.
+
+**An interrupted ask is not an answer (R6).** "A crash while asking
+writes nothing" now covers a caller who walks away: when RecoverTurn's
+context ends while `Reconcile` is asked, it returns the context's error
+and writes nothing — it used to record `reconcile_error` and send the
+call to a person for good. The calls of one recovery are asked in
+parallel under one shared 30 s bound, and a `Reconcile` that ignores
+its context is abandoned at the bound (an error, a person decides).
+
+Tests: `TestShutdownWithAnAnsweredSiblingIsRecovered`,
+`TestShutdownKeepsAHandlersOwnFailure`,
+`TestQueuedSendWaitsForRecoveryOfAnUnrecordedTurnEnd`,
+`TestSteerFollowUpWaitsForRecoveryOfAnUnrecordedTurnEnd`,
+`TestQueuedSendWaitsForRecoveryOfAPanickedTurn`,
+`TestQueuedSendWaitsForRecoveryOfAnUnrecordedResumeEnd`,
+`TestTornTurnEndBatchReadsCutOff`, `TestTornRecoverBatchStaysCutOff`,
+`TestReconcileInterruptedByTheCallerWritesNothing`,
+`TestReconcileAsksCallsInParallel` (thread); the crash matrix's
+`tool_running`, `tool_ran_keyed`, `tool_dispatched` and `recover_batch`
+rows (jsonl and sqlite).
