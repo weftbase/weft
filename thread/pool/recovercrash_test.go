@@ -347,7 +347,7 @@ func TestRecoverOrphanedDelegatingCallResumesTheChild(t *testing.T) {
 // L1's subtree depth first: L3 canceled at its boundary in L2's
 // ledger, L2 — cut off too — canceled in L1's, never failed (review 3
 // P1-c). L1 is not settled: its delegating call parks for a person,
-// mirrored onto the top.
+// mirrored onto the top, and its receipt rests parked.
 func TestRecoverEndsACutOffChildsSubtreeDeep(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -375,10 +375,21 @@ func TestRecoverEndsACutOffChildsSubtreeDeep(t *testing.T) {
 	if err := p.Recover(ctx, s); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
+	// L1's recovery runs on a pool goroutine (recoverCutOff → arm →
+	// RecoverTurn): Recover returns with the receipt open — running, or
+	// already parked when that goroutine beat Recover's return — and it
+	// reads parked once the recovered L1 parks its delegating call. Pool.Wait returns when the delegation is at rest
+	// — concluded or parked — so the ledger is read there, not at
+	// whichever moment Recover's return happens to catch it. Open
+	// either way: never settled (review 3 P1-c).
+	if rs := pool.Receipts(s); len(rs) != 1 || rs[0].Settled() {
+		t.Fatalf("top receipts after Recover = %+v, want L1's delegation open", rs)
+	}
+	waitFor(t, p, s, pool.Receipts(s)[0].ID, pool.Parked)
 	want := []struct {
 		session, child string
 		state          pool.State
-	}{{top, l1, pool.Running}, {l1, l2, pool.Canceled}, {l2, l3, pool.Canceled}}
+	}{{top, l1, pool.Parked}, {l1, l2, pool.Canceled}, {l2, l3, pool.Canceled}}
 	for _, w := range want {
 		var rs []pool.Receipt
 		if w.session == top {
