@@ -599,11 +599,19 @@ not the numbers themselves.
   exists (`pool.ErrNestedDelegation`); give the model the wrapped tool
   itself.
 
-- **One pool per storage's delegations.** `Recover` treats an
+- **One pool per parent session's delegations.** A pool writes only
+  through sessions it holds — the parent's receipts through the parent
+  `Session` you hand it (its writer lease, §4), a child's entries
+  through the child `Session` it created or reopened — so two
+  processes never both write one session: the second's first write
+  fails with `ErrLocked` (on jsonl and sqlite; `thread.Memory` is one
+  process's). The lease does not pick who recovers: `Recover` treats an
   unsettled receipt that no child of *this* pool is running as left by
-  a dead process. With two live pools over the same sessions, a
-  `Recover` or `Cancel` through one settles the other's running work
-  as failed. The exception is several pools of one process delegating
+  a dead process. Where another live process still runs that child,
+  the reattached run's first write fails with `ErrLocked` and the
+  receipt stays open (never settled on a guess); where it holds the
+  parent, `Recover`'s writes fail with `ErrLocked`. Run the pool in the
+  process that holds the parent session. The exception is several pools of one process delegating
   from one parent session (each its own bound): every pool watching
   the parent is pumped by each decision recorded there, and a pool
   skips the receipts whose child another pool watching that parent
@@ -621,7 +629,20 @@ not the numbers themselves.
   `p.Recover(ctx, parent)`. It reattaches children parked at an
   approval (mirroring any request the crash left unmirrored), settles
   children that finished from their own files, and settles `failed`
-  those that never started their first run. A child whose run a crash
+  those that never started their first run — and, since 0.23.0, those
+  whose receipt names a child that does not exist ("… does not exist
+  and its run never started: nothing ran"): the acceptance receipt is
+  written before the child session is created, so a crash between the
+  two leaves a receipt, never a child no receipt names. A wrapped
+  call's child id is derived from the delegating call's idempotency
+  key, so a recovery retry of the call reaches the same child id. The
+  same applies in a live process whose pool outlived a parent session
+  closed under `thread.ErrShutdown`: the child turns that close cut off
+  are let go by the pool (before 0.23.0 they stayed claimed — `Recover`
+  skipped them, `Cancel` did nothing, `Wait` returned `running`), and a
+  `Recover` of the reopened parent recovers them. `Recover` returns
+  once a cut-off child's recovery has started, not finished: `Wait`
+  on its receipt for the park or the answer. A child whose run a crash
   or a shutdown cut off — its first run, a resume after an approval,
   the session's own keyed retry, or a recovery's continuation that a
   second crash cut off — is never settled `failed`: it is recovered on
@@ -719,7 +740,16 @@ not the numbers themselves.
 - **Cost.** A child's usage is on its receipt and in the parent
   session's `Usage().Delegated` — not in the parent run's
   `RunResult.Usage`. A budget that must cover delegated work reads
-  `Delegated`.
+  `Delegated`. A settlement carries the child's whole subtree — its
+  turns, summaries and its own `Delegated` — so the top session's
+  `Delegated` covers grandchildren, each counted once (before 0.23.0 it
+  stopped at the children). An async grandchild that settles after its
+  parent did is billed in that parent's `Delegated` only.
+- **Handler middleware on a wrap is refused.** `pool.ToolOptions`
+  with `weft.WrapHandler` (alone or bundled) fails `Wrap` (`MustWrap`
+  panics): under a session the delegation answers the call in place of
+  the subagent's handler, so the middleware would only ever run on the
+  bare path. Use `weft.WrapTools`, which runs above the delegation.
 - **What the recorder sees.** A child session's turn is a session of
   its own in the records: its own `weft.session.id`, its lineage in
   `weft.session.parent` / `weft.session.parent_call`, and — under a

@@ -383,19 +383,21 @@ func TestRecoverEndsACutOffChildsSubtreeDeep(t *testing.T) {
 	if err := p.Recover(ctx, s); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	want := []struct {
-		session, child string
-		state          pool.State
-	}{{top, l1, pool.Running}, {l1, l2, pool.Canceled}, {l2, l3, pool.Canceled}}
-	for _, w := range want {
-		var rs []pool.Receipt
-		if w.session == top {
-			rs = pool.Receipts(s)
-		} else {
-			rs = pool.Receipts(readOnly(t, st, w.session))
-		}
-		if len(rs) != 1 || rs[0].Child != w.child || rs[0].State != w.state {
-			t.Errorf("%s's receipts = %+v, want %s %s", w.session, rs, w.child, w.state)
+	// L1's recovery runs on a pool goroutine (Recover's godoc): when
+	// Recover returns its receipt is unsettled — running, or parked
+	// already — and Wait reaches the park.
+	rs := pool.Receipts(s)
+	if len(rs) != 1 || rs[0].Child != l1 || (rs[0].State != pool.Running && rs[0].State != pool.Parked) {
+		t.Fatalf("the top's receipts = %+v, want %s unsettled (running or parked)", rs, l1)
+	}
+	wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if got, err := p.Wait(wctx, s, rs[0].ID); err != nil || got.State != pool.Parked {
+		t.Fatalf("Wait = %+v, %v; want L1 parked", got, err)
+	}
+	for _, w := range []struct{ session, child string }{{l1, l2}, {l2, l3}} {
+		if rs := pool.Receipts(readOnly(t, st, w.session)); len(rs) != 1 || rs[0].Child != w.child || rs[0].State != pool.Canceled {
+			t.Errorf("%s's receipts = %+v, want %s canceled", w.session, rs, w.child)
 		}
 	}
 	if pend := readOnly(t, st, l3).Pending(); len(pend) != 0 {
