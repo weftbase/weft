@@ -136,13 +136,18 @@ type reconciled struct {
 // reconcileLocked asks each call's tool Reconcile, for the calls of
 // unknown outcome that are ReplayNever and have one — the keyed ones
 // retry first, the safe ones need nothing — and returns its answers by
-// call id. It runs with s.mu released (fn is the tool's code, bounded
-// by reconcileTimeout) and only while the writer still holds the
-// session's lock (Fencer): a writer that lost it asks nothing, and the
-// calls go to a person. A crash during it writes nothing, so the next
-// recovery asks again; the tool never runs on its account. Callers
-// hold s.mu; it is released and re-taken.
-func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.ToolCallPart) map[string]reconciled {
+// call id. It runs with s.mu released (fn is the tool's code) and only
+// while the writer still holds the session's lock (Fencer): a writer
+// that lost it asks nothing, and the calls go to a person. The calls
+// are asked in parallel under one shared reconcileTimeout, so N calls
+// hold the recovery the bound, not N times it; a Reconcile that
+// ignores its context is abandoned at the bound and reads as an error.
+// A crash during it writes nothing, so the next recovery asks again;
+// the tool never runs on its account. So does a caller who walks away:
+// when ctx ends while the calls are asked, the error is ctx's and the
+// caller writes nothing (an interrupted ask is not an answer, ADR
+// 0032). Callers hold s.mu; it is released and re-taken.
+func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.ToolCallPart) (map[string]reconciled, error) {
 	type ask struct {
 		call core.ToolCallPart
 		fn   core.ReconcileFunc
@@ -167,38 +172,64 @@ func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.
 		asks = append(asks, ask{call: c, fn: def.Reconciler(), key: s.callKeyLocked(entry, c.ID)})
 	}
 	if len(asks) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]reconciled, len(asks))
 	if f, ok := s.st.(Fencer); ok {
 		if err := f.Fence(ctx, s.header.ID); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
 			for _, a := range asks {
 				out[a.call.ID] = reconciled{err: fmt.Errorf("not asked: the session's lock is not held: %w", err)}
 			}
-			return out
+			return out, nil
 		}
 	}
 	s.mu.Unlock()
 	defer s.mu.Lock()
-	for _, a := range asks {
-		out[a.call.ID] = runReconcile(ctx, a.fn, a.key)
-	}
-	return out
-}
-
-// runReconcile calls fn under the rung's bound, a panic contained as
-// its error.
-func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r reconciled) {
 	rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
+	type answer struct {
+		id string
+		r  reconciled
+	}
+	answers := make(chan answer, len(asks)) // buffered: an abandoned ask never blocks
+	for _, a := range asks {
+		go func() { answers <- answer{a.call.ID, runReconcile(rctx, a.fn, a.key)} }()
+	}
+	for range asks {
+		select {
+		case an := <-answers:
+			out[an.id] = an.r
+		case <-rctx.Done():
+		}
+		if rctx.Err() != nil {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, a := range asks {
+		if _, ok := out[a.call.ID]; !ok {
+			out[a.call.ID] = reconciled{err: fmt.Errorf("reconcile did not answer within %s: %w", reconcileTimeout, rctx.Err())}
+		}
+	}
+	return out, nil
+}
+
+// runReconcile calls fn under ctx (the rung's shared bound), a panic
+// contained as its error.
+func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r reconciled) {
 	defer func() {
 		if p := recover(); p != nil {
 			r = reconciled{err: fmt.Errorf("reconcile panicked: %v", p)}
 		}
 	}()
-	found, result, err := fn(rctx, key)
-	if err == nil && rctx.Err() != nil {
-		err = rctx.Err()
+	found, result, err := fn(ctx, key)
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
 	}
 	if err != nil {
 		return reconciled{err: err}
@@ -846,7 +877,13 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 	// unknown calls whose tool can ask the system of record do.
 	if unknown := s.unknownLocked(x); len(unknown) > 0 {
 		run := x.run
-		rc := s.reconcileLocked(ctx, run, unknown)
+		rc, err := s.reconcileLocked(ctx, run, unknown)
+		if err != nil {
+			// The caller walked away while the system of record was
+			// asked: nothing is written, and the next RecoverTurn asks
+			// again (ADR 0032).
+			return nil, err
+		}
 		// The lock was released: the session must still be as found.
 		if s.running {
 			return nil, fmt.Errorf("%w: session %s", ErrBusy, s.header.ID)
