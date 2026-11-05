@@ -669,3 +669,89 @@ is not `ReplaySafe` cut off before it answered now reads (or, under a
 session, parks as) an unknown outcome, as any handler does. Recovery
 reads the delegation's own dispatch record (ADR 0032's amendment of
 the same date).
+
+## Amendment 2026-11-05 — the acceptance comes first, a cut-off delegate is let go, Delegated is the subtree
+
+Reliability pass, phase 2 (R3, R5, R15).
+
+**The acceptance comes before the child (WR-25).** The child session
+was created, under a minted id, before its acceptance receipt: a crash
+between the two left a session carrying the parent's lineage that no
+receipt names — invisible to `Children` and `Descendants`, the cascade
+list — and approving the delegating call's recovery created a second
+child beside it. Now the child's id is chosen first, the acceptance
+naming it is written, and only then the session is created. A wrapped
+call's child takes an id derived from durable identity: `"s_"` and 32
+hex digits of the SHA-256 of the parent id, the delegating call's
+idempotency key (`thread.IdempotencyKey` — session, assistant message
+entry, call id) and an attempt number, the first one the parent's
+ledger does not name and the storage does not hold. A recovery retry
+of the call runs from the same recorded message, so it chooses the
+same id: the retry the recovery request offers ("retry it with the
+same idempotency key") reaches the same child identity. A `Submit`, a
+call with no key, and a pool given `IDs` keep a minted id; they are
+still named by their receipt before they exist (the `Submit` key is
+WR-20's). A creation that fails after the acceptance settles the
+receipt `failed` at once ("the child session … was not created: …");
+a crash in that window leaves an accepted receipt with no child, which
+`Recover` settles `failed` with the new stop text
+
+    child session <id> does not exist and its run never started: nothing ran
+
+— model-visible inside `SUBAGENT_FAILED` when the delegating call is
+still parked, and pinned by `TestAcceptedChildNeverCreated`. A receipt
+that read past `accepted` keeps "child session <id> is gone". While a
+child is being made the pool counts it live, so a `Recover` beside the
+delegation does not settle it so.
+
+**A cut-off delegate is let go (L1).** A child whose run a shutdown
+cut off (its parent session closed under `thread.ErrShutdown`) while
+the pool stayed open, or whose session another writer holds
+(`ErrLocked`), left its receipt unsettled — rightly — but stayed
+registered: `Recover` skipped the receipt as live, `Cancel` returned
+nil having stopped a run that was over, `Wait` returned the stale
+`running` at once and `Delegated` never billed it, for the pool's
+life. The pool now lets such a delegate go (a closed pool keeps it:
+its drain owns it), so a `Recover` of the reopened parent recovers the
+child on its own ladder — a handler the cut-off left running is waited
+for there — and `Cancel` recovers it, then cancels it. Nothing re-runs
+recovery automatically: the parent `Session` the delegate held is
+closed, and the reopened one is the application's to hand to
+`Recover`.
+
+**`Delegated` is the subtree.** A settlement billed the child's turns
+and summaries but not its own `Delegated`, so a budget reading the top
+session's `Delegated` (AGENTS.md rule 13) missed every grandchild. A
+settlement — live or read back by `Recover` — now carries the child's
+turns, summaries and its own `Delegated`; each level is counted once,
+since a session's turns never hold its pool children's usage. An async
+grandchild that settles after its parent's own settlement is billed in
+that parent's `Delegated` only.
+
+**Handler middleware is refused.** `ToolOptions(core.WrapHandler(...))`
+installed middleware below the delegation, reached on the bare path
+only: under a session the delegation answers the call in place of the
+subagent's handler, so it was skipped without a word. `Wrap` now
+refuses it (alone or in a `core.ToolOptions` bundle; `MustWrap`
+panics); `core.WrapTools` middleware, above the delegation, is
+unchanged. The bare path's slot is now released and the outer run's
+slot retaken on a panic out of the handler chain too.
+
+**`Recover` returns before a cut-off child has recovered.** The
+child's recovery runs on a pool goroutine: when `Recover` returns its
+receipt reads unsettled (running, or parked already), and `Wait`
+reaches the rest. Documented; `TestRecoverEndsACutOffChildsSubtreeDeep`
+reads it so.
+
+Not changed: a child that never started its run (its session holds no
+turn) still settles `failed` ("… no turn was recorded"), though
+`canceled` might read truer — the state picks the text the delegating
+call resolves with (`SUBAGENT_FAILED` against `SUBAGENT_CANCELED`), a
+model-visible change left for its own decision.
+
+Tests: `TestCutOffDelegateIsRecoveredInProcess`,
+`TestCutOffDelegateCancelInProcess` (memory, jsonl, sqlite),
+`TestAcceptedChildNeverCreated`, `TestRecoveryRetryReachesTheSameChild`,
+`TestChildCreationFailureSettlesItsReceipt`,
+`TestDelegatedCoversGrandchildren`, `TestClassifyBillsTheSubtree`,
+`TestWrapRefusesHandlerMiddleware`, `TestBarePanicReleasesTheSlot`.
