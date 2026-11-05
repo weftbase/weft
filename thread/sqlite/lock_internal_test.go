@@ -436,3 +436,75 @@ func TestBrokenLockWithNoNewWriter(t *testing.T) {
 		t.Fatalf("the write after that: %v", err)
 	}
 }
+
+// Two writers that share a hostname but not a PID namespace (two
+// containers over one bind-mounted file) cannot see each other's pids:
+// a holder in the other namespace — even one wearing the contender's
+// own pid, or a pid that does not exist here — is never judged dead.
+// The lock's host identity carries the namespace, so the holder is
+// another host's: ErrLocked, and BreakLock is the way out (review R3).
+func TestLockHolderInAnotherPIDNamespaceIsNotTakenOver(t *testing.T) {
+	if pidNamespace() == "" {
+		t.Skip("no PID namespace on this platform")
+	}
+	ctx := context.Background()
+	host, _, _ := strings.Cut(hostIdentity(), "#")
+	for _, tc := range []struct {
+		name   string
+		holder string // the row's host identity
+		pid    int
+	}{
+		{"same pid, other namespace", host + "#pid:[1]", -1},
+		{"pid unseen here, other namespace", host + "#pid:[1]", 57},
+		{"a row from before namespaces", host, 57},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ns.db")
+			a := openBackend(t, path)
+			a.owner = tc.holder + "/holder-token"
+			a.proc, a.started = "container-A", "boot:100"
+			b := openBackend(t, path)
+			b.proc, b.started = "container-B", "boot:200"
+			a.pid = tc.pid
+			if tc.pid < 0 {
+				a.pid = b.pid
+			}
+			b.alive = func(int) bool { return false } // the holder's pid is not visible from here
+			if err := a.Create(ctx, thread.Header{ID: "s_ns", Created: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Append(ctx, "s_ns", entry("e_b1")); !errors.Is(err, thread.ErrLocked) {
+				t.Fatalf("Append while the other namespace's writer holds the session = %v, want ErrLocked", err)
+			}
+			if err := a.Append(ctx, "s_ns", entry("e_a1")); err != nil {
+				t.Fatalf("the holder's next append: %v", err)
+			}
+			if err := BreakLock(ctx, b, "s_ns"); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Append(ctx, "s_ns", entry("e_b2")); err != nil {
+				t.Fatalf("Append after BreakLock: %v", err)
+			}
+		})
+	}
+}
+
+// The lock's host identity is the hostname and, on Linux, the PID
+// namespace the kernel names.
+func TestHostIdentityNamesThePIDNamespace(t *testing.T) {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		h = "unknown-host"
+	}
+	want := h
+	if ns := pidNamespace(); ns != "" {
+		want += "#" + ns
+	}
+	if got := hostIdentity(); got != want {
+		t.Fatalf("hostIdentity = %q, want %q", got, want)
+	}
+	b := openBackend(t, filepath.Join(t.TempDir(), "id.db"))
+	if b.host() != want {
+		t.Fatalf("the lock row's host = %q, want %q", b.host(), want)
+	}
+}
