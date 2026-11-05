@@ -47,7 +47,12 @@
 //     destinations that take the lines; a viewer reads its absence as
 //     "no weft slog bridge was recorded for this run".
 //   - A Sink is written synchronously: nothing emitted is lost before
-//     Emit returns.
+//     Emit returns — within the destination's Timeout (default 2 s):
+//     a Sink that hangs is abandoned and its records counted dropped,
+//     never a stalled run (telemetry never blocks control).
+//   - Loss is said: Pipeline.Shutdown returns a *LossError matching
+//     ErrRecordsLost when any record was lost, beside the flush's and
+//     the providers' errors, and Install's function logs it.
 //   - Install never panics and never fails the program; Start returns
 //     errors and leaves the globals alone under NoGlobal (tests).
 //

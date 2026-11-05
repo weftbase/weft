@@ -19,7 +19,7 @@ go get github.com/weftbase/weft/core@latest  # the loop alone: its only dependen
 | `weft` | The agent loop: tools from plain Go functions, parallel tool calls with defined failure semantics, typed streaming events, structured output, approvals, steering, subagents; OpenAI, Anthropic, Google adapters (`weft/openai`, …), MCP both ways (`weft/mcp`), reference middleware (`weft/mw`) and the offline test double (`weft/wefttest`) |
 | `weft/core` | The same loop as a module of its own, for a service that wants nothing else: `core.New`, `core.Tool`, `core/wefttest`, `core/mw`. `weft` re-exports it name for name, so `weft.Agent` *is* `core.Agent` |
 | `weft/thread` | Durable sessions: an append-only conversation tree with branching, compaction, approvals that survive restarts, steering and a bounded pool of child agents (jsonl, SQLite or memory storage) |
-| `weft/otel` | Recording over OpenTelemetry: every event, transcript and span exported to any OTLP backend, Datadog, Langfuse, your own exporters or a synchronous `otel.Sink` — several at once, each with its own content policy and redaction. Reads the standard `OTEL_*` variables only; knows no viewer |
+| `weft/otel` | Recording over OpenTelemetry: every event, transcript and span exported to any OTLP backend, Datadog, Langfuse, your own exporters or a synchronous `otel.Sink` — several at once, each with its own content policy and redaction. Reads the standard `OTEL_*` variables and `WEFT_ENV` (the development gate); knows no viewer |
 | `weft/version` | The framework's one version string (`version.Version`, `version.Runtime()`) |
 
 The platform — Studio (runs, sessions, traces and live streams in a web
@@ -335,8 +335,12 @@ policy: `otel.OTLP`, `otel.Datadog`, `otel.Langfuse`, your own
 before the emit returns — a crash loses nothing emitted to it; the
 others batch (a span within about 5 s, a record within 1 s by the
 SDK's defaults), so a crash can lose what is still queued, and the
-function `Install` returns flushes them on the way out. It reads the standard `OTEL_*` variables only
-and knows no viewer. The records' shape is
+function `Install` returns flushes them on the way out (a record lost on
+the way — a failed export, a full queue, a hung Sink's abandoned write,
+each Sink export bounded by its `Timeout`, 2 s by default — is counted,
+and `Pipeline.Shutdown` returns `otel.ErrRecordsLost`). It reads the
+standard `OTEL_*` variables, and `WEFT_ENV` for the development gate
+(unless `otel.NoEnv()`), and knows no viewer. The records' shape is
 [docs/record-contract.md](docs/record-contract.md).
 
 Storing, querying and showing them is a backend's job: the records are

@@ -2,6 +2,7 @@ package otel
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -19,6 +20,10 @@ import (
 // = stripped); the record's ids, enums, counts and app-chosen names
 // (a label's name) ride either way.
 const ContentThread core.ContentKind = "thread"
+
+// errThreadBody names a thread record a destination dropped because it
+// could not read its body to shape its content.
+var errThreadBody = errors.New("thread record body unreadable: dropped rather than sent unshaped")
 
 // threadContentKey is the body key the content fields ride under.
 const threadContentKey = "content"
@@ -59,7 +64,9 @@ func (p *destProc) shapeThread(clone *sdklog.Record) (keep bool) {
 	defer func() {
 		if v := recover(); v != nil {
 			keep = p.stripThread(clone)
-			p.drops.dropped(1, fmt.Errorf("content redaction panicked (%T): the thread record was exported stripped", v))
+			if keep { // not kept, the caller counts it dropped
+				p.drops.dropped(1, fmt.Errorf("content redaction panicked (%T): the thread record was exported stripped", v))
+			}
 		}
 	}()
 	cfg := p.contentC

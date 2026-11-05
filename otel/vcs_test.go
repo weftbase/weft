@@ -20,6 +20,10 @@ func TestVCSAttrs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// WR-38: the record contract's version rides the default resource.
+	if v, ok := r.Set().Value("weft.record.v"); !ok || v.AsInt64() != 1 {
+		t.Fatalf("weft.record.v = %v (set %v), want 1", v, ok)
+	}
 	if _, ok := r.Set().Value("weft.build.digest"); ok {
 		t.Fatal("the resource carries a build digest: weft never hashes the binary")
 	}

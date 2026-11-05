@@ -37,6 +37,11 @@ func TestThreadRecordContentOff(t *testing.T) {
 	if len(recs) != 2 {
 		t.Fatalf("exported %d records, want 2 (the unreadable one dropped)", len(recs))
 	}
+	// The unreadable one is a lost record, not a policy filter (E4):
+	// Shutdown's ErrRecordsLost counts it.
+	if n := p.drops.lost(); n != 1 {
+		t.Errorf("lost %d records, want 1", n)
+	}
 	var b map[string]any
 	if err := json.Unmarshal([]byte(recs[0].Body().AsString()), &b); err != nil {
 		t.Fatal(err)

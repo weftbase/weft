@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -240,8 +241,9 @@ func TestRequestRecordsRedactPanicNeverLeaks(t *testing.T) {
 	if _, err := agt.Generate(context.Background(), core.Prompt("hi")); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
+	// The records the redactor failed on are lost, and Shutdown says so.
+	if err := p.Shutdown(context.Background()); !errors.Is(err, ErrRecordsLost) {
+		t.Fatalf("Shutdown = %v, want ErrRecordsLost", err)
 	}
 	recs := mem.snapshot()
 	if n := len(recordsOfKind(recs, "prompt")); n != 0 {

@@ -249,7 +249,11 @@ type SinkOpener func(ctx context.Context) (sdktrace.SpanExporter, sdklog.Exporte
 // its exporters are driven through simple processors — each record is
 // exported before Emit returns, with no queue (a crash loses nothing
 // emitted; the export cost rides the run's goroutine). Blocking and
-// QueueSize do not apply. A Sink is first-party (FirstParty): content
+// QueueSize do not apply. Each export is bounded by the destination's
+// Timeout (default 2 s): telemetry never blocks control, so a Sink that
+// hangs costs the run at most that long — the export is abandoned and
+// its records counted dropped, and while it is still stuck every later
+// record is dropped at once, until it returns. A Sink is first-party (FirstParty): content
 // on, raw bodies, the dev detail and app logs eligible. An export error
 // is counted as the destination's drop and named by its throttled WARN,
 // never handed to OTel's global error handler. The exporters' Shutdown
@@ -416,7 +420,9 @@ func Headers(h map[string]string) DestOption {
 	})
 }
 
-// Timeout sets the destination's export request timeout.
+// Timeout sets the destination's export request timeout: an OTLP
+// request's, or a Sink's per-export deadline (default 2 s; past it the
+// export is abandoned and its records counted dropped).
 func Timeout(d time.Duration) DestOption {
 	return destOptionFunc(func(dd *dest) { dd.timeout = d })
 }

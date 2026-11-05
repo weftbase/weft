@@ -120,7 +120,9 @@ func TestS7ContentOffOnlyEmitsNoMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, _ := agentThrough(t, p)
-	if err := p.Shutdown(testCtx(t)); err != nil {
+	// The unreachable collector loses its records; Shutdown reports
+	// them (ErrRecordsLost) and nothing else.
+	if err := p.Shutdown(testCtx(t)); err != nil && !errors.Is(err, ErrRecordsLost) {
 		t.Fatal(err)
 	}
 	var messages int
