@@ -266,7 +266,7 @@ func (o resumeOfOption) applyRun(c *runConfig) {
 // transcript carries no run id — so the caller states it, and the
 // run's invoke_agent span and run_start record carry it as
 // weft.resumed_from, the link a reader follows from a decided park to
-// the run that resumed it (record contract §3; Studio's run row reads
+// the run that resumed it (record contract §3; a reader's run row reads
 // resumed_from, and resumed_by on the parked run). Reporting only: the
 // option changes nothing the model sees and nothing the loop does —
 // the decisions resume the calls, with or without it. weft/thread
@@ -448,8 +448,8 @@ func (o parkSourceOption) apply(a *Agent) {
 // parks like any other, and a Subagent tool's call parks before its
 // child runs. Like ParkOn, the set covers the run it was read for: a
 // Subagent's child run reads its own agent's sources, not this one's.
-// It is how the playground runtime's debugger breakpoints reach the
-// runs the app starts itself (runtime.Breakpoints, WEFT-PLAYGROUND §13.6).
+// It is how a platform's debugger breakpoints can reach the runs the
+// app starts itself (Weftbase's runtime supplies one).
 //
 // fn receives the run's context (its metadata placed) and must return
 // promptly — it runs on the loop's goroutine before the first model

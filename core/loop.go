@@ -1761,8 +1761,8 @@ func deniedResult(reason string) string {
 // StrictInput is, at both levels, as in the loop. No span or log line
 // is produced: manual dispatchers own their context and their own
 // reporting (ADR 0016). Outside a run it therefore leaves no trace in
-// the record at all — no run, no event, no span — so Studio has
-// nothing to show for it. Called from a tool handler, the dispatched call
+// the record at all — no run, no event, no span — so a trace
+// reader has nothing to show for it. Called from a tool handler, the dispatched call
 // is its own: CallFromContext in its handler reports its id and name
 // (the run and step stay the dispatching call's), and an approval the
 // dispatching call ran under does not carry over — a RequireApproval
