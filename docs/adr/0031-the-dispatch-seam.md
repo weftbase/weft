@@ -177,7 +177,12 @@ the code did not keep.
    another key. The field's godoc no longer promises "re-run by a resume
    takes effect once"; a key that holds across a resume needs
    `IdempotencyKeys` (`weft/thread` passes it). The derivation is
-   unchanged.
+   unchanged — except that an outer call with an empty key gives its
+   inner calls (a handler's and a middleware's) an empty key too, never
+   one derived from `""`: that would be one constant shared by every
+   keyless call, and a deduplicating downstream would drop the second of
+   two distinct requests. The loop's own calls always carry a key; an
+   `Agent.ServeCall` whose client sent none is the case.
 6. **A panicking `IdempotencyKeys` fails the call closed.** It was
    called uncontained on the dispatching goroutine (under `Stream`, a
    process crash). The panic is contained: that call is not dispatched
@@ -190,4 +195,5 @@ Tests: `TestParkUnknownIsNotInheritedByAChildRun`,
 `TestChildMiddlewareCallToolNeverReachesTheParentsGate`,
 `TestParkOnIsNotInheritedByAChildRunsCallTool`,
 `TestCallToolFromAMiddleware`, `TestCallToolHonoursOnlyTools`,
-`TestIdempotencyKeysPanicFailsTheCallClosed` (core).
+`TestIdempotencyKeysPanicFailsTheCallClosed`,
+`TestServeCallKeylessInnerCallsCarryNoKey` (core).

@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // ServeCall executes one tool call the way the loop executes a call it
 // dispatches, for a server answering calls that come from outside any
@@ -24,12 +27,16 @@ import "context"
 // whose handler started and gave no answer of its own — its Timeout
 // passed, ctx ended under it, it panicked — answers with the pinned
 // "OUTCOME_UNKNOWN: …" text and an error matching ErrOutcomeUnknown
-// (ADR 0032). A RequireApproval tool, or a middleware's park, returns
-// an error wrapping ErrApprovalRequired: there is no run to park, so
-// the call does not run. Like CallTool it produces no span, event or
-// log line.
+// (ADR 0032). A RequireApproval tool, or a middleware's park before the
+// handler ran, returns an error wrapping ErrApprovalRequired: there is
+// no run to park, so the call does not run. A middleware's park after a
+// handler that is not ReplaySafe ran (and did not fail on its own) is
+// that unknown outcome instead, as in a run: the call did run. A
+// ToolSource that panics is the call's error, never a crash of the
+// serving process. Like CallTool it produces no span, event or log
+// line.
 func (a *Agent) ServeCall(ctx context.Context, call ToolCallPart, key string) (string, error) {
-	tools, err := a.dispatchTools()
+	tools, err := a.servedTools()
 	if err != nil {
 		return "", err
 	}
@@ -63,7 +70,7 @@ func (a *Agent) ServeCall(ctx context.Context, call ToolCallPart, key string) (s
 		out, _ = capResultN(out, resultCap)
 		return out, nil
 	}
-	if fail.park {
+	if fail.park && !ranPastHandler(def, mark) {
 		return "", fail.err
 	}
 	text, unknown := outcomeUnknown(ctx, call, def, fail, mark, timeout)
@@ -72,6 +79,19 @@ func (a *Agent) ServeCall(ctx context.Context, call ToolCallPart, key string) (s
 	}
 	text, _ = capResultN(text, resultCap)
 	return "", &servedCallError{text: text, err: fail.err, unknown: unknown}
+}
+
+// servedTools is dispatchTools contained: a ToolSource that panics
+// fails the served call with an error naming the panic — a server
+// answering calls from outside any run has no run to fail, and its
+// process must outlive one bad registry read.
+func (a *Agent) servedTools() (tools []*ToolDef, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			tools, err = nil, fmt.Errorf("weft: the agent's tool source panicked: %v", p)
+		}
+	}()
+	return a.dispatchTools()
 }
 
 // servedCallError is a ServeCall failure: its text is the result the

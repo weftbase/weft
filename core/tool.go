@@ -530,6 +530,14 @@ func (o timeoutOption) applyTool(t *ToolDef) {
 	}
 }
 
+// Timeout reports the tool's own Timeout: its deadline and true when
+// the tool was built with one — Timeout(0), the lift of the agent's
+// default, included — else 0 and false, and the agent's applies. A
+// package wrapping a tool's handler reads it to tell "no deadline was
+// asked for" from "the deadline was lifted on purpose" (weft/mcp's
+// default call bound applies to the first only).
+func (t *ToolDef) Timeout() (d time.Duration, ok bool) { return t.timeout, t.timeoutSet }
+
 // StrictInput rejects tool arguments that carry fields the input struct
 // does not declare, as an ErrInvalidToolInput result naming the field.
 // The default is lenient — undeclared fields are ignored, the
@@ -879,7 +887,9 @@ type Call struct {
 	// in a run with no BeforeDispatch gate (under one it is refused)
 	// carries the same derivation with the field "wrap" between the
 	// outer key and its position among that middleware's CallTool
-	// calls, so it never equals a handler's. Empty outside the loop,
+	// calls, so it never equals a handler's. Under an outer call whose
+	// key is empty, both are empty too: never derived from "" (that
+	// would be one key shared by every keyless call). Empty outside the loop,
 	// except under Agent.ServeCall: the key its caller passes (a served
 	// request's own).
 	IdempotencyKey string
