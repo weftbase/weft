@@ -114,6 +114,12 @@ func unterminal(ctx context.Context, st thread.Storage, s *thread.Session, close
 			calls[r.Call] = r.ID
 		}
 		c, err := thread.Open(ctx, st, r.Child, core.New(wefttest.Script()))
+		if errors.Is(err, thread.ErrNotFound) && r.State == pool.Failed &&
+			(strings.Contains(r.Stop, "was not created") || strings.Contains(r.Stop, "does not exist and its run never started")) {
+			// Accepted, never created (the acceptance comes first: a close
+			// or a cancel between the two), and settled so: nothing ran.
+			continue
+		}
 		if err != nil {
 			*out = append(*out, "open "+r.Child+": "+err.Error())
 			continue
