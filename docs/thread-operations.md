@@ -251,7 +251,8 @@ The same drain, but a turn still running at the deadline is recorded
 **cut off** — `TurnEntry.CutOff`, not `Canceled`; `Turn.Wait`'s error
 wraps `ErrShutdown` — and a call that is not `ReplaySafe` whose handler
 the cancellation felled (or that never got a result) stays unanswered,
-without synthetic text. The next process finds the turn
+without synthetic text — the results of its siblings that answered, a
+handler's own failure among them, are kept. The next process finds the turn
 (`s.Ready()`: `ReadyRecover`) and handles it with `s.RecoverTurn(ctx)`
 (§6). A turn whose own context is canceled with
 `cancel(thread.ErrShutdown)` gets the same record.
@@ -449,7 +450,12 @@ partial transcript is in `.Result`), or an error wrapping `ErrNotRun`
 (no model was called), `ErrDropped` (`ClearQueue` removed it),
 `ErrClosed`, `ErrTurnPanicked`, or `ErrNotPersisted` — the run ended
 but its end could not be written; treat that as a storage incident,
-the turn's usage is in no ledger. A turn entry with `late_steps > 0`
+the turn's usage is in no ledger. When the turn had dispatched a call
+whose outcome is unknown, the error also wraps `ErrRecoveryRequired`
+(as it does beside `ErrTurnPanicked`): the session reads the turn cut
+off in this process, as the next one would — `Send` refuses, the sends
+already queued behind it wait (they do not run over the call), and
+`s.RecoverTurn(ctx)` decides the call, then the held sends run. A turn entry with `late_steps > 0`
 means step writes failed and landed late: nothing was lost, and the
 storage was unhealthy for that long.
 
