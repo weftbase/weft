@@ -577,9 +577,10 @@ func TestServeHandsTheClientKey(t *testing.T) {
 	}
 	var keyed, unkeyed []string
 	for _, c := range seen {
-		if c.IdempotencyKey == "" {
+		switch c.IdempotencyKey {
+		case "":
 			unkeyed = append(unkeyed, c.CallID)
-		} else if c.IdempotencyKey == "K-same" {
+		case "K-same":
 			keyed = append(keyed, c.CallID)
 		}
 		if c.Name != "pay" || c.Approved || c.RunID != "" {
