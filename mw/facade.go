@@ -50,15 +50,21 @@ func Log(l *slog.Logger) weft.ModelMiddleware { return coremw.Log(l) }
 
 // RepairJSON re-encodes a tool call's arguments once when they are not
 // valid JSON — the common damage is a reply cut mid-object or wrapped
-// in a Markdown fence. Unterminated strings, objects, and arrays are
-// closed and fences stripped; when the result parses, it replaces the
-// original. Whitespace around the arguments is trimmed, but at a cut
-// inside an open string only JSON whitespace (space, tab, CR, LF):
-// any other rune there, Unicode whitespace included, is the model's
-// content and reaches the tool byte-for-byte. Arguments that cannot be
-// repaired pass through unchanged and fail decoding as they would
-// have, so the model still sees an INVALID_INPUT result. Only
-// tool-call events are touched.
+// in a Markdown fence. Fences are stripped and whitespace around the
+// arguments trimmed — lossless repairs, made for every tool; when the
+// result parses, it replaces the original. Closing what a cut left open
+// (unterminated strings, objects, arrays) guesses where the model
+// stopped — a recipient cut to "ali" of "alice", an amount cut short —
+// so it is made only for a call of a ReplaySafe tool (ToolDef.ReplayPolicy,
+// read from the request's tools): a call of any other tool, or of one
+// the request does not offer, is never run on guessed arguments — they
+// pass through unchanged and the model reads INVALID_INPUT and repairs
+// them itself (R1, WR-15). At a cut inside an open string only JSON
+// whitespace (space, tab, CR, LF) is trimmed: any other rune there,
+// Unicode whitespace included, is the model's content and reaches the
+// tool byte-for-byte. Arguments that cannot be repaired pass through
+// unchanged and fail decoding as they would have, so the model still
+// sees an INVALID_INPUT result. Only tool-call events are touched.
 func RepairJSON() weft.ModelMiddleware { return coremw.RepairJSON() }
 
 // ErrRetryAfterTooLong is wrapped around a provider error whose
@@ -87,6 +93,16 @@ func BaseDelay(d time.Duration) RetryOption { return coremw.BaseDelay(d) }
 // MaxWait(0) removes the cap — whatever the provider asks, Retry
 // waits — and negative values are ignored.
 func MaxWait(d time.Duration) RetryOption { return coremw.MaxWait(d) }
+
+// MaxTotal bounds the whole call, every try and every wait between
+// tries included: Retry starts no retry — and sleeps no wait — that
+// would end past d from the first try's start, and returns the last
+// error instead, wrapped ("retrying would pass MaxTotal"). A try in
+// flight is never cut: d bounds when Retry gives up, not how long a
+// reply may stream. Off by default (MaxTotal(0)); negative values are
+// ignored. Pair it with MaxWait(0) to honour any retry-after the
+// provider asks for while keeping the call bounded.
+func MaxTotal(d time.Duration) RetryOption { return coremw.MaxTotal(d) }
 
 // Classifier replaces the default retryability test. The default
 // retries core.ErrStreamIdle, net.Error values, and HTTP 408, 409, 429

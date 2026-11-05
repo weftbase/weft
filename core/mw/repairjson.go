@@ -13,15 +13,21 @@ import (
 
 // RepairJSON re-encodes a tool call's arguments once when they are not
 // valid JSON — the common damage is a reply cut mid-object or wrapped
-// in a Markdown fence. Unterminated strings, objects, and arrays are
-// closed and fences stripped; when the result parses, it replaces the
-// original. Whitespace around the arguments is trimmed, but at a cut
-// inside an open string only JSON whitespace (space, tab, CR, LF):
-// any other rune there, Unicode whitespace included, is the model's
-// content and reaches the tool byte-for-byte. Arguments that cannot be
-// repaired pass through unchanged and fail decoding as they would
-// have, so the model still sees an INVALID_INPUT result. Only
-// tool-call events are touched.
+// in a Markdown fence. Fences are stripped and whitespace around the
+// arguments trimmed — lossless repairs, made for every tool; when the
+// result parses, it replaces the original. Closing what a cut left open
+// (unterminated strings, objects, arrays) guesses where the model
+// stopped — a recipient cut to "ali" of "alice", an amount cut short —
+// so it is made only for a call of a ReplaySafe tool (ToolDef.ReplayPolicy,
+// read from the request's tools): a call of any other tool, or of one
+// the request does not offer, is never run on guessed arguments — they
+// pass through unchanged and the model reads INVALID_INPUT and repairs
+// them itself (R1, WR-15). At a cut inside an open string only JSON
+// whitespace (space, tab, CR, LF) is trimmed: any other rune there,
+// Unicode whitespace included, is the model's content and reaches the
+// tool byte-for-byte. Arguments that cannot be repaired pass through
+// unchanged and fail decoding as they would have, so the model still
+// sees an INVALID_INPUT result. Only tool-call events are touched.
 func RepairJSON() core.ModelMiddleware {
 	return func(next core.Model) core.Model {
 		return &repairModel{next: next}
@@ -49,7 +55,7 @@ func (m *repairModel) Stream(ctx context.Context, req core.ModelRequest) iter.Se
 				return
 			}
 			if call, ok := ev.(core.ModelToolCall); ok && !json.Valid(call.Args) {
-				if fixed, kind, ok := repairJSONKind(string(call.Args)); ok {
+				if fixed, kind, ok := repairJSONKind(string(call.Args)); ok && (lossless(kind) || replaySafe(req.Tools, call.Name)) {
 					// Reported on the run's record (core.Reporter.Repair:
 					// the chat span's weft.repair event, the call's
 					// weft.tool.args_repaired) — reporting only.
@@ -64,6 +70,23 @@ func (m *repairModel) Stream(ctx context.Context, req core.ModelRequest) iter.Se
 			}
 		}
 	}
+}
+
+// lossless reports whether a repair kind keeps every byte of the
+// model's content: a fence stripped or whitespace trimmed, nothing
+// closed.
+func lossless(kind string) bool { return kind == repairTrim || kind == repairFence }
+
+// replaySafe reports whether the request offers a tool of that name
+// whose replay class is ReplaySafe — the only calls RepairJSON closes
+// cut arguments for. An unknown name is not.
+func replaySafe(tools []*core.ToolDef, name string) bool {
+	for _, t := range tools {
+		if t != nil && t.Name == name {
+			return t.ReplayPolicy() == core.ReplaySafe
+		}
+	}
+	return false
 }
 
 // repairJSON attempts one mechanical repair of s. The first return is

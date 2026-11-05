@@ -37,6 +37,7 @@ type retryConfig struct {
 	baseDelay  time.Duration
 	maxDelay   time.Duration
 	maxWait    time.Duration
+	maxTotal   time.Duration
 	classify   func(error) bool
 }
 
@@ -72,6 +73,22 @@ func MaxWait(d time.Duration) RetryOption {
 	return func(c *retryConfig) {
 		if d >= 0 {
 			c.maxWait = d
+		}
+	}
+}
+
+// MaxTotal bounds the whole call, every try and every wait between
+// tries included: Retry starts no retry — and sleeps no wait — that
+// would end past d from the first try's start, and returns the last
+// error instead, wrapped ("retrying would pass MaxTotal"). A try in
+// flight is never cut: d bounds when Retry gives up, not how long a
+// reply may stream. Off by default (MaxTotal(0)); negative values are
+// ignored. Pair it with MaxWait(0) to honour any retry-after the
+// provider asks for while keeping the call bounded.
+func MaxTotal(d time.Duration) RetryOption {
+	return func(c *retryConfig) {
+		if d >= 0 {
+			c.maxTotal = d
 		}
 	}
 }
@@ -144,6 +161,9 @@ func (m *retryModel) Describe() core.MiddlewareInfo {
 		"max_delay":   m.cfg.maxDelay.String(),
 		"max_wait":    m.cfg.maxWait.String(),
 	}
+	if m.cfg.maxTotal > 0 {
+		p["max_total"] = m.cfg.maxTotal.String()
+	}
 	if reflect.ValueOf(m.cfg.classify).Pointer() != reflect.ValueOf(Retryable).Pointer() {
 		p["classifier"] = "custom"
 	}
@@ -165,6 +185,7 @@ func (m *retryModel) Stream(ctx context.Context, req core.ModelRequest) iter.Seq
 		// enclosing Retry knew of this request — a Retry nested under a
 		// Fallback under a Retry must not clear it.
 		t := tryOf(ctx)
+		start := time.Now()
 		for attempt := 0; ; attempt++ {
 			// The verdict on a failed try is reached before the try is
 			// reported, so its attempt says why Retry stops there
@@ -173,6 +194,7 @@ func (m *retryModel) Stream(ctx context.Context, req core.ModelRequest) iter.Seq
 				stop     bool
 				delay    time.Duration
 				delayErr error
+				overTime bool
 			)
 			verdict := func(yielded bool, failed error) string {
 				if yielded || ctx.Err() != nil {
@@ -193,6 +215,10 @@ func (m *retryModel) Stream(ctx context.Context, req core.ModelRequest) iter.Seq
 				if attempt >= m.cfg.maxRetries {
 					return core.AttemptGiveUpBudget
 				}
+				if m.cfg.maxTotal > 0 && time.Since(start)+delay > m.cfg.maxTotal {
+					overTime = true
+					return core.AttemptGiveUpBudget
+				}
 				return ""
 			}
 			_, failed := replay(withTry(ctx, t), m.next, attemptRequest(req), t, yield, verdict)
@@ -205,6 +231,10 @@ func (m *retryModel) Stream(ctx context.Context, req core.ModelRequest) iter.Seq
 			}
 			if delayErr != nil {
 				yield(nil, delayErr)
+				return
+			}
+			if overTime {
+				yield(nil, fmt.Errorf("mw: giving up after %d retries: retrying would pass MaxTotal %s: %w", attempt, m.cfg.maxTotal, failed))
 				return
 			}
 			if attempt >= m.cfg.maxRetries {

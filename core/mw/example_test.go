@@ -124,7 +124,9 @@ func ExampleLog() {
 }
 
 // RepairJSON closes a tool call's arguments when the model sends them
-// cut or fenced — the repair the model cannot do for itself. Arguments
+// cut or fenced — the repair the model cannot do for itself. A cut is
+// closed only for a ReplaySafe tool (a lookup); any other tool gets the
+// lossless repairs alone and never runs on guessed arguments. Arguments
 // that cannot be repaired pass through and fail decoding as usual.
 func ExampleRepairJSON() {
 	model := wefttest.Script(
@@ -133,7 +135,7 @@ func ExampleRepairJSON() {
 	)
 	city := core.RawTool("city", "Look up a city.", nil, func(_ context.Context, args json.RawMessage) (string, error) {
 		return "the args arrived as " + string(args), nil
-	})
+	}, core.Replay(core.ReplaySafe))
 	res, err := core.New(model, city, core.WrapModel(mw.RepairJSON())).Generate(context.Background(), core.Prompt("x"))
 	if err != nil {
 		log.Fatal(err)
