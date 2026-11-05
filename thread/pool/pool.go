@@ -631,8 +631,22 @@ func (p *Pool) Wait(ctx context.Context, parent *thread.Session, receiptID strin
 			}
 			if rc.Settled() {
 				p.forgetSettled(rc.Child)
+				return rc, nil
 			}
-			return rc, nil
+			p.mu.Lock()
+			creating := p.creating[rc.Child] > 0
+			p.mu.Unlock()
+			if !creating {
+				return rc, nil
+			}
+			// Accepted, its child being created (the acceptance comes
+			// first): it is about to register — a moment's wait.
+			select {
+			case <-time.After(time.Millisecond):
+				continue
+			case <-ctx.Done():
+				return Receipt{}, ctx.Err()
+			}
 		}
 		select {
 		case <-idle:
@@ -826,12 +840,23 @@ func Children(ctx context.Context, parent *thread.Session) ([]string, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("thread/pool: Children with no parent session")
 	}
+	ids, fresh := receiptChildren(parent)
+	out, _, err := verified(ctx, parent.Storage(), parent.ID(), ids, fresh)
+	return out, err
+}
+
+// receiptChildren lists the children parent's receipts name, in
+// acceptance order, and marks those whose receipt still reads accepted.
+func receiptChildren(parent *thread.Session) ([]string, map[string]bool) {
 	var ids []string
+	fresh := map[string]bool{}
 	for _, r := range Receipts(parent) {
 		ids = append(ids, r.Child)
+		if r.State == Accepted {
+			fresh[r.Child] = true
+		}
 	}
-	out, _, err := verified(ctx, parent.Storage(), parent.ID(), ids)
-	return out, err
+	return ids, fresh
 }
 
 // Descendants returns every session delegated from parent, directly
@@ -846,15 +871,12 @@ func Descendants(ctx context.Context, parent *thread.Session) ([]string, error) 
 		return nil, fmt.Errorf("thread/pool: Descendants with no parent session")
 	}
 	st := parent.Storage()
-	var ids []string
-	for _, r := range Receipts(parent) {
-		ids = append(ids, r.Child)
-	}
+	ids, fresh := receiptChildren(parent)
 	var out []string
 	seen := map[string]bool{parent.ID(): true}
 	var walk func(parentID string, ids []string) error
 	walk = func(parentID string, ids []string) error {
-		children, below, err := verified(ctx, st, parentID, ids)
+		children, below, err := verified(ctx, st, parentID, ids, fresh)
 		if err != nil {
 			return err
 		}
@@ -878,13 +900,24 @@ func Descendants(ctx context.Context, parent *thread.Session) ([]string, error) 
 
 // verified loads each candidate child and keeps the ones whose header
 // names parentID as their lineage, with the children their own
-// ledgers accepted.
-func verified(ctx context.Context, st thread.Storage, parentID string, ids []string) ([]string, map[string][]string, error) {
+// ledgers accepted. fresh marks the children whose receipt still reads
+// accepted, and verified marks theirs in it as it reads them: the
+// acceptance is written before the child is created, so such a child
+// may be absent (skipped, as a deleted one) or have no complete header
+// yet — being created now, or torn by a crash inside its creation. The
+// receipt is then the record that it is this parent's (a fork's copies
+// of receipts are settled, never accepted), and it is listed with
+// nothing below it, so a cascade deletes it too.
+func verified(ctx context.Context, st thread.Storage, parentID string, ids []string, fresh map[string]bool) ([]string, map[string][]string, error) {
 	var out []string
 	below := map[string][]string{}
 	for _, id := range ids {
 		h, entries, _, err := st.Load(ctx, id)
 		if errors.Is(err, thread.ErrNotFound) {
+			continue
+		}
+		if errors.Is(err, thread.ErrCorrupt) && fresh[id] {
+			out = append(out, id)
 			continue
 		}
 		if err != nil {
@@ -894,10 +927,20 @@ func verified(ctx context.Context, st thread.Storage, parentID string, ids []str
 			continue
 		}
 		out = append(out, id)
+		accepted := map[string]string{} // receipt id → child
 		for _, e := range entries {
-			if pr, ok := e.(thread.PoolReceiptEntry); ok && pr.Receipt == "" && pr.Child != "" {
+			pr, ok := e.(thread.PoolReceiptEntry)
+			switch {
+			case !ok:
+			case pr.Receipt == "" && pr.Child != "":
 				below[id] = append(below[id], pr.Child)
+				accepted[pr.ID] = pr.Child
+			case pr.Receipt != "":
+				delete(accepted, pr.Receipt)
 			}
+		}
+		for _, child := range accepted {
+			fresh[child] = true
 		}
 	}
 	return out, below, nil

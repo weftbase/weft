@@ -26,10 +26,11 @@ import (
 //
 //   - evict: the pool takes the delegation up (the child's call
 //     mirrored, still running); d1 is not offered.
-//   - shutdown: the pool still holds the ending delegate and takes
-//     nothing up; d1 stays offered as its boundary's dangling call,
-//     saying its delegation is open, and an approval of it is refused
-//     with ErrStillRunning.
+//   - shutdown: the child's cut-off run lets its delegate go (the pool
+//     stays open), and the pool's Recover takes the delegation up as
+//     under evict. Before that, the pool kept claiming the delegate for
+//     its life: d1 stayed offered as its boundary's dangling call and
+//     nothing ever settled the receipt (L1).
 //
 // The child model's script is shared by every run of the child, so a
 // second "ship" can come from it; the delegation receipts are what
@@ -138,6 +139,17 @@ func closeGiveUpDelegation(t *testing.T, st thread.Storage, shutdown, poolFirst 
 		time.Sleep(5 * time.Millisecond)
 	}
 
+	if shutdown {
+		// The cut-off run lets its delegate go as it unwinds: Wait on the
+		// receipt returns once it has.
+		wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := p.Wait(wctx, s, pool.Receipts(s)[0].ID)
+		wcancel()
+		if err != nil {
+			t.Fatalf("Wait for the cut-off delegate to let go: %v", err)
+		}
+	}
+
 	s2, err := thread.Open(ctx, st, s.ID(), core.New(wefttest.Script(wefttest.Say("parent done"), wefttest.Say("parent done")),
 		p.MustWrap("worker", "w", child)))
 	if err != nil {
@@ -161,18 +173,27 @@ func closeGiveUpDelegation(t *testing.T, st thread.Storage, shutdown, poolFirst 
 		}
 	}
 
-	pend := s2.Pending()
+	// The child's recovery runs on a pool goroutine (Recover's godoc):
+	// its still-running call reaches the parent as a mirror.
+	pend := waitMirror(t, s2)
+	mirrors := 0
 	for _, r := range pend {
-		if r.CallID == "d1" && r.Recovery {
+		switch {
+		case r.CallID == "d1" && r.Recovery:
 			t.Fatalf("d1 offered as a recovery request beside its live delegation: %+v", r)
+		case r.Child != "":
+			mirrors++
+			if !r.Recovery || !strings.Contains(r.Reason, "still running") {
+				t.Fatalf("mirror %+v, want the child's still-running call", r)
+			}
+		case r.CallID == "d1" && strings.Contains(r.Reason, "delegation is still open"):
+			// its boundary's dangling call, left to the pool
+		default:
+			t.Fatalf("unexpected pending %+v", r)
 		}
 	}
-	if !shutdown {
-		if len(pend) != 1 || pend[0].Child == "" || !pend[0].Recovery || !strings.Contains(pend[0].Reason, "still running") {
-			t.Fatalf("Pending = %+v, want only the child's still-running call, mirrored", pend)
-		}
-	} else if len(pend) != 1 || pend[0].CallID != "d1" || pend[0].Child != "" || !strings.Contains(pend[0].Reason, "delegation is still open") {
-		t.Fatalf("Pending = %+v, want d1 alone, its delegation open", pend)
+	if mirrors != 1 {
+		t.Fatalf("Pending = %+v, want the child's still-running call mirrored once", pend)
 	}
 	for _, r := range pend {
 		if r.Child != "" {
@@ -201,6 +222,25 @@ func closeGiveUpDelegation(t *testing.T, st thread.Storage, shutdown, poolFirst 
 	}
 	if m := mostAtOnce(); m > 1 {
 		t.Fatalf("%d ship handlers ran at once", m)
+	}
+}
+
+// waitMirror waits for a mirrored child request on s and returns its
+// pending requests then.
+func waitMirror(t *testing.T, s *thread.Session) []thread.Request {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pend := s.Pending()
+		for _, r := range pend {
+			if r.Child != "" {
+				return pend
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no mirrored request arrived: %+v", pend)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

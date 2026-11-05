@@ -702,7 +702,12 @@ a crash in that window leaves an accepted receipt with no child, which
 still parked, and pinned by `TestAcceptedChildNeverCreated`. A receipt
 that read past `accepted` keeps "child session <id> is gone". While a
 child is being made the pool counts it live, so a `Recover` beside the
-delegation does not settle it so.
+delegation does not settle it so, and `Wait` waits for its
+registration. `Children` and `Descendants` list a child whose receipt
+reads accepted and whose file has no complete header yet (being
+created, or torn by a crash inside its creation): the receipt says it
+is this parent's — a fork's copies of receipts are settled, never
+accepted — and the cascade must delete it too.
 
 **A cut-off delegate is let go (L1).** A child whose run a shutdown
 cut off (its parent session closed under `thread.ErrShutdown`) while
@@ -753,5 +758,6 @@ Tests: `TestCutOffDelegateIsRecoveredInProcess`,
 `TestCutOffDelegateCancelInProcess` (memory, jsonl, sqlite),
 `TestAcceptedChildNeverCreated`, `TestRecoveryRetryReachesTheSameChild`,
 `TestChildCreationFailureSettlesItsReceipt`,
+`TestChildrenListsAChildBeingCreated`,
 `TestDelegatedCoversGrandchildren`, `TestClassifyBillsTheSubtree`,
 `TestWrapRefusesHandlerMiddleware`, `TestBarePanicReleasesTheSlot`.

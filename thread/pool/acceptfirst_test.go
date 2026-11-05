@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,15 +151,18 @@ func TestRecoveryRetryReachesTheSameChild(t *testing.T) {
 	if err := p.Decide(ctx, s, bound(s, thread.Approve("d1"))); err != nil {
 		t.Fatalf("approve d1: %v", err)
 	}
+	// Until the child parks: its acceptance is written before it is
+	// created, so an accepted receipt may name a child not there yet.
 	deadline := time.Now().Add(10 * time.Second)
-	for len(pool.Receipts(s)) == 0 {
+	for rs := pool.Receipts(s); len(rs) == 0 || rs[0].State != pool.Parked; rs = pool.Receipts(s) {
 		if time.Now().After(deadline) {
-			t.Fatal("the approved retry never delegated")
+			t.Fatalf("the approved retry never delegated and parked: %+v", rs)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := pool.Receipts(s)[0].Child; got != child {
-		t.Errorf("the retry's child is %s, want the original call's derived id %s", got, child)
+	rc := pool.Receipts(s)[0]
+	if rc.Child != child {
+		t.Errorf("the retry's child is %s, want the original call's derived id %s", rc.Child, child)
 	}
 	if n := lineageOrphans(t, st, dir, s); n != 0 {
 		t.Errorf("%d session(s) carry the parent's lineage and no receipt names them", n)
@@ -213,5 +217,37 @@ func TestChildCreationFailureSettlesItsReceipt(t *testing.T) {
 	}
 	if !found {
 		t.Error("the delegating call's result does not carry the creation failure")
+	}
+}
+
+// A child whose receipt reads accepted and whose file has no complete
+// header yet — being created as Children reads it, or torn by a crash
+// inside its creation — is listed by Children and Descendants (the
+// receipt says it is this parent's), never refused as corrupt: the
+// cascade-delete list covers it.
+func TestChildrenListsAChildBeingCreated(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	top, child, mkChild := acceptFirstRun(t, dir)
+	cutBefore(t, filepath.Join(dir, top+".jsonl"), after(kind("pool_receipt")))
+	if err := os.WriteFile(filepath.Join(dir, child+".jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jsonl.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := thread.Open(ctx, st, top, mkChild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(ctx) }()
+	kids, err := pool.Children(ctx, s)
+	if err != nil || len(kids) != 1 || kids[0] != child {
+		t.Fatalf("Children = %v, %v; want [%s]", kids, err, child)
+	}
+	desc, err := pool.Descendants(ctx, s)
+	if err != nil || len(desc) != 1 || desc[0] != child {
+		t.Fatalf("Descendants = %v, %v; want [%s]", desc, err, child)
 	}
 }
