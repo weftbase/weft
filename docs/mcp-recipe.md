@@ -43,7 +43,9 @@ connection dropped under it — is an unknown outcome
 recovery ladder (ADR 0032). A call that provably never left — a refused
 dial, a session already closed — is a plain `mcp: …` failure. An
 imported call with no deadline (no `Timeout` on the tool or the agent,
-none on the run's ctx) is bounded at one minute.
+none on the run's ctx) is bounded at one minute; a `Timeout` through
+`mcp.Policy` replaces that bound, and `Policy(core.Timeout(0))` lifts it
+on purpose (the call then runs with no deadline).
 
 `mcp.Serve` runs each served tool under its own `Timeout` (else the
 agent's) and result cap, as the loop would; the agent tool runs the agent

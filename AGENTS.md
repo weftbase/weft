@@ -78,7 +78,7 @@ lookup := weft.Tool("lookup_order", "Look up an order by ID.",
 //     Every imported tools/call sends its Call.IdempotencyKey in _meta (this release also under the old
 //     dev.weftgo/ name); an answer lost after sending is ErrOutcomeUnknown — OUTCOME_UNKNOWN unless the tool is
 //     ReplaySafe; a call that provably never left is a plain "mcp: …" failure; with no deadline a call is bounded
-//     at one minute. mcp.CallerMeta() adds the caller link (traceparent + ai.weftbase/caller; Serve applies it
+//     at one minute (a Policy Timeout replaces it; Policy(weft.Timeout(0)) lifts it). mcp.CallerMeta() adds the caller link (traceparent + ai.weftbase/caller; Serve applies it
 //     with weft.WithCaller(ctx, weft.Caller{RunID, CallID, Span}) — a remote link, never parenthood).
 
 // 2. An agent is a value. Build once, run many times, concurrently.

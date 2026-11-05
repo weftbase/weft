@@ -260,7 +260,10 @@ func chainHandler(a *core.Agent, t *core.ToolDef, state *serveState) sdk.ToolHan
 			Name: t.Name,
 			Args: args,
 		}
-		out, err := a.ServeCall(ctx, call, key)
+		// ServeCall contains its own panics; containedInvoke stays as the
+		// last guard, for the go-sdk recovers none and a panic here
+		// would end the server process.
+		out, err := containedInvoke(t.Name, func() (string, error) { return a.ServeCall(ctx, call, key) })
 		if err != nil {
 			return errorResult(err), nil
 		}
