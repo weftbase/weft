@@ -3,6 +3,7 @@ package thread_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -143,18 +144,23 @@ func TestInterruptedResumeLeavesItsRecoveryRequestForAPerson(t *testing.T) {
 }
 
 // recoveryBoundary parks a turn on two calls: "ask", an ordinary
-// approval request, and "ship", a ReplayNever call abandoned at its
-// Timeout whose handler then returned — a recovery request (outcome
+// approval request, and "ship", a ReplayNever call whose handler lost
+// its answer (core.ErrOutcomeUnknown) — a recovery request (outcome
 // unknown) for a person. It returns the session and how many times
 // ship's handler ran.
+//
+// ship says it lost its answer rather than outliving a short Timeout:
+// a Timeout spans the dispatch gate too, and one that passes while the
+// gate is still recording the call (a loaded machine) ends a call that
+// never started — answered as timed out, no recovery request
+// (TestTimeoutInTheDispatchGateStartsNothing).
 func recoveryBoundary(t *testing.T, st thread.Storage, opts ...thread.SessionOption) (*thread.Session, *atomic.Int32) {
 	t.Helper()
 	var shipped atomic.Int32
 	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		shipped.Add(1)
-		time.Sleep(300 * time.Millisecond)
-		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
+		return "", fmt.Errorf("%w: the carrier's answer was lost", core.ErrOutcomeUnknown)
+	}, core.Replay(core.ReplayNever))
 	ask := core.Tool("ask", "Ask.", func(context.Context, struct{}) (string, error) {
 		return "asked", nil
 	}, core.RequireApproval())

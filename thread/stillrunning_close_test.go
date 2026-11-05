@@ -171,59 +171,68 @@ func TestCloseGiveUpThenRecoverTurnWaitsForTheStillRunningHandler(t *testing.T) 
 // matches the run id and call id whatever session asks — and taken
 // once it returned: no second handler beside the first.
 func TestForkRefusesApprovingAStillRunningCall(t *testing.T) {
-	ship := &abandonedTool{release: make(chan struct{})}
-	released := false
-	defer func() {
-		if !released {
-			close(ship.release)
+	outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
+		ship := &abandonedTool{release: make(chan struct{})}
+		released := false
+		defer func() {
+			if !released {
+				close(ship.release)
+			}
+		}()
+		s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+			wefttest.Say("done"),
+		), ship.def(core.ReplayNever, timeout)))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-		wefttest.Say("done"),
-	), ship.def(core.ReplayNever)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close(bg) }()
-	turn, err := s.Send(bg, core.User("ship it"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = turn.Wait()
-	if p := s.Pending(); len(p) != 1 || !strings.Contains(p[0].Reason, "still running") {
-		t.Fatalf("Pending = %+v", p)
-	}
-	f, err := s.Fork(bg, s.Leaf())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close(bg) }()
-	fp := f.Pending()
-	if len(fp) != 1 || !fp[0].Recovery {
-		t.Fatalf("fork Pending = %+v, want the still-running recovery request carried", fp)
-	}
-	if rt, err := f.Decide(bg, thread.Approve("s1").Bind(fp[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
-		t.Fatalf("the fork's Decide while the handler runs = %v, %v; want ErrStillRunning", rt, err)
-	}
-	close(ship.release)
-	released = true
-	var rt *thread.Turn
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rt, err = f.Decide(bg, thread.Approve("s1").Bind(fp[0]))
-		if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
-			break
+		defer func() { _ = s.Close(bg) }()
+		turn, err := s.Send(bg, core.User("ship it"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if err != nil || rt == nil {
-		t.Fatalf("the fork's Decide after the handler returned = %v, %v", rt, err)
-	}
-	if _, err := rt.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if invoked, most := ship.counts(); invoked != 2 || most != 1 {
-		t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
-	}
+		_, _ = turn.Wait()
+		if invoked, _ := ship.counts(); invoked == 0 {
+			return false // timed out in the gate: never started
+		}
+		if p := s.Pending(); len(p) != 1 || !strings.Contains(p[0].Reason, "still running") {
+			t.Fatalf("Pending = %+v", p)
+		}
+		f, err := s.Fork(bg, s.Leaf())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close(bg) }()
+		fp := f.Pending()
+		if len(fp) != 1 || !fp[0].Recovery {
+			t.Fatalf("fork Pending = %+v, want the still-running recovery request carried", fp)
+		}
+		if rt, err := f.Decide(bg, thread.Approve("s1").Bind(fp[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
+			t.Fatalf("the fork's Decide while the handler runs = %v, %v; want ErrStillRunning", rt, err)
+		}
+		close(ship.release)
+		released = true
+		var rt *thread.Turn
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			rt, err = f.Decide(bg, thread.Approve("s1").Bind(fp[0]))
+			if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err != nil || rt == nil {
+			t.Fatalf("the fork's Decide after the handler returned = %v, %v", rt, err)
+		}
+		if _, err := rt.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if gateTimedOut(f) {
+			return false // the retry timed out in the gate
+		}
+		if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+			t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
+		}
+		return true
+	})
 }

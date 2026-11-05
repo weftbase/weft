@@ -43,68 +43,77 @@ func TestStillRunningSurvivesAnInProcessReopen(t *testing.T) {
 			}
 			for _, sc := range stores {
 				t.Run(sc.name, func(t *testing.T) {
-					ship := &abandonedTool{release: make(chan struct{})}
-					released := false
-					defer func() {
-						if !released {
-							close(ship.release)
+					outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
+						ship := &abandonedTool{release: make(chan struct{})}
+						released := false
+						defer func() {
+							if !released {
+								close(ship.release)
+							}
+						}()
+						st := sc.first(t)
+						s, err := thread.Create(bg, st, core.New(wefttest.Script(
+							wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+						), ship.def(policy, timeout)))
+						if err != nil {
+							t.Fatal(err)
 						}
-					}()
-					st := sc.first(t)
-					s, err := thread.Create(bg, st, core.New(wefttest.Script(
-						wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-					), ship.def(policy)))
-					if err != nil {
-						t.Fatal(err)
-					}
-					turn, err := s.Send(bg, core.User("ship it"))
-					if err != nil {
-						t.Fatal(err)
-					}
-					_, _ = turn.Wait()
-					p := s.Pending()
-					if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "still running") {
-						t.Fatalf("Pending = %+v", p)
-					}
-					if err := s.Close(bg); err != nil {
-						t.Fatal(err)
-					}
-					s2, err := thread.Open(bg, sc.reopen(t, st), s.ID(),
-						core.New(wefttest.Script(wefttest.Say("done")), ship.def(policy)))
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer func() { _ = s2.Close(bg) }()
-					p = s2.Pending()
-					if len(p) != 1 {
-						t.Fatalf("reopened Pending = %+v", p)
-					}
-					if rt, err := s2.Decide(bg, thread.Approve("s1").Bind(p[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
-						t.Fatalf("Decide on the reopened session while the handler runs = %v, %v; want ErrStillRunning", rt, err)
-					}
-					if len(s2.Pending()) != 1 {
-						t.Fatalf("the refused approval recorded something: %+v", s2.Pending())
-					}
-					close(ship.release)
-					released = true
-					var rt *thread.Turn
-					deadline := time.Now().Add(5 * time.Second)
-					for {
-						rt, err = s2.Decide(bg, thread.Approve("s1").Bind(p[0]))
-						if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
-							break
+						turn, err := s.Send(bg, core.User("ship it"))
+						if err != nil {
+							t.Fatal(err)
 						}
-						time.Sleep(5 * time.Millisecond)
-					}
-					if err != nil || rt == nil {
-						t.Fatalf("Decide after the handler returned = %v, %v", rt, err)
-					}
-					if res, err := rt.Wait(); err != nil || res.Text() != "done" {
-						t.Fatalf("resume = %v, %v", res, err)
-					}
-					if invoked, most := ship.counts(); invoked != 2 || most != 1 {
-						t.Fatalf("ship ran %d times, at most %d at once: want the retry after the first returned", invoked, most)
-					}
+						_, _ = turn.Wait()
+						if invoked, _ := ship.counts(); invoked == 0 {
+							_ = s.Close(bg)
+							return false // timed out in the gate: never started
+						}
+						p := s.Pending()
+						if len(p) != 1 || !p[0].Recovery || !strings.Contains(p[0].Reason, "still running") {
+							t.Fatalf("Pending = %+v", p)
+						}
+						if err := s.Close(bg); err != nil {
+							t.Fatal(err)
+						}
+						// The retry answers at once: its Timeout is no
+						// deadline for the dispatch gate to race.
+						s2, err := thread.Open(bg, sc.reopen(t, st), s.ID(),
+							core.New(wefttest.Script(wefttest.Say("done")), ship.def(policy, time.Minute)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer func() { _ = s2.Close(bg) }()
+						p = s2.Pending()
+						if len(p) != 1 {
+							t.Fatalf("reopened Pending = %+v", p)
+						}
+						if rt, err := s2.Decide(bg, thread.Approve("s1").Bind(p[0])); !errors.Is(err, thread.ErrStillRunning) || rt != nil {
+							t.Fatalf("Decide on the reopened session while the handler runs = %v, %v; want ErrStillRunning", rt, err)
+						}
+						if len(s2.Pending()) != 1 {
+							t.Fatalf("the refused approval recorded something: %+v", s2.Pending())
+						}
+						close(ship.release)
+						released = true
+						var rt *thread.Turn
+						deadline := time.Now().Add(5 * time.Second)
+						for {
+							rt, err = s2.Decide(bg, thread.Approve("s1").Bind(p[0]))
+							if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+								break
+							}
+							time.Sleep(5 * time.Millisecond)
+						}
+						if err != nil || rt == nil {
+							t.Fatalf("Decide after the handler returned = %v, %v", rt, err)
+						}
+						if res, err := rt.Wait(); err != nil || res.Text() != "done" {
+							t.Fatalf("resume = %v, %v", res, err)
+						}
+						if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+							t.Fatalf("ship ran %d times, at most %d at once: want the retry after the first returned", invoked, most)
+						}
+						return true
+					})
 				})
 			}
 		})
@@ -128,25 +137,35 @@ func TestStillRunningRunIDCollisionOnlyRefuses(t *testing.T) {
 			return fmt.Sprintf("e_%d", n.Load())
 		})
 	}
-	held := &abandonedTool{release: make(chan struct{})}
+	var held *abandonedTool
+	var a *thread.Session
+	outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
+		held = &abandonedTool{release: make(chan struct{})}
+		var err error
+		a, err = thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+		), held.def(core.ReplayNever, timeout)), pinned())
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn, err := a.Send(bg, core.User("ship it"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = turn.Wait()
+		if invoked, _ := held.counts(); invoked == 0 {
+			_ = a.Close(bg)
+			return false // timed out in the gate: never started
+		}
+		return true
+	})
 	released := false
 	defer func() {
 		if !released {
 			close(held.release)
 		}
 	}()
-	a, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-	), held.def(core.ReplayNever)), pinned())
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer func() { _ = a.Close(bg) }()
-	turn, err := a.Send(bg, core.User("ship it"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = turn.Wait()
 	pa := a.Pending()
 	if len(pa) != 1 || !strings.Contains(pa[0].Reason, "still running") {
 		t.Fatalf("a's Pending = %+v", pa)
@@ -155,10 +174,12 @@ func TestStillRunningRunIDCollisionOnlyRefuses(t *testing.T) {
 	var ran atomic.Int32
 	quick := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		if ran.Add(1) == 1 {
-			time.Sleep(300 * time.Millisecond) // past its Timeout, back inside the bound
+			// Its answer lost, the handler returned: of unknown outcome,
+			// nothing still running in b.
+			return "", fmt.Errorf("%w: the carrier's answer was lost", core.ErrOutcomeUnknown)
 		}
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
+	}, core.Replay(core.ReplayNever))
 	b, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("done"),
@@ -170,7 +191,7 @@ func TestStillRunningRunIDCollisionOnlyRefuses(t *testing.T) {
 	if a.ID() != b.ID() {
 		t.Fatalf("ids %s and %s: the test needs one id", a.ID(), b.ID())
 	}
-	turn, err = b.Send(bg, core.User("ship it"))
+	turn, err := b.Send(bg, core.User("ship it"))
 	if err != nil {
 		t.Fatal(err)
 	}

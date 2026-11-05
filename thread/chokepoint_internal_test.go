@@ -3,6 +3,8 @@ package thread
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,13 +17,15 @@ import (
 // armResumeLocked, armSettledLocked's AutoResume arm, the runner's own
 // mintResumeLocked hand-offs, armRecoveredLocked — and none registers
 // a resume; the runner's start check (resumeRefusedLocked, run by
-// runResume) refuses a resume armed before the request appeared.
+// runResume) refuses a resume armed before the request appeared. The
+// request is ship's: a ReplayNever call whose handler lost its answer
+// (core.ErrOutcomeUnknown — not a short Timeout, which can pass while
+// the dispatch gate still records the call and then starts nothing).
 func TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest(t *testing.T) {
 	ctx := context.Background()
 	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
-		time.Sleep(300 * time.Millisecond)
-		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
+		return "", fmt.Errorf("%w: the carrier's answer was lost", core.ErrOutcomeUnknown)
+	}, core.Replay(core.ReplayNever))
 	s, err := Create(ctx, Memory(), core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("x"),
@@ -71,26 +75,46 @@ func TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest(t *testing.T) {
 // P2-2: the abandoned-handler registry holds only handlers still
 // running — an entry is released when its handler returns, whatever
 // became of the request (here: still pending, then denied).
+//
+// The handler must start before its Timeout passes, and a Timeout
+// spans the dispatch gate: one that passes while the gate is still
+// recording the call (a loaded machine) ends a call that never started
+// — nothing abandoned. Another session tries again then, with twice
+// the Timeout.
 func TestAbandonedRegistryReleasesOnReturn(t *testing.T) {
 	ctx := context.Background()
 	release := make(chan struct{})
-	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
-		<-release
-		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
-	s, err := Create(ctx, Memory(), core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-		wefttest.Say("skipped"),
-	), ship))
-	if err != nil {
-		t.Fatal(err)
+	var s *Session
+	for timeout, attempt := 100*time.Millisecond, 1; ; timeout, attempt = 2*timeout, attempt+1 {
+		var started atomic.Bool
+		ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
+			started.Store(true)
+			<-release
+			return "shipped", nil
+		}, core.Replay(core.ReplayNever), core.Timeout(timeout))
+		var err error
+		s, err = Create(ctx, Memory(), core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+			wefttest.Say("skipped"),
+		), ship))
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn, err := s.Send(ctx, core.User("go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = turn.Wait()
+		if started.Load() {
+			break
+		}
+		_ = s.Close(ctx) // timed out in the gate: never started
+		t.Logf("the call timed out in the dispatch gate under a Timeout of %v: again, with twice that", timeout)
+		if attempt == 8 {
+			t.Fatalf("the call timed out in the dispatch gate 8 times running (the last Timeout %v)", timeout)
+		}
 	}
 	defer func() { _ = s.Close(ctx) }()
-	turn, err := s.Send(ctx, core.User("go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = turn.Wait()
 	p := s.Pending()
 	if len(p) != 1 || p[0].Reason != reasonStillRunning {
 		t.Fatalf("pending = %+v", p)

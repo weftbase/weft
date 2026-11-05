@@ -20,25 +20,51 @@ import (
 func TestPumpWhenReturnedKeepsOneWaiterPerHandler(t *testing.T) {
 	ctx := context.Background()
 	release := make(chan struct{})
-	var ran atomic.Int32
-	ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
-		if ran.Add(1) == 1 {
-			<-release // ignores its Timeout
+	// ship's handler must start before its Timeout passes, and a
+	// Timeout spans the child's dispatch gate: one that passes while
+	// the gate is still recording the call (a loaded machine) ends a
+	// call that never started — nothing abandoned. Another delegation
+	// tries again then, with twice the Timeout.
+	var p *Pool
+	var s *thread.Session
+	for timeout, attempt := 100*time.Millisecond, 1; ; timeout, attempt = 2*timeout, attempt+1 {
+		var ran atomic.Int32
+		ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
+			if ran.Add(1) == 1 {
+				<-release // ignores its Timeout
+			}
+			return "shipped", nil
+		}, core.Replay(core.ReplayNever), core.Timeout(timeout))
+		p = New(4)
+		child := core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
+			wefttest.Say("child done"),
+		), ship)
+		parent := core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "worker", ID: "d1", Args: wefttest.Args(struct{ Prompt string }{"go"})}),
+			wefttest.Say("parent done"),
+		), p.MustWrap("worker", "w", child))
+		var err error
+		s, err = thread.Create(ctx, thread.Memory(), parent)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
-	p := New(4)
-	child := core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-		wefttest.Say("child done"),
-	), ship)
-	parent := core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "worker", ID: "d1", Args: wefttest.Args(struct{ Prompt string }{"go"})}),
-		wefttest.Say("parent done"),
-	), p.MustWrap("worker", "w", child))
-	s, err := thread.Create(ctx, thread.Memory(), parent)
-	if err != nil {
-		t.Fatal(err)
+		turn, err := s.Send(ctx, core.User("go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := turn.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if ran.Load() != 0 {
+			break
+		}
+		_ = p.Close(ctx) // timed out in the gate: never started
+		_ = s.Close(ctx)
+		t.Logf("the call timed out in the dispatch gate under a Timeout of %v: again, with twice that", timeout)
+		if attempt == 8 {
+			t.Fatalf("the call timed out in the dispatch gate 8 times running (the last Timeout %v)", timeout)
+		}
 	}
 	released := false
 	defer func() {
@@ -48,13 +74,6 @@ func TestPumpWhenReturnedKeepsOneWaiterPerHandler(t *testing.T) {
 		_ = p.Close(ctx)
 		_ = s.Close(ctx)
 	}()
-	turn, err := s.Send(ctx, core.User("go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := turn.Wait(); err != nil {
-		t.Fatal(err)
-	}
 	pend := s.Pending()
 	if len(pend) != 1 || pend[0].Child == "" || !strings.Contains(pend[0].Reason, "still running") {
 		t.Fatalf("parent Pending = %+v, want the child's still-running recovery request mirrored", pend)

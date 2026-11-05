@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -50,15 +51,51 @@ func poolStores(t *testing.T) []struct {
 	}
 }
 
-// heldShip is a child tool whose first handler ignores its Timeout and
-// runs until released: abandoned, still running past the bound.
+// outlive runs attempt until the child calls it makes outlive their
+// short Timeout — their handlers started and the loop abandoned them —
+// and none times out in the child's dispatch gate instead. A Timeout
+// spans the gate, and one that passes while the gate is still
+// recording the call (storage slower than the deadline: a loaded
+// machine, a slow fsync) ends a call that never started — answered as
+// timed out, nothing abandoned, nothing to recover. attempt builds its
+// sessions and tools afresh with the Timeout it is given and returns
+// false when a call timed out in the gate; the next attempt doubles the
+// Timeout. thread's tests have the same helper.
+func outlive(t *testing.T, timeout time.Duration, attempt func(timeout time.Duration) bool) {
+	t.Helper()
+	for range 8 {
+		if attempt(timeout) {
+			return
+		}
+		t.Logf("a call timed out in the dispatch gate under a Timeout of %v: again, with twice that", timeout)
+		timeout *= 2
+	}
+	t.Fatalf("a call timed out in the dispatch gate 8 times running (the last Timeout %v)", timeout/2)
+}
+
+// gateTimedOut reports whether one of the results is a call that timed
+// out before its handler started — in the dispatch gate (outlive). A
+// call whose handler started and outlived its Timeout reads
+// OUTCOME_UNKNOWN, never "timed out".
+func gateTimedOut(results []string) bool {
+	for _, r := range results {
+		if strings.Contains(r, " timed out after ") {
+			return true
+		}
+	}
+	return false
+}
+
+// heldShip is a child tool whose first handler ignores its short
+// Timeout and runs until released: abandoned, still running past the
+// bound.
 type heldShip struct {
 	mu                    sync.Mutex
 	invoked, active, most int
 	release               chan struct{}
 }
 
-func (h *heldShip) def() *core.ToolDef {
+func (h *heldShip) def(timeout time.Duration) *core.ToolDef {
 	return core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 		h.mu.Lock()
 		h.invoked++
@@ -71,7 +108,7 @@ func (h *heldShip) def() *core.ToolDef {
 			<-h.release
 		}
 		return "shipped", nil
-	}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
+	}, core.Replay(core.ReplayNever), core.Timeout(timeout))
 }
 
 func (h *heldShip) counts() (invoked, most int) {
@@ -81,17 +118,19 @@ func (h *heldShip) counts() (invoked, most int) {
 }
 
 // stillRunningDelegation runs a parent turn that delegates to a child
-// whose ship call is abandoned and still running: the child parks it
-// as a recovery request, mirrored onto the parent.
-func stillRunningDelegation(t *testing.T, st thread.Storage) (*pool.Pool, *thread.Session, *heldShip, thread.Request) {
+// whose ship call, under timeout, is abandoned and still running: the
+// child parks it as a recovery request, mirrored onto the parent. ok is
+// false when the call timed out in the child's dispatch gate instead
+// (outlive).
+func stillRunningDelegation(t *testing.T, st thread.Storage, timeout time.Duration) (p *pool.Pool, s *thread.Session, ship *heldShip, mirror thread.Request, ok bool) {
 	t.Helper()
 	ctx := context.Background()
-	ship := &heldShip{release: make(chan struct{})}
+	ship = &heldShip{release: make(chan struct{})}
 	child := core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
 		wefttest.Say("child done"),
-	), ship.def())
-	p := pool.New(4)
+	), ship.def(timeout))
+	p = pool.New(4)
 	parent := core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "worker", ID: "d1", Args: wefttest.Args(struct{ Prompt string }{"go"})}),
 		wefttest.Say("parent done"),
@@ -116,11 +155,14 @@ func stillRunningDelegation(t *testing.T, st thread.Storage) (*pool.Pool, *threa
 	if _, err := turn.Wait(); err != nil {
 		t.Fatal(err)
 	}
+	if invoked, _ := ship.counts(); invoked == 0 {
+		return p, s, ship, thread.Request{}, false // timed out in the gate: never started
+	}
 	pend := s.Pending()
 	if len(pend) != 1 || !pend[0].Recovery || pend[0].Child == "" || !strings.Contains(pend[0].Reason, "still running") {
 		t.Fatalf("parent Pending = %+v, want the child's still-running recovery request mirrored", pend)
 	}
-	return p, s, ship, pend[0]
+	return p, s, ship, pend[0], true
 }
 
 // waitReceipt waits for the parent's one receipt to reach state.
@@ -182,37 +224,46 @@ func assertParkedOnTheMirror(t *testing.T, s *thread.Session, mirror thread.Requ
 func TestPoolDecideRefusesApprovingAStillRunningChildCall(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		t.Run(sc.name, func(t *testing.T) {
-			ctx := context.Background()
-			p, s, ship, mirror := stillRunningDelegation(t, sc.st(t))
-			err := p.Decide(ctx, s, bound(s, thread.Approve(mirror.CallID)))
-			if !errors.Is(err, thread.ErrStillRunning) {
-				t.Fatalf("Pool.Decide = %v, want ErrStillRunning", err)
-			}
-			if pend := s.Pending(); len(pend) != 1 || pend[0].ID != mirror.ID {
-				t.Fatalf("parent Pending = %+v: the refused approval recorded something", pend)
-			}
-			for _, e := range s.Entries() {
-				if d, ok := e.(thread.ApprovalDecisionEntry); ok && d.CallID == mirror.CallID {
-					t.Fatalf("the refused approval was recorded: %+v", d)
+			outlive(t, 100*time.Millisecond, func(timeout time.Duration) bool {
+				ctx := context.Background()
+				p, s, ship, mirror, ok := stillRunningDelegation(t, sc.st(t), timeout)
+				if !ok {
+					return false
 				}
-			}
-			assertParkedOnTheMirror(t, s, mirror)
-			close(ship.release)
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				err = p.Decide(ctx, s, bound(s, thread.Approve(mirror.CallID)))
-				if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
-					break
+				err := p.Decide(ctx, s, bound(s, thread.Approve(mirror.CallID)))
+				if !errors.Is(err, thread.ErrStillRunning) {
+					t.Fatalf("Pool.Decide = %v, want ErrStillRunning", err)
 				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			if err != nil {
-				t.Fatalf("Pool.Decide after the handler returned = %v", err)
-			}
-			waitReceipt(t, s, pool.Done)
-			if invoked, most := ship.counts(); invoked != 2 || most != 1 {
-				t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
-			}
+				if pend := s.Pending(); len(pend) != 1 || pend[0].ID != mirror.ID {
+					t.Fatalf("parent Pending = %+v: the refused approval recorded something", pend)
+				}
+				for _, e := range s.Entries() {
+					if d, ok := e.(thread.ApprovalDecisionEntry); ok && d.CallID == mirror.CallID {
+						t.Fatalf("the refused approval was recorded: %+v", d)
+					}
+				}
+				assertParkedOnTheMirror(t, s, mirror)
+				close(ship.release)
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					err = p.Decide(ctx, s, bound(s, thread.Approve(mirror.CallID)))
+					if !errors.Is(err, thread.ErrStillRunning) || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				if err != nil {
+					t.Fatalf("Pool.Decide after the handler returned = %v", err)
+				}
+				rc := waitReceipt(t, s, pool.Done)
+				if gateTimedOut(toolResultsIn(t, s.Storage(), rc.Child)) {
+					return false // the child's retry timed out in the gate
+				}
+				if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+					t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
+				}
+				return true
+			})
 		})
 	}
 }
@@ -226,28 +277,37 @@ func TestPoolDecideRefusesApprovingAStillRunningChildCall(t *testing.T) {
 func TestRefusedChildReplayKeepsTheDelegationParked(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		t.Run(sc.name, func(t *testing.T) {
-			ctx := context.Background()
-			p, s, ship, mirror := stillRunningDelegation(t, sc.st(t))
-			if _, err := s.Decide(ctx, bound(s, thread.Approve(mirror.CallID))); err != nil {
-				t.Fatalf("parent Decide = %v", err)
-			}
-			if err := p.Decide(ctx, s); err != nil { // the pump: the child refuses the replay
-				t.Fatalf("Pool.Decide (pump) = %v", err)
-			}
-			assertParkedOnTheMirror(t, s, mirror)
-			for _, e := range s.Entries() {
-				if me, ok := e.(thread.MessageEntry); ok && strings.Contains(me.Message.Text(), "SUBAGENT_FAILED") {
-					t.Fatalf("the parent's model read %q", me.Message.Text())
+			outlive(t, 100*time.Millisecond, func(timeout time.Duration) bool {
+				ctx := context.Background()
+				p, s, ship, mirror, ok := stillRunningDelegation(t, sc.st(t), timeout)
+				if !ok {
+					return false
 				}
-			}
-			if invoked, _ := ship.counts(); invoked != 1 {
-				t.Fatalf("ship ran %d times while its first handler ran", invoked)
-			}
-			close(ship.release) // the handler returns: the pool replays
-			waitReceipt(t, s, pool.Done)
-			if invoked, most := ship.counts(); invoked != 2 || most != 1 {
-				t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
-			}
+				if _, err := s.Decide(ctx, bound(s, thread.Approve(mirror.CallID))); err != nil {
+					t.Fatalf("parent Decide = %v", err)
+				}
+				if err := p.Decide(ctx, s); err != nil { // the pump: the child refuses the replay
+					t.Fatalf("Pool.Decide (pump) = %v", err)
+				}
+				assertParkedOnTheMirror(t, s, mirror)
+				for _, e := range s.Entries() {
+					if me, ok := e.(thread.MessageEntry); ok && strings.Contains(me.Message.Text(), "SUBAGENT_FAILED") {
+						t.Fatalf("the parent's model read %q", me.Message.Text())
+					}
+				}
+				if invoked, _ := ship.counts(); invoked != 1 {
+					t.Fatalf("ship ran %d times while its first handler ran", invoked)
+				}
+				close(ship.release) // the handler returns: the pool replays
+				rc := waitReceipt(t, s, pool.Done)
+				if gateTimedOut(toolResultsIn(t, s.Storage(), rc.Child)) {
+					return false // the child's retry timed out in the gate
+				}
+				if invoked, most := ship.counts(); invoked != 2 || most != 1 {
+					t.Fatalf("ship ran %d times, at most %d at once", invoked, most)
+				}
+				return true
+			})
 		})
 	}
 }
@@ -263,11 +323,14 @@ func TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			ctx := context.Background()
 			var shipped atomic.Int32
+			// ship's handler lost its answer (core.ErrOutcomeUnknown):
+			// a recovery request. Not a short Timeout — one that passes
+			// while the child's dispatch gate still records the call
+			// starts nothing and parks nothing.
 			ship := core.Tool("ship", "Ship.", func(context.Context, struct{}) (string, error) {
 				shipped.Add(1)
-				time.Sleep(300 * time.Millisecond)
-				return "shipped", nil
-			}, core.Replay(core.ReplayNever), core.Timeout(100*time.Millisecond))
+				return "", fmt.Errorf("%w: the carrier's answer was lost", core.ErrOutcomeUnknown)
+			}, core.Replay(core.ReplayNever))
 			ask := core.Tool("ask", "Ask.", func(context.Context, struct{}) (string, error) {
 				return "asked", nil
 			}, core.RequireApproval())

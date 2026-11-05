@@ -3,12 +3,12 @@ package thread_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -678,13 +678,22 @@ func TestZombieWorkerAgainstRecovery(t *testing.T) {
 	}
 }
 
-// WR-6 under a session: a call with an effect whose handler outlives
-// its Timeout has an unknown outcome. The session does not hand the
-// model a guess: a ReplayNever call parks as a recovery request (the
-// turn ends at that boundary, the step's other results kept), and a
-// ReplayKeyed one is retried at once under its same key. Both
+// WR-6 under a session: a call with an effect whose first attempt
+// lost its answer has an unknown outcome. The session does not hand
+// the model a guess: a ReplayNever call parks as a recovery request
+// (the turn ends at that boundary, the step's other results kept), and
+// a ReplayKeyed one is retried at once under its same key. Both
 // backends, the recovery request across a restart.
-func TestTimeoutParksForRecovery(t *testing.T) {
+//
+// The first attempt says it lost its answer (core.ErrOutcomeUnknown)
+// rather than outliving a short Timeout: a Timeout spans the dispatch
+// gate too, and one that passes while the gate is still recording the
+// call (a loaded machine) ends a call that never started — answered as
+// timed out, nothing to recover (TestTimeoutInTheDispatchGateStartsNothing).
+// A handler abandoned at its Timeout takes the same ladder
+// (TestAbandonedHandlerIsNotReconciledAndRerun,
+// TestKeyedRetryWaitsForTheAbandonedHandler).
+func TestUnknownOutcomeParksForRecovery(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -697,11 +706,10 @@ func TestTimeoutParksForRecovery(t *testing.T) {
 					n := len(keys[name])
 					mu.Unlock()
 					if n == 1 {
-						<-ctx.Done() // the first attempt never answers in time
-						return "", ctx.Err()
+						return "", fmt.Errorf("%w: the first attempt's answer was lost", core.ErrOutcomeUnknown)
 					}
 					return name + " ok", nil
-				}, append(opts, core.Timeout(20*time.Millisecond))...)
+				}, opts...)
 			}
 			tools := func() []core.Option {
 				return []core.Option{slow("pay"), slow("ship", core.Replay(core.ReplayKeyed)),
