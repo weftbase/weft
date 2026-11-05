@@ -7639,3 +7639,80 @@ func TestWithCallerLinksRunsStartedOnCtx(t *testing.T) {
 		check(a, nil)
 	}
 }
+
+// TestServeCallAppliesRunPolicy: Agent.ServeCall — a call served from
+// outside any run (weft/mcp's Serve) — gets the run policy CallTool
+// leaves out: the handler's Call carries the client's key (stable on a
+// retry, so a deduplicating handler applies it once), the tool's
+// Timeout reads the pinned "timed out" text (OUTCOME_UNKNOWN for a tool
+// that is not ReplaySafe), the result cap applies, a panic is contained,
+// and a RequireApproval tool does not run.
+func TestServeCallAppliesRunPolicy(t *testing.T) {
+	var applied sync.Map
+	var runs atomic.Int32
+	pay := core.Tool("pay", "Pay.", func(ctx context.Context, _ struct{}) (string, error) {
+		c, ok := core.CallFromContext(ctx)
+		if !ok || c.IdempotencyKey == "" || c.Approved || c.RunID != "" {
+			return "", fmt.Errorf("call %+v ok=%v", c, ok)
+		}
+		if _, dup := applied.LoadOrStore(c.IdempotencyKey, true); !dup {
+			runs.Add(1)
+		}
+		return "paid " + c.CallID, nil
+	}, core.Replay(core.ReplayKeyed))
+	slowSafe := core.Tool("slow_safe", "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond)
+		return "late", nil
+	}, core.Timeout(20*time.Millisecond), core.Replay(core.ReplaySafe))
+	slowEffect := core.Tool("slow_effect", "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+		time.Sleep(300 * time.Millisecond)
+		return "late", nil
+	})
+	big := core.Tool("big", "Big.", func(context.Context, struct{}) (string, error) {
+		return strings.Repeat("x", 100), nil
+	}, core.MaxResultBytes(10), core.Replay(core.ReplaySafe))
+	boom := core.Tool("boom", "Boom.", func(context.Context, struct{}) (string, error) {
+		panic("kaboom")
+	}, core.Replay(core.ReplaySafe))
+	gated := core.Tool("gated", "Gated.", func(context.Context, struct{}) (string, error) {
+		return "ran", nil
+	}, core.RequireApproval())
+	agt := core.New(wefttest.Script(wefttest.Say("x")), core.Timeout(40*time.Millisecond),
+		pay, slowSafe, slowEffect, big, boom, gated)
+	ctx := context.Background()
+	call := func(name string) core.ToolCallPart {
+		return core.ToolCallPart{ID: "id_" + name, Name: name, Args: json.RawMessage(`{}`)}
+	}
+
+	for i := 0; i < 2; i++ { // a retry carries the same key
+		if out, err := agt.ServeCall(ctx, call("pay"), "K1"); err != nil || out != "paid id_pay" {
+			t.Fatalf("pay: %q %v", out, err)
+		}
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("a retried key applied %d times, want 1", runs.Load())
+	}
+	_, err := agt.ServeCall(ctx, call("slow_safe"), "")
+	if err == nil || err.Error() != `tool "slow_safe" timed out after 20ms` || errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Errorf("safe timeout: %v", err)
+	}
+	start := time.Now()
+	_, err = agt.ServeCall(ctx, call("slow_effect"), "")
+	if err == nil || !errors.Is(err, core.ErrOutcomeUnknown) ||
+		err.Error() != `OUTCOME_UNKNOWN: tool "slow_effect" did not answer within 40ms; it may still complete; outcome unknown` {
+		t.Errorf("agent-default timeout on an effect: %v", err)
+	}
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Errorf("the agent's Timeout did not bound the call: %v", d)
+	}
+	if out, err := agt.ServeCall(ctx, call("big"), ""); err != nil || out != "xxxxxxxxxx\n…[truncated 90 bytes]" {
+		t.Errorf("cap: %q %v", out, err)
+	}
+	if _, err := agt.ServeCall(ctx, call("boom"), ""); err == nil || err.Error() != `tool "boom" panicked: kaboom` {
+		t.Errorf("panic: %v", err)
+	}
+	if _, err := agt.ServeCall(ctx, call("gated"), ""); !errors.Is(err, core.ErrApprovalRequired) {
+		t.Errorf("gated: %v", err)
+	}
+}

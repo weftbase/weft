@@ -873,7 +873,8 @@ type Call struct {
 	// CallTool calls (the first 128 bits of the SHA-256 of the outer key
 	// and the 1-based position, NUL-separated, in hex): the same on a
 	// retry of the outer call that dispatches in the same order. Empty
-	// outside the loop.
+	// outside the loop, except under Agent.ServeCall: the key its
+	// caller passes (a served request's own).
 	IdempotencyKey string
 	// Outer is the id of the call whose handler dispatched this one
 	// with Agent.CallTool; empty for a call the loop dispatched. A
@@ -885,7 +886,8 @@ type Call struct {
 type callKey struct{}
 
 // CallFromContext returns the Call a tool handler is serving. ok is false
-// when ctx did not come from the agent loop (a direct Invoke, for example).
+// when ctx did not come from the agent loop (a direct Invoke, for example)
+// or from Agent.ServeCall.
 func CallFromContext(ctx context.Context) (c Call, ok bool) {
 	c, ok = ctx.Value(callKey{}).(Call)
 	return c, ok
