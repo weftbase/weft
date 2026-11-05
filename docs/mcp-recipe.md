@@ -30,18 +30,31 @@ for a third party's.
 **The idempotency key always rides along.** Every `tools/call` carries
 the call's `Call.IdempotencyKey` in `params._meta` under
 `ai.weftbase/idempotency_key` (`mcp.MetaIdempotencyKey`), with or without
-`CallerMeta`: a server that deduplicates on it applies a retried call
-once. A transport failure — the connection dropped after the request
-may have reached the server — is an unknown outcome
+`CallerMeta`. A weft server built with `mcp.Serve` hands it to the served
+tool's handler as its own `Call.IdempotencyKey` (`core.CallFromContext`),
+so a handler that passes it to a deduplicating API applies a retried call
+once; a request without a key gets none, and a tool registered with
+`mcp.AddTools` sees no `Call` at all — serve keyed tools through `Serve`.
+A transport failure after the request may have been sent — the
+connection dropped under it — is an unknown outcome
 (`core.ErrOutcomeUnknown`), never a plain failure: for an imported tool
 (`ReplayNever` unless you vouch otherwise) the model reads
 `OUTCOME_UNKNOWN: …`, and a `weft/thread` session parks the call for its
-recovery ladder (ADR 0032).
+recovery ladder (ADR 0032). A call that provably never left — a refused
+dial, a session already closed — is a plain `mcp: …` failure. An
+imported call with no deadline (no `Timeout` on the tool or the agent,
+none on the run's ctx) is bounded at one minute.
+
+`mcp.Serve` runs each served tool under its own `Timeout` (else the
+agent's) and result cap, as the loop would; the agent tool runs the agent
+as a child run, so a call the child parks for approval cannot be decided
+over MCP and that run's work is lost.
 
 Before 0.23.0 the keys were `dev.weftgo/caller` and
-`dev.weftgo/idempotency_key`. weft sends only the new names; for one
-release `mcp.Serve` still reads a caller under the old one
-(`mcp.LegacyMetaCaller`) when the new key is absent, and a server that
-deduplicates should read `ai.weftbase/idempotency_key`, falling back to
-`dev.weftgo/idempotency_key` (`mcp.LegacyMetaIdempotencyKey`) for 0.22
-clients. The legacy names go in the next release.
+`dev.weftgo/idempotency_key`. For this transition release weft sends the
+idempotency key under both names (so a 0.22 server keeps deduplicating)
+and the caller under the new name only; `mcp.Serve` reads either under the
+old name (`mcp.LegacyMetaCaller`, `mcp.LegacyMetaIdempotencyKey`) when the
+new one is absent. A server of your own that deduplicates should read
+`ai.weftbase/idempotency_key`, falling back to the old name for 0.22
+clients. The legacy names — sent and read — go in the next release.

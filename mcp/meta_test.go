@@ -266,13 +266,17 @@ func TestMetaKeysRenamed(t *testing.T) {
 	if _, ok := meta[MetaCaller]; !ok {
 		t.Errorf("no %s in %v", MetaCaller, meta)
 	}
-	if k, _ := meta[MetaIdempotencyKey].(string); k == "" {
+	k, _ := meta[MetaIdempotencyKey].(string)
+	if k == "" {
 		t.Errorf("no %s in %v", MetaIdempotencyKey, meta)
 	}
-	for _, k := range []string{LegacyMetaCaller, LegacyMetaIdempotencyKey} {
-		if _, ok := meta[k]; ok {
-			t.Errorf("sent the legacy key %s: %v", k, meta)
-		}
+	// The transition release (E6): the key under the old name too, so a
+	// 0.22 server keeps deduplicating; the caller only under the new.
+	if old, _ := meta[LegacyMetaIdempotencyKey].(string); old != k {
+		t.Errorf("%s = %q, want the key %q under the old name too", LegacyMetaIdempotencyKey, old, k)
+	}
+	if _, ok := meta[LegacyMetaCaller]; ok {
+		t.Errorf("sent the legacy key %s: %v", LegacyMetaCaller, meta)
 	}
 }
 

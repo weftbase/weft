@@ -664,3 +664,22 @@ under the old name when the new one is absent, and the old names stay
 exported as `mcp.LegacyMetaCaller` / `mcp.LegacyMetaIdempotencyKey` for
 servers that deduplicate during the transition. The rest of the
 decision is unchanged.
+
+## Amendment (2026-11-05 — weft/mcp: a closed client sends nothing; keys both ways)
+
+A `tools/call` the go-sdk refuses with `ErrClientClosing` (-32003,
+"client is closing") was never written — the SDK's connection checks
+its state and refuses before it registers or writes the request — so it
+is a plain failure the model reads as `mcp: connection closed: calling
+"tools/call": client is closing…` (error.type `mcp_transport`), never
+`OUTCOME_UNKNOWN`. `ErrServerClosing` (-32004) stays an unknown outcome:
+a server also answers it to a request it received. For the transition
+release the idempotency key is sent under both `_meta` names (the old
+`dev.weftgo/idempotency_key` as well), so a 0.22 server keeps
+deduplicating — the amendment above's "only the new names" holds for the
+caller link alone; the old key name goes in the next release. And
+`mcp.Serve` hands a served tool's handler the client's key as its
+`Call.IdempotencyKey` (`core.Agent.ServeCall`), so a weft server
+deduplicates too. Pinned by `TestToolsCallOnAClosedSessionIsNotSent`,
+`TestClosingCodesClassified`, `TestMetaKeysRenamed`,
+`TestServeHandsTheClientKey` (mcp).

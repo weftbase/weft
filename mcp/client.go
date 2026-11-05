@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,12 +32,18 @@ var ErrToolError = errors.New("mcp: tool returned an error")
 // no binary tool results); a remote isError result is a tool error
 // carrying the server's text verbatim (errors.Is ErrToolError; an
 // empty one reads ErrToolError's own text); a
-// transport failure is a tool error reading "mcp: <err>", and so is a
 // JSON-RPC error answer (the server's handler failed, the tool is not
-// listed). All three are data the model sees, never run errors; their
-// execute_tool spans tell them apart by error.type — mcp_tool_error
-// (isError), mcp_rpc_error (the server refused the call) and
-// mcp_transport (no answer: the connection, the session closed).
+// listed) is a tool error reading "mcp: <err>", and so is a call that
+// provably never left the client (a refused dial, a session already
+// closed). A transport failure after the request may have been sent —
+// the connection dropped, the stream ended — is an unknown outcome
+// (core.ErrOutcomeUnknown, ADR 0032): the model reads "OUTCOME_UNKNOWN:
+// …" for an imported tool (ReplayNever unless the caller vouches
+// otherwise; a ReplaySafe one reads "mcp: <err>"), and a weft/thread
+// session sends it down its recovery ladder. All are data the model
+// sees, never run errors; their execute_tool spans tell them apart by
+// error.type — mcp_tool_error (isError), mcp_rpc_error (the server
+// refused the call) and mcp_transport (no answer).
 //
 // Every imported tool names where it came from for the record (O8):
 // its Origin is "mcp:<server>" under Server ("mcp" otherwise) and its
@@ -47,8 +54,12 @@ var ErrToolError = errors.New("mcp: tool returned an error")
 // (error.type mcp_transport), a JSON-RPC error answer (mcp_rpc_error)
 // and a remote isError (mcp_tool_error) stay told apart on the span. A
 // server that dies mid-call on a transport that never reports it (the
-// SDK's in-memory pipe) leaves the call to its deadline: give imported
-// tools a Timeout through Policy. A server all of whose tools were
+// SDK's in-memory pipe) leaves the call to its deadline — and a call
+// whose ctx carries none (no Timeout on the tool or the agent, no
+// deadline on the run) is bounded at one minute: past it the call
+// reads as a lost answer (an unknown outcome, below). A Timeout through
+// Policy or the agent, or any deadline on ctx, replaces the default. A
+// server all of whose tools were
 // skipped imports nothing to carry the skips: ImportError.Option
 // records them on the agent.
 //
@@ -285,6 +296,10 @@ func (e *ImportError) Unwrap() []error {
 	return errs
 }
 
+// defaultCallTimeout bounds an imported tool's tools/call whose ctx
+// carries no deadline (WR-17). A var for tests.
+var defaultCallTimeout = time.Minute
+
 // Option configures one Tools call.
 type Option interface{ apply(*importConfig) }
 
@@ -366,6 +381,14 @@ func Policy(opts ...core.ToolOption) Option { return policyOption(opts) }
 // the caller: the tool span's trace context and the weft call (meta.go).
 func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) func(context.Context, json.RawMessage) (string, error) {
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
+		if _, bounded := ctx.Deadline(); !bounded {
+			// A server that never answers must not hold a run for ever
+			// (WR-17): with no Timeout and no run deadline, the call
+			// is bounded by default.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
+			defer cancel()
+		}
 		if trimmed := strings.TrimSpace(string(args)); trimmed == "" || trimmed == "null" {
 			args = json.RawMessage("{}")
 		}
@@ -380,12 +403,15 @@ func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) fu
 		}
 		// The call's idempotency key always rides along (WR-8), apart
 		// from the caller link: a server that deduplicates applies a
-		// retried call once.
+		// retried call once. For this one transition release it goes
+		// under both names, so a 0.22 server reading the old one still
+		// deduplicates (the legacy copy goes in the next release).
 		if c, ok := core.CallFromContext(ctx); ok && c.IdempotencyKey != "" {
 			if params.Meta == nil {
 				params.Meta = sdk.Meta{}
 			}
 			params.Meta[MetaIdempotencyKey] = c.IdempotencyKey
+			params.Meta[LegacyMetaIdempotencyKey] = c.IdempotencyKey
 		}
 		res, err := sess.CallTool(ctx, params)
 		if err != nil {
@@ -457,7 +483,8 @@ func (e *transportError) ErrorType() string { return "mcp_transport" }
 func (e *transportError) Is(target error) bool { return target == core.ErrOutcomeUnknown }
 
 // unsentError is a tools/call that provably never left the client —
-// the server refused the connection, the request could not be encoded:
+// the server refused the connection, the request could not be encoded,
+// the session was already closed (the SDK's ErrClientClosing):
 // nothing ran, so it is a plain failure, not an unknown outcome. It
 // reads "mcp: <err>" and is error.type mcp_transport, like any call
 // that got no answer.
@@ -469,16 +496,35 @@ func (e *unsentError) ErrorType() string { return "mcp_transport" }
 
 // notSent reports whether a tools/call failure provably happened before
 // the request was written: a dial that failed (a refused or unreachable
-// connection — streamable HTTP dials per request). Anything else — a
-// closed session, a dropped stream, a timeout — may have reached the
-// server, and stays an unknown outcome.
+// connection — streamable HTTP dials per request), or the go-sdk's
+// ErrClientClosing (-32003, "client is closing"), which its connection
+// returns from Call before the request is registered or written — the
+// session was already closed or broken (v1.8.0, internal/jsonrpc2
+// conn.go Call). The SDK reports it as ErrConnectionClosed with the
+// code flattened into text, so it is read there by its words. Anything
+// else — ErrServerClosing (-32004, which a server also answers to a
+// request it received), a dropped stream, a timeout — may have reached
+// the server, and stays an unknown outcome.
 func notSent(err error) bool {
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
+	var rpc *jsonrpc.Error
+	if errors.As(err, &rpc) && rpc.Code == codeClientClosing {
+		return true
+	}
+	if errors.Is(err, sdk.ErrConnectionClosed) {
+		if _, rest, ok := strings.Cut(err.Error(), `calling "tools/call": `); ok && strings.HasPrefix(rest, "client is closing") {
+			return true
+		}
+	}
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
+
+// codeClientClosing is the go-sdk's ErrClientClosing code: a call the
+// client refused to send because its connection was closing.
+const codeClientClosing = -32003
 
 // transportCode says a JSON-RPC error code is the go-sdk's own word for
 // a transport failure, never a server's answer: ErrRejected (-32005,

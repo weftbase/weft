@@ -24,8 +24,9 @@
 // The bridge is mechanical by design (ADR 0003's shape bet, measured
 // by §7.1's corpus): field-for-field maps between two
 // already-compatible shapes, no translation layer of its own. This
-// module is a satellite (ADR 0005): it imports the core, the core's
-// internal/adapterkit, the SDK and the OpenTelemetry trace API (a
-// tools/call's _meta traceparent, meta.go) — nothing else — and the
-// core never imports it or names it.
+// package is a layer of the framework module above the core (ADR 0005,
+// ADR 0027): it imports the core (github.com/weftbase/weft/core), the
+// SDK (its mcp and jsonrpc packages) and the OpenTelemetry trace API (a
+// tools/call's _meta traceparent, meta.go) — beside the standard
+// library, nothing else — and the core never imports it or names it.
 package mcp
