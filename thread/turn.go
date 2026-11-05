@@ -1768,8 +1768,8 @@ type turnEnd struct {
 
 // recordTurnEnd closes the turn: it appends the run's new messages
 // that per-step durability has not already written (normally none —
-// the step observer wrote them as they joined, ADR 0011 §7), then the
-// turn entry, in one atomic batch under a WithoutCancel window — the
+// the step observer wrote them as they joined, ADR 0011 §7), and the
+// turn entry last, in one batch under a WithoutCancel window — the
 // run is over, and its ledger must land whatever happened to the
 // caller's context (ADR 0011 §4). On failure the partial transcript
 // from RunError.Result is kept after core.Repair; a turn whose context
@@ -1780,11 +1780,14 @@ type turnEnd struct {
 // — after the last entry that matches, so a tail that differs from the
 // run's final form leaves the active path (turnEndMessages). The
 // chain, when the turn parked calls, carries the decision chain's
-// entries — requests, audits, chain decisions — into the same Append:
-// the request and the turn are atomic, all or none (ADR 0021 §1). A
-// resume turn's entry reuses the receipt id minted when the resume was
-// armed (it has no prompt entry of its own), and is followed by the
-// audit step that says how the resume ended (ADR 0021 §2).
+// entries — requests, audits, chain decisions — into the same Append,
+// before the turn entry: on a transactional backend the request and
+// the turn land all or none (ADR 0021 §1), and on a backend that can
+// keep a torn batch's prefix (jsonl) a prefix never holds the turn
+// entry without its requests — it reads as the turn cut off (ADR
+// 0032). A resume turn's entry reuses the receipt id minted when the
+// resume was armed (it has no prompt entry of its own), and follows
+// the audit step that says how the resume ended (ADR 0021 §2).
 //
 // The error returned is the persistence failure, wrapping
 // ErrNotPersisted: the batch is in no tree — written nowhere, adopted
@@ -1905,22 +1908,16 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 		entries = append(entries, MessageEntry{ID: id, ParentID: parent, Created: now, Message: cloneMessage(m)})
 		parent = id
 	}
-	var teID string
 	if t.resume {
-		teID = t.id // a resume has no prompt entry; its receipt names its turn entry
-		if !ValidID(teID) {
-			return fail(fmt.Errorf("thread: invalid entry id %q", teID))
+		// A resume has no prompt entry; its receipt names its turn entry.
+		if !ValidID(t.id) {
+			return fail(fmt.Errorf("thread: invalid entry id %q", t.id))
 		}
-		if _, dup := s.byID[teID]; dup {
-			return fail(fmt.Errorf("thread: entry id %q already held by session %s", teID, s.header.ID))
-		}
-	} else {
-		var idErr error
-		if teID, idErr = mint(); idErr != nil {
-			return fail(idErr)
+		if _, dup := s.byID[t.id]; dup {
+			return fail(fmt.Errorf("thread: entry id %q already held by session %s", t.id, s.header.ID))
 		}
 	}
-	te := TurnEntry{ID: teID, ParentID: parent, Created: now, RunID: t.runID, LateSteps: late}
+	te := TurnEntry{Created: now, RunID: t.runID, LateSteps: late}
 	if t.hasPolicy {
 		te.Policy = t.policy.String()
 	}
@@ -1952,24 +1949,13 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	} else if len(end.unknown) > 0 {
 		te.Pending = appendCallsOnce(te.Pending, unsettled)
 	}
-	entries = append(entries, te)
-	parent = te.ID
-	if t.resume {
-		// How the resume ended, on the approval trail itself (ADR 0021
-		// §2): the step that pairs with the "started" entry written
-		// before the run.
-		id, idErr := mint()
-		if idErr != nil {
-			return fail(idErr)
-		}
-		ended := ApprovalAuditEntry{ID: id, ParentID: parent, Created: now,
-			Step: StepResume, Outcome: "completed", RunID: t.runID}
-		if report != nil {
-			ended.Outcome, ended.Detail = "failed", report.Error()
-		}
-		entries = append(entries, ended)
-		parent = id
-	}
+	// The turn entry goes last in the batch (after the steers' receipts,
+	// the chain's entries and a resume's end audit): a backend that
+	// keeps a torn batch's complete prefix lines (jsonl after a crash
+	// mid-write) never holds the turn's end without what it ends with —
+	// a recovery request the chain wrote for a call of unknown outcome
+	// above all. A prefix without it reads as the turn cut off, and
+	// RecoverTurn decides its calls again (ADR 0032).
 	// The delivered steers' receipts join the turn's batch (ADR 0019):
 	// the messages themselves are already in it — the run's transcript
 	// carries them beyond the input — so the receipt is what ties each
@@ -2016,6 +2002,31 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 			}
 		}
 	}
+	if t.resume {
+		// How the resume ended, on the approval trail itself (ADR 0021
+		// §2): the step that pairs with the "started" entry written
+		// before the run, just before the turn entry.
+		id, idErr := mint()
+		if idErr != nil {
+			return fail(idErr)
+		}
+		ended := ApprovalAuditEntry{ID: id, ParentID: parent, Created: now,
+			Step: StepResume, Outcome: "completed", RunID: t.runID}
+		if report != nil {
+			ended.Outcome, ended.Detail = "failed", report.Error()
+		}
+		entries = append(entries, ended)
+		parent = id
+	}
+	te.ID = t.id
+	if !t.resume {
+		var idErr error
+		if te.ID, idErr = mint(); idErr != nil {
+			return fail(idErr)
+		}
+	}
+	te.ParentID = parent
+	entries = append(entries, te)
 	if appendErr := s.st.Append(ctx, s.header.ID, entries...); appendErr != nil {
 		// The batch is in no tree: written nowhere, adopted nowhere.
 		// The steers stay in handed for the settle after this

@@ -6,6 +6,10 @@
 // The durability rules (ADR 0011 §4–§5): Create writes the header and
 // fsyncs the file and the directory; Append writes all of its entries
 // in one write and fsyncs (FsyncOnFlush defers that to Flush). One
+// write is not all-or-none against a kill or a power cut: a crash can
+// keep a prefix of a batch's complete lines, never a gap or a
+// reordering (thread.Storage's Append says what the session builds on
+// that). One
 // writer per session, enforced with an advisory lock (flock on unix,
 // LockFileEx on Windows) taken on a session's first write and held
 // until the session is released (the thread.Releaser capability),

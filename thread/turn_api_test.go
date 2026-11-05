@@ -490,10 +490,16 @@ func TestAuditRecordsHowAResumeEnded(t *testing.T) {
 		got[0].RunID != rt.RunID() || got[1].RunID != rt.RunID() || got[1].Detail != "" {
 		t.Fatalf("resume steps = %+v, want started and completed under %q", got, rt.RunID())
 	}
-	// The completed step lands with the resume's turn entry: one append.
-	path, _ := s.Path(got[1].ID)
-	if te, ok := path[len(path)-2].(thread.TurnEntry); !ok || te.RunID != rt.RunID() {
-		t.Errorf("the completed step does not follow the resume's turn entry")
+	// The completed step lands with the resume's turn entry, just
+	// before it (the turn entry goes last in the batch): one append.
+	follows := false
+	for _, e := range s.Entries() {
+		if te, ok := e.(thread.TurnEntry); ok && te.RunID == rt.RunID() {
+			follows = te.ParentID == got[1].ID
+		}
+	}
+	if !follows {
+		t.Errorf("the resume's turn entry does not follow its completed step")
 	}
 
 	// A resume whose run fails says failed, with the error.

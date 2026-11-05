@@ -51,8 +51,20 @@ live, never in what they say.
   record must be durable before its handler starts (ADR 0032).
   (Before, `FsyncOnFlush` was `synchronous=NORMAL` and `Flush` a
   passive checkpoint.)
-- An `Append` batch is atomic against the writer's death: after a
-  crash a load returns all of it or none of it.
+- What survives a writer's death mid-batch: on **sqlite** an `Append`
+  batch is one transaction — a load returns all of it or none of it.
+  On **jsonl** a batch is several lines, and a kill inside a large
+  write, or a power cut before the lines reached the disk, can keep a
+  prefix of its complete lines (the torn last line is dropped and
+  reported, §6) — never a gap, a reordering or a half-entry. The
+  session orders every multi-entry batch so that a prefix is safe: the
+  entry that closes the fact goes last — a turn's entry after the
+  approval and recovery requests its end writes, `RecoverTurn`'s
+  `recover` audit after everything it decided — and a prefix without
+  it reads as the turn cut off, which `RecoverTurn` decides again
+  (ADR 0032). (Before, this page promised all-or-none on jsonl too,
+  and a torn turn end could keep the turn entry without its recovery
+  request.)
 
 ## 3. Backups
 

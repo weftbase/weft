@@ -193,8 +193,9 @@ func assertCrashPoint(t *testing.T, point string, st thread.Storage) {
 			t.Fatal(err)
 		}
 		// The parked turn is a whole turn — its entry lands at the
-		// park, with the request and its audit behind it.
-		if k := kindsOf(entries); !strings.HasSuffix(k, ",turn,approval_request,approval_audit") ||
+		// park, last in the batch, behind the request and its audit
+		// (a torn prefix never holds the turn without its request).
+		if k := kindsOf(entries); !strings.HasSuffix(k, ",approval_request,approval_audit,turn") ||
 			strings.Count(k, "approval_request") != 1 {
 			t.Fatalf("approval kinds = %q", k)
 		}

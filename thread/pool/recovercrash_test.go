@@ -155,6 +155,14 @@ func after(first func(crashLine) bool) func(crashLine) bool {
 	}
 }
 
+// turnEndBatch matches the first line of the batch that ends a turn:
+// the turn entry goes last in it, after the decision chain's own
+// requests (a mirrored child request, written at step time, carries
+// "child" and is not of the batch).
+func turnEndBatch(l crashLine) bool {
+	return l.kind == "turn" || (l.kind == "approval_request" && !strings.Contains(l.raw, `"child":`))
+}
+
 func kind(k string) func(crashLine) bool {
 	return func(l crashLine) bool { return l.kind == k }
 }
@@ -291,7 +299,7 @@ func TestRecoverOrphanedDelegatingCallResumesTheChild(t *testing.T) {
 	dir := t.TempDir()
 	gated := []bool{true, true} // the top parks its own gated call beside L1's park
 	top := parkCrashChain(t, dir, gated)
-	cutBefore(t, filepath.Join(dir, top+".jsonl"), kind("turn"))
+	cutBefore(t, filepath.Join(dir, top+".jsonl"), turnEndBatch)
 
 	st, err := jsonl.Open(dir)
 	if err != nil {
@@ -473,7 +481,7 @@ func TestRecoverTurnLeavesALiveDelegationToThePool(t *testing.T) {
 	dir := t.TempDir()
 	gated := []bool{false, true}
 	top := parkCrashChain(t, dir, gated)
-	cutBefore(t, filepath.Join(dir, top+".jsonl"), kind("turn"))
+	cutBefore(t, filepath.Join(dir, top+".jsonl"), turnEndBatch)
 
 	st, err := jsonl.Open(dir)
 	if err != nil {
