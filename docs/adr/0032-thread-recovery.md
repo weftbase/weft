@@ -664,3 +664,72 @@ under the old name when the new one is absent, and the old names stay
 exported as `mcp.LegacyMetaCaller` / `mcp.LegacyMetaIdempotencyKey` for
 servers that deduplicate during the transition. The rest of the
 decision is unchanged.
+
+## Amendment (2026-11-05 — an answer lost in a layer, and other guesses)
+
+Review of 0.23 (core findings C2, C4, C7, C9, C10; WR-14, WR-15, WR-32).
+
+**An effect a layer hid is of unknown outcome (C2).** The rule above
+named the ways a started handler gives no answer of its own; it missed
+the answer lost *after* the handler. A call of a tool that is not
+`ReplaySafe` whose handler answered with no error — or is still running
+— while a layer around it then failed is of unknown outcome too: a
+`WrapTools` middleware's error or panic after `next`, a middleware that
+gave up on a handler still running (its own deadline), a panic in the
+`AfterDispatch` hook after the handler returned, and a middleware's
+`ErrApprovalRequired` after the handler ran (it was a park: approving it
+would run the effect again). The model reads, pinned:
+
+- `OUTCOME_UNKNOWN: tool "X" answered, but a layer around it failed
+  after (<the layer's error>); it may have taken effect; outcome
+  unknown`
+- `OUTCOME_UNKNOWN: tool "X" had not answered when a layer around it
+  failed (<the layer's error>); it may still complete; outcome unknown`
+
+and under `ParkUnknown` the call parks (`outcome_unknown`), as any.
+A handler's own failure keeps its words whatever a middleware made of it
+(`mw.MapErrors` masks a failure, it does not make one); a handler's own
+`ErrOutcomeUnknown` masked by a middleware still reads "lost its
+answer"; a handler that panicked with a middleware recovering it reads
+the panic text. A `ReplaySafe` tool keeps the old texts.
+
+**An answer at the deadline is kept (C9).** A handler that answered as
+its `Timeout` passed lost its answer to a coin flip between the two
+ready cases; the loop now takes a waiting answer before it reads the
+deadline.
+
+**What Pending shows is what Approve runs (C4).** An edited call
+(`ApproveEdited`) that parked again in its resume was reported on
+`RunResult.Pending` with the edited arguments, while the next run —
+resuming the transcript's call — ran the model's original under a plain
+`Approve`. Pending now reports the transcript's call; an edit covers one
+resume and runs again only when decided again with `ApproveEdited`.
+`weft/thread` records such a call's recovery request on the edited
+arguments it ran on (its revision's, as the cut-off path already did),
+so its retry stays the edit. The `EDITED` line is part of the result
+and under the result cap (C7, rule 8).
+
+**Fail safe where the input is unknown (WR-14, WR-15).** A panicking
+`ParkSource` parked nothing; its set is unknown, so the run now parks
+every call but its own `Output` answer (`park_source`, one Warn line).
+`mw.RepairJSON` closed cut arguments for every tool, so an effectful
+tool ran on a guess (`"ali"` for `"alice"`); it now closes a cut only
+for a `ReplaySafe` tool, and makes only lossless repairs (a fence, the
+whitespace) for any other: the model reads `INVALID_INPUT` and repairs
+its own call.
+
+**Bounded, and said where not (C10, WR-32).** `mw.MaxTotal(d)` bounds a
+`Retry`'s whole call, waits included (off by default; no default
+changed). A `Subagent` child abandoned at its `Timeout` or at the
+parent's cancellation is counted to the moment it was abandoned: its
+later spend reaches neither the parent's usage nor `UsageLimit` — now
+documented on both, with the advice to give a delegation a `Timeout`
+its child honours and a limit of its own.
+
+Tests: `TestLayerFailureAfterTheHandlerIsAnUnknownOutcome`,
+`TestAwaitAnswerPrefersTheAnswerAtTheDeadline`,
+`TestEditedCallParkedAgainReportsTheTranscriptsCall`,
+`TestEditedResultIsCapped`, `TestParkSourcePanicParksEveryCall`,
+`TestParkSourcePanicLetsTheAnswerThrough` (core), `TestRepairJSON`,
+`TestRetryMaxTotalBoundsTheCall` (core/mw),
+`TestEditedCallUnknownInALiveTurnKeepsTheEdit` (thread).

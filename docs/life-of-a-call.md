@@ -105,11 +105,16 @@ base
         ▼
 ── containment boundary ── panic → "tool X panicked"; Timeout → "timed out"
                            (not ReplaySafe and the handler started: a
-                           panic, a Timeout or a cancel → OUTCOME_UNKNOWN)
+                           panic, a Timeout or a cancel → OUTCOME_UNKNOWN;
+                           so does a middleware's or the AfterDispatch
+                           hook's failure, panic or park after a handler
+                           that answered with no error or still runs —
+                           ADR 0032's 2026-11-05 amendment)
         │
         ▼
 render: *ToolError → "CODE: message"; other error → its text
-cap: MaxResultBytes (per tool, else per agent) + visible marker
+cap: MaxResultBytes (per tool, else per agent) + visible marker —
+     over an edited call's EDITED line too (ApproveEdited)
         │
         ├─ pending → no ToolFinish; RunFinish.Pending after the step
         ▼
@@ -146,8 +151,15 @@ key derived from that one's. A park of such a call (its tool's
 (`ErrApprovalRequired` from `CallTool`): returned by the handler it
 fails the dispatching call — the model reads that the inner tool needs
 approval and did not run — never parks it, for an approval would not
-carry to the inner call. A `Subagent`'s
-child run inherits neither the key option nor the gate.
+carry to the inner call. A `CallTool` from a `WrapTools` middleware —
+before the call's handler started — is no handler's inner call: under a
+gate it is refused (`ErrNotDispatched`), with none it is keyed apart
+from the handler's (ADR 0031's 2026-11-05 amendment). The handler's
+`CallTool` resolves against the run's `OnlyTools` narrowing. A run
+started on a call's context — a `Subagent`'s child — inherits none of
+the call's scope: not the key option, the gate, the hook, `ParkUnknown`,
+the park rule (`ParkAllExcept` excepted: default-deny only tightens on
+the way down) or the narrowing.
 
 Where a **subagent's child run** sits: inside the handler line above.
 A `thread/pool` delegation sits there too, as the handler middleware

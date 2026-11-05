@@ -67,3 +67,24 @@ func TestSettleReadsTheDeadlineFirst(t *testing.T) {
 		}
 	}
 }
+
+// C9: a handler that answers right at its Timeout keeps its answer.
+// When the answer and the deadline are both ready, awaitAnswer takes
+// the answer — every time, by construction (a select alone would pick
+// at random and throw a real result away for a timeout).
+func TestAwaitAnswerPrefersTheAnswerAtTheDeadline(t *testing.T) {
+	deadline := make(chan struct{})
+	close(deadline)
+	for range 200 {
+		done := make(chan timedOutcome, 1)
+		done <- timedOutcome{out: "paid"}
+		o, answered := awaitAnswer(done, deadline)
+		if !answered || o.out != "paid" {
+			t.Fatalf("awaitAnswer = %+v, %v; want the answer that was waiting", o, answered)
+		}
+	}
+	// No answer waiting: the deadline.
+	if _, answered := awaitAnswer(make(chan timedOutcome, 1), deadline); answered {
+		t.Fatal("awaitAnswer answered with no answer waiting")
+	}
+}

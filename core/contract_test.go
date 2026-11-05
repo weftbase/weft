@@ -7639,3 +7639,157 @@ func TestWithCallerLinksRunsStartedOnCtx(t *testing.T) {
 		check(a, nil)
 	}
 }
+
+// ADR 0032's 2026-11-05 amendment (C2): a call of a tool that is not
+// ReplaySafe whose handler ran — answered with no error, or is still
+// running — while a layer around it (a WrapTools middleware, the
+// AfterDispatch hook) then failed, has an unknown outcome: the pinned
+// OUTCOME_UNKNOWN text, never the layer's plain failure, and under
+// ParkUnknown it parks. A handler's own failure keeps its words whatever
+// a middleware made of it; a ReplaySafe tool keeps the old texts.
+func TestLayerFailureAfterTheHandlerIsAnUnknownOutcome(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	cases := []struct {
+		name    string
+		handler func(context.Context) (string, error)
+		mw      core.ToolMiddleware
+		after   core.AfterDispatchFunc
+		want    string
+	}{
+		{
+			name:    "middleware error after success",
+			handler: func(context.Context) (string, error) { return "paid", nil },
+			mw: func(next core.ToolCaller) core.ToolCaller {
+				return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+					if _, err := next(ctx, call); err != nil {
+						return "", err
+					}
+					return "", errors.New("post-processing failed")
+				}
+			},
+			want: `OUTCOME_UNKNOWN: tool "pay" answered, but a layer around it failed after (post-processing failed); it may have taken effect; outcome unknown`,
+		},
+		{
+			name:    "middleware panic after success",
+			handler: func(context.Context) (string, error) { return "paid", nil },
+			mw: func(next core.ToolCaller) core.ToolCaller {
+				return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+					_, _ = next(ctx, call)
+					panic("post-processing panicked")
+				}
+			},
+			want: `OUTCOME_UNKNOWN: tool "pay" answered, but a layer around it failed after (tool "pay" panicked: post-processing panicked); it may have taken effect; outcome unknown`,
+		},
+		{
+			name:    "AfterDispatch panic after success",
+			handler: func(context.Context) (string, error) { return "paid", nil },
+			after:   func(context.Context, core.Call, *core.ToolDef) { panic("hook broke") },
+			want:    `OUTCOME_UNKNOWN: tool "pay" answered, but a layer around it failed after (tool "pay" panicked: hook broke); it may have taken effect; outcome unknown`,
+		},
+		{
+			name:    "middleware park after success",
+			handler: func(context.Context) (string, error) { return "paid", nil },
+			mw: func(next core.ToolCaller) core.ToolCaller {
+				return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+					_, _ = next(ctx, call)
+					return "", fmt.Errorf("%w: review it", core.ErrApprovalRequired)
+				}
+			},
+			want: `OUTCOME_UNKNOWN: tool "pay" answered, but a layer around it failed after (weft: tool call requires approval: review it); it may have taken effect; outcome unknown`,
+		},
+		{
+			name: "middleware gives up on a running handler",
+			handler: func(context.Context) (string, error) {
+				<-release
+				return "paid", nil
+			},
+			mw: func(next core.ToolCaller) core.ToolCaller {
+				return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+					go func() { _, _ = next(ctx, call) }()
+					return "", errors.New("gave up waiting")
+				}
+			},
+			want: `OUTCOME_UNKNOWN: tool "pay" had not answered when a layer around it failed (gave up waiting); it may still complete; outcome unknown`,
+		},
+		{
+			name:    "handler's own failure, mapped by a middleware",
+			handler: func(context.Context) (string, error) { return "", errors.New("card declined") },
+			mw: func(next core.ToolCaller) core.ToolCaller {
+				return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+					if _, err := next(ctx, call); err != nil {
+						return "", errors.New("payment failed")
+					}
+					return "ok", nil
+				}
+			},
+			want: "payment failed",
+		},
+	}
+	for _, c := range cases {
+		for _, safe := range []bool{false, true} {
+			for _, park := range []bool{false, true} {
+				name := fmt.Sprintf("%s/safe=%v/park=%v", c.name, safe, park)
+				opts := []core.ToolOption{}
+				if safe {
+					opts = append(opts, core.Replay(core.ReplaySafe))
+				}
+				// A middleware that is entered before the gate gets the
+				// started handler's mark only once its next is entered.
+				started := make(chan struct{}, 1)
+				h := c.handler
+				pay := core.Tool("pay", "Pay.", func(ctx context.Context, _ struct{}) (string, error) {
+					started <- struct{}{}
+					return h(ctx)
+				}, opts...)
+				agentOpts := []core.Option{pay}
+				if c.mw != nil {
+					mw := c.mw
+					agentOpts = append(agentOpts, core.WrapTools(func(next core.ToolCaller) core.ToolCaller {
+						inner := mw(next)
+						return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+							out, err := inner(ctx, call)
+							<-started // the handler was entered before the answer
+							return out, err
+						}
+					}))
+				}
+				agent := core.New(wefttest.Script(
+					wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{}`}),
+					wefttest.Say("done"),
+				), agentOpts...)
+				runOpts := []core.RunOption{core.Prompt("go")}
+				if c.after != nil {
+					runOpts = append(runOpts, core.AfterDispatch(c.after))
+				}
+				if park {
+					runOpts = append(runOpts, core.ParkUnknown())
+				}
+				res, err := agent.Generate(context.Background(), runOpts...)
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				unknown := strings.HasPrefix(c.want, core.CodeOutcomeUnknown)
+				switch {
+				case unknown && !safe && park:
+					if len(res.Pending) != 1 {
+						t.Errorf("%s: pending %+v, want the call parked", name, res.Pending)
+					}
+				case unknown && !safe:
+					if got := res.Steps[0].Results[0].Content; got != c.want {
+						t.Errorf("%s: result = %q\nwant %q", name, got, c.want)
+					}
+				default:
+					if len(res.Pending) != 0 && !strings.Contains(c.name, "park") {
+						t.Errorf("%s: pending %+v, want none", name, res.Pending)
+					}
+					if len(res.Steps[0].Results) > 0 {
+						if got := res.Steps[0].Results[0].Content; strings.HasPrefix(got, core.CodeOutcomeUnknown) {
+							t.Errorf("%s: result = %q, want the plain failure", name, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}

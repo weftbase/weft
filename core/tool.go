@@ -859,21 +859,27 @@ type Call struct {
 	// IdempotencyKey identifies this call for the side effects it
 	// causes: pass it to an API that deduplicates (a payment
 	// provider's Idempotency-Key, a database's unique request id) so a
-	// call executed twice — retried after a crash, re-run by a resume —
-	// takes effect once. The loop sets it on every call it executes:
-	// the IdempotencyKeys option's key, else a run-scoped one — 32
-	// lowercase hex digits, the first 128 bits of the SHA-256 of the
-	// run id and the call id, NUL-separated — stable within one run.
-	// Under weft/thread it is stable across crash, restart and resume
-	// (thread.IdempotencyKey). A Subagent's child run has keys of its
+	// call executed twice under the same key takes effect once. The
+	// loop sets it on every call it executes: the IdempotencyKeys
+	// option's key, else a run-scoped one — 32 lowercase hex digits,
+	// the first 128 bits of the SHA-256 of the run id and the call id,
+	// NUL-separated — stable within one run only. A resume is another
+	// run: a call it re-runs (an approval, a ParkUnknown park) gets
+	// another run-scoped key, so a key that holds across a crash, a
+	// restart or a resume needs IdempotencyKeys — weft/thread passes
+	// one on every turn (thread.IdempotencyKey). A Subagent's child run has keys of its
 	// own, scoped to the child run: a child re-run after a crash asks
 	// its model again and issues new calls with new keys. A call a
 	// handler dispatches with Agent.CallTool carries a key derived from
 	// its outer call's key and its position among that handler's
 	// CallTool calls (the first 128 bits of the SHA-256 of the outer key
 	// and the 1-based position, NUL-separated, in hex): the same on a
-	// retry of the outer call that dispatches in the same order. Empty
-	// outside the loop.
+	// retry of the outer call that dispatches in the same order. One a
+	// WrapTools middleware dispatches, before the call's handler starts,
+	// in a run with no BeforeDispatch gate (under one it is refused)
+	// carries the same derivation with the field "wrap" between the
+	// outer key and its position among that middleware's CallTool
+	// calls, so it never equals a handler's. Empty outside the loop.
 	IdempotencyKey string
 	// Outer is the id of the call whose handler dispatched this one
 	// with Agent.CallTool; empty for a call the loop dispatched. A

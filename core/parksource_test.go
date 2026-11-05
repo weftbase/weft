@@ -48,9 +48,9 @@ func TestParkSourceMergesWithParkOn(t *testing.T) {
 // stepTimings matches StepFinish's wall-clock fields in an event's wire JSON.
 var stepTimings = regexp.MustCompile(`"(latency_ms|ttft_ms)":\d+`)
 
-// A nil answer, an empty one and a panicking source park nothing and
-// leave the run as it is without a source: events, transcript and
-// span attributes byte-equal. The panic is one Debug line.
+// A nil answer and an empty one park nothing and leave the run as it
+// is without a source: events, transcript and span attributes
+// byte-equal. A panicking source is TestParkSourcePanicParksEveryCall's.
 func TestParkSourceNothingChangesNothing(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -94,9 +94,8 @@ func TestParkSourceNothingChangesNothing(t *testing.T) {
 	}
 	base, baseAttrs := run("r")
 	for name, src := range map[string]func(context.Context) []string{
-		"nil":      func(context.Context) []string { return nil },
-		"empty":    func(context.Context) []string { return []string{} },
-		"panicked": func(context.Context) []string { panic("boom") },
+		"nil":   func(context.Context) []string { return nil },
+		"empty": func(context.Context) []string { return []string{} },
 	} {
 		got, attrs := run("r", core.ParkSource(src))
 		if got != base {
@@ -110,9 +109,6 @@ func TestParkSourceNothingChangesNothing(t *testing.T) {
 		if len(attrs) != len(baseAttrs) {
 			t.Errorf("%s source: %d span attrs, want %d", name, len(attrs), len(baseAttrs))
 		}
-	}
-	if n := strings.Count(logs.String(), "park source panicked"); n != 1 {
-		t.Errorf("%d 'park source panicked' lines, want 1:\n%s", n, logs.String())
 	}
 }
 
@@ -199,5 +195,68 @@ func TestParkSourceAndSubagents(t *testing.T) {
 	got := res.Steps[0].Results[0]
 	if wired.Load() != 1 || !got.IsError || !strings.HasPrefix(got.Content, core.CodeSubagentPending) {
 		t.Errorf("ran %d, delegating result %+v; want the child's call parked (%s)", wired.Load(), got, core.CodeSubagentPending)
+	}
+}
+
+// WR-14: a panicking source fails safe. Its set is unknown, so the run
+// parks every call (reported park_source) but its own Output answer,
+// and says so in one Warn line; a later run reads the source again.
+func TestParkSourcePanicParksEveryCall(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	var a, b atomic.Int64
+	tp := newRecProvider()
+	fail := atomic.Bool{}
+	fail.Store(true)
+	agt := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "a", ID: "c1"}, wefttest.Call{Name: "b", ID: "c2"}),
+		wefttest.Say("done"),
+	), core.TracerProvider(tp), core.Logger(logger), countedTool("a", &a), countedTool("b", &b),
+		core.ParkSource(func(context.Context) []string {
+			if fail.Load() {
+				panic("breakpoints unavailable")
+			}
+			return nil
+		}))
+	res, err := agt.Generate(context.Background(), core.RunID("p"), core.Prompt("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Load()+b.Load() != 0 || len(res.Pending) != 2 {
+		t.Fatalf("ran a=%d b=%d, pending %v; want both parked", a.Load(), b.Load(), res.Pending)
+	}
+	if res.Park != nil {
+		t.Errorf("RunResult.Park = %+v; a source's park is not the run's own rule", res.Park)
+	}
+	for _, s := range tp.spansNamed("execute_tool") {
+		if got := s.attrsMap()["weft.tool.pending.source"]; got != "park_source" {
+			t.Errorf("pending source = %q, want park_source", got)
+		}
+	}
+	if n := strings.Count(logs.String(), "park source panicked"); n != 1 || !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("want one Warn 'park source panicked' line:\n%s", logs.String())
+	}
+	// The source answers again: the resume runs what it approves.
+	fail.Store(false)
+	if _, err := agt.Generate(context.Background(), core.Messages(res.Messages...), core.Approve("c1"), core.Approve("c2")); err != nil {
+		t.Fatal(err)
+	}
+	if a.Load() != 1 || b.Load() != 1 {
+		t.Errorf("after approval ran a=%d b=%d, want 1 each", a.Load(), b.Load())
+	}
+}
+
+// WR-14: the default-deny of a failed source lets the run's own Output
+// answer through, as ParkAllExcept does — it is the answer, not an effect.
+func TestParkSourcePanicLetsTheAnswerThrough(t *testing.T) {
+	type verdict struct {
+		OK bool `json:"ok"`
+	}
+	agt := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "submit_output", ID: "o1", Args: `{"ok":true}`}),
+	), core.Output[verdict](), core.ParkSource(func(context.Context) []string { panic("x") }))
+	v, res, err := core.GenerateAs[verdict](context.Background(), agt, core.Prompt("x"))
+	if err != nil || !v.OK || len(res.Pending) != 0 {
+		t.Fatalf("GenerateAs = %+v, pending %v, %v; want the answer through", v, res.Pending, err)
 	}
 }

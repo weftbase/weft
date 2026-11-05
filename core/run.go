@@ -99,6 +99,10 @@ type runConfig struct {
 	// apart from it (weft.tool.pending.source park_source) and never an
 	// override.
 	parkSourced []string
+	// parkSourceFailed: a ParkSource panicked for this run — its set is
+	// unknown, so every call parks (fail safe, WR-14), reported as
+	// park_source.
+	parkSourceFailed bool
 }
 
 type decision struct {
@@ -171,7 +175,13 @@ func (o approveEditedOption) applyRun(c *runConfig) {
 // the transcript). by names the decider's class, as ApproveBy's. The
 // arguments are validated as any call's are (decode, StrictInput): a
 // call whose edited arguments do not fit its tool fails as a call with
-// bad arguments would.
+// bad arguments would. The EDITED line is part of the result, under
+// the result cap (MaxResultBytes). An edit covers one resume: the
+// transcript keeps the model's call, so a call that parks again in the
+// resume (ParkUnknown, a middleware's park) is reported on
+// RunResult.Pending with the model's own arguments — what a plain
+// Approve of it would run — and runs the edit again only when decided
+// again with ApproveEdited (weft/thread does, from its record).
 func ApproveEdited(callID string, args json.RawMessage, by string) RunOption {
 	return approveEditedOption{id: callID, by: by, args: args}
 }
@@ -320,6 +330,9 @@ func (o onlyToolsOption) applyRun(c *runConfig) {
 // describe the code, not one run's experiment (WEFT-PLAYGROUND §10.1
 // [D5]). With no names, the run keeps the agent's full set. Several
 // OnlyTools options add up: the run keeps every tool any of them names.
+// The narrowing holds for an Agent.CallTool from inside the run's tool
+// handlers too: a narrowed-away tool is unknown there (ErrNoSuchTool),
+// as it is to the loop. A Subagent's child run does not inherit it.
 func OnlyTools(names ...string) RunOption { return onlyToolsOption{names} }
 
 type useModelOption struct{ m Model }
@@ -441,8 +454,11 @@ func (o parkSourceOption) apply(a *Agent) {
 // fn receives the run's context (its metadata placed) and must return
 // promptly — it runs on the loop's goroutine before the first model
 // call; read a cached set, never the network. A nil or empty answer
-// parks nothing; a panic is contained, parks nothing and is reported
-// as one Debug line. Several ParkSource options add up; a nil fn is
+// parks nothing. A panic is contained and fails safe: the set it would
+// have named is unknown, so the run parks every call (its
+// weft.tool.pending.source park_source) but its own Output answer —
+// a breakpoint set that cannot be read is not an empty one — and it is
+// reported as one Warn line; the next run reads the source again. Several ParkSource options add up; a nil fn is
 // ignored. The answer is behaviour, not configuration the run carries:
 // it is not an override (no weft.override.* attribute) and a source
 // that answers nothing leaves the run byte-identical to one without it.
@@ -457,26 +473,29 @@ func (a *Agent) ParkSources() []func(ctx context.Context) []string {
 }
 
 // readParkSources reads the agent's park sources for one run, each
-// under its own containment: a panicking source adds nothing.
-func (a *Agent) readParkSources(ctx context.Context, runID string) []string {
-	var names []string
+// under its own containment. failed reports a source that panicked: its
+// set is unknown, and the run parks every call (WR-14) — a breakpoint
+// set that cannot be read is not an empty one.
+func (a *Agent) readParkSources(ctx context.Context, runID string) (names []string, failed bool) {
 	for _, fn := range a.parkSources {
-		names = append(names, a.safeParkSource(ctx, runID, fn)...)
+		got, ok := a.safeParkSource(ctx, runID, fn)
+		names = append(names, got...)
+		failed = failed || !ok
 	}
-	return names
+	return names, failed
 }
 
-func (a *Agent) safeParkSource(ctx context.Context, runID string, fn func(context.Context) []string) (names []string) {
+func (a *Agent) safeParkSource(ctx context.Context, runID string, fn func(context.Context) []string) (names []string, ok bool) {
 	defer func() {
 		if p := recover(); p != nil {
-			names = nil
-			if l := a.obs.logger(); l.Enabled(ctx, slog.LevelDebug) {
-				l.LogAttrs(ctx, slog.LevelDebug, "park source panicked",
+			names, ok = nil, false
+			if l := a.obs.logger(); l.Enabled(ctx, slog.LevelWarn) {
+				l.LogAttrs(ctx, slog.LevelWarn, "park source panicked: every call of the run parks",
 					slog.String(logRun, runID), slog.String(logErr, fmt.Sprint(p)))
 			}
 		}
 	}()
-	return fn(ctx)
+	return fn(ctx), true
 }
 
 // parkRule is a run's park rule, resolved once in execute: the ParkOn
@@ -491,6 +510,9 @@ type parkRule struct {
 	// run's own ParkOn options named them): their parks read
 	// park_source, not park_on.
 	sourced map[string]bool
+	// sourceFailed: a ParkSource panicked, so the run parks every call
+	// but its own Output answer (park_source).
+	sourceFailed bool
 }
 
 // The park sources a parked call's execute_tool span names
@@ -515,6 +537,8 @@ func (p *parkRule) parkedBy(name string, answer bool) string {
 		return parkBySource
 	case p.on[name]:
 		return parkByParkOn
+	case p.sourceFailed && !answer:
+		return parkBySource
 	case p.all && !answer && !p.except[name]:
 		return parkByParkAll
 	}
@@ -529,7 +553,7 @@ func (p *parkRule) parks(name string, answer bool) bool {
 	if p == nil {
 		return false
 	}
-	return p.on[name] || (p.all && !answer && !p.except[name])
+	return p.on[name] || (p.sourceFailed && !answer) || (p.all && !answer && !p.except[name])
 }
 
 // parkExceptKey is the context key for the ParkAllExcept list in force:
@@ -559,10 +583,10 @@ func (c *runConfig) resolvePark(ctx context.Context) (context.Context, *parkRule
 		ctx = context.WithValue(ctx, parkExceptKey{}, except)
 		inForce = true
 	}
-	if len(c.parkOn) == 0 && len(c.parkSourced) == 0 && !inForce {
+	if len(c.parkOn) == 0 && len(c.parkSourced) == 0 && !inForce && !c.parkSourceFailed {
 		return ctx, nil
 	}
-	rule := &parkRule{all: inForce, except: except}
+	rule := &parkRule{all: inForce, except: except, sourceFailed: c.parkSourceFailed}
 	if len(c.parkOn)+len(c.parkSourced) > 0 {
 		rule.on = make(map[string]bool, len(c.parkOn)+len(c.parkSourced))
 		for _, name := range c.parkOn {
@@ -700,8 +724,12 @@ func (o dispatchOption) applyRun(c *runConfig) {
 // gate runs inside the call's Timeout: a call whose Timeout passes (or
 // whose run is canceled) before the gate returns is answered as timed
 // out (canceled), and its handler never starts, even when the gate
-// then lets it through. Neither a Subagent's child run nor a CallTool
-// from inside the handler inherits it. The last option wins.
+// then lets it through. A Subagent's child run — any run started on
+// the call's context — does not inherit it. A CallTool from inside the
+// handler passes it again, as an inner call (Call.Outer names the
+// dispatching call; ADR 0031 §4); a CallTool from a WrapTools
+// middleware, before the call's handler started, is refused with
+// ErrNotDispatched under a gate. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return dispatchOption{fn} }
 
 // AfterDispatchFunc is the hook AfterDispatch installs: called once the
@@ -728,7 +756,8 @@ func (o afterDispatchOption) applyRun(c *runConfig) {
 // gate let through after the loop had given up on it (BeforeDispatch)
 // calls it at once: its handler never starts. A handler that never
 // returns never calls it. A CallTool from inside the handler
-// inherits it; a Subagent's child run does not. The last option wins.
+// inherits it; a Subagent's child run — any run started on the call's
+// context — does not. The last option wins.
 func AfterDispatch(fn AfterDispatchFunc) RunOption { return afterDispatchOption{fn} }
 
 type afterDispatchKey struct{}
@@ -758,7 +787,11 @@ func (parkUnknownOption) applyRun(c *runConfig) { c.parkUnknown = true }
 // ladder (weft/thread: a keyed retry or a person; the tool's Reconcile
 // is asked only by RecoverTurn after a crash or a shutdown, never for
 // a call parked in a live turn, whose handler may still be running).
-// A Subagent's child run does not inherit it.
+// A Subagent's child run — any run started on the call's context — does
+// not inherit it. Approving a parked call runs it again in the resume,
+// a new run: its default IdempotencyKey is run-scoped and differs
+// there, so a caller that retries such a call needs IdempotencyKeys to
+// keep its key (weft/thread passes it; Call.IdempotencyKey).
 func ParkUnknown() RunOption { return parkUnknownOption{} }
 
 type dispatchKey struct{}
@@ -780,6 +813,16 @@ func innerKey(outer string, n int64) string {
 	return hex.EncodeToString(h[:16])
 }
 
+// middlewareKey is the key of the n-th (1-based) call a WrapTools
+// middleware dispatches with CallTool under a call of a run with no
+// dispatch gate: innerKey's derivation with a "wrap" field between the
+// outer key and the position, so it never equals the key of a call the
+// handler dispatches (Call.IdempotencyKey documents the format).
+func middlewareKey(outer string, n int64) string {
+	h := sha256.Sum256([]byte(outer + "\x00wrap\x00" + strconv.FormatInt(n, 10)))
+	return hex.EncodeToString(h[:16])
+}
+
 // innerDispatch is what a handler's CallTool inherits from the call it
 // serves: that call's key and id, the run's dispatch gate, and the
 // count of calls it has dispatched so far (their positions).
@@ -788,6 +831,10 @@ type innerDispatch struct {
 	gate  DispatchFunc
 	after AfterDispatchFunc
 	n     atomic.Int64
+	// early marks the scope the loop installs on the call's context
+	// before its tool chain runs: a CallTool there comes from a
+	// WrapTools middleware, not from the call's handler (CallTool).
+	early bool
 }
 
 type innerKeyCtx struct{}
@@ -799,6 +846,49 @@ func withInner(ctx context.Context, in *innerDispatch) context.Context {
 func innerFrom(ctx context.Context) *innerDispatch {
 	in, _ := ctx.Value(innerKeyCtx{}).(*innerDispatch)
 	return in
+}
+
+// onlyToolsKey carries a run's OnlyTools narrowing on its tool calls'
+// contexts, so a CallTool from a handler resolves against the tools the
+// run was narrowed to, as the loop's own calls do.
+type onlyToolsKey struct{}
+
+func withOnlyTools(ctx context.Context, names []string) context.Context {
+	return context.WithValue(ctx, onlyToolsKey{}, names)
+}
+
+func onlyToolsFrom(ctx context.Context) []string {
+	names, _ := ctx.Value(onlyToolsKey{}).([]string)
+	return names
+}
+
+// clearCallScope drops what a tool call's context carries for that
+// call's own handler and the CallTool calls it makes — the dispatch
+// gate and hook, ParkUnknown, the park rule, the OnlyTools narrowing,
+// the inner-dispatch keying — so a run started on it inherits none of
+// them (the options' "a Subagent's child run does not inherit it",
+// ADR 0031 §4). Each is replaced only when present: the common path
+// allocates nothing.
+func clearCallScope(ctx context.Context) context.Context {
+	if dispatchFrom(ctx) != nil {
+		ctx = withDispatch(ctx, nil)
+	}
+	if afterDispatchFrom(ctx) != nil {
+		ctx = withAfterDispatch(ctx, nil)
+	}
+	if parkUnknownFrom(ctx) {
+		ctx = context.WithValue(ctx, parkUnknownKey{}, false)
+	}
+	if parkRuleFrom(ctx) != nil {
+		ctx = context.WithValue(ctx, parkRuleKey{}, (*parkRule)(nil))
+	}
+	if onlyToolsFrom(ctx) != nil {
+		ctx = withOnlyTools(ctx, nil)
+	}
+	if innerFrom(ctx) != nil {
+		ctx = withInner(ctx, nil)
+	}
+	return ctx
 }
 
 // defaultIdempotencyKey is the key a call carries when no
