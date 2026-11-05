@@ -74,6 +74,33 @@ func TestRetryGivesUpAndKeepsTheSDKError(t *testing.T) {
 	}
 }
 
+// WR-32: MaxTotal bounds the whole call, waits included: a retry whose
+// wait would end past it is not started — the last error is returned,
+// wrapped, reachable through errors.As — and MaxWait(0)'s unbounded
+// retry-after is bounded by it.
+func TestRetryMaxTotalBoundsTheCall(t *testing.T) {
+	model := wefttest.Script(
+		wefttest.Fail(status(429, map[string]string{"Retry-After": "3600"})),
+		wefttest.Say("never"),
+	)
+	agt := core.New(model, core.WrapModel(mw.Retry(mw.MaxWait(0), mw.MaxTotal(50*time.Millisecond))))
+	began := time.Now()
+	_, err := agt.Generate(context.Background(), core.Prompt("x"))
+	var ae *apiError
+	if !errors.As(err, &ae) || ae.StatusCode != 429 || !strings.Contains(err.Error(), "retrying would pass MaxTotal 50ms") {
+		t.Fatalf("err = %v, want the 429 wrapped by the MaxTotal give-up", err)
+	}
+	if took := time.Since(began); took > 5*time.Second || len(model.Requests()) != 1 {
+		t.Errorf("took %s, %d requests; want one try and no hour-long sleep", took, len(model.Requests()))
+	}
+	// Under the bound, retries go on as before.
+	model = wefttest.Script(wefttest.Fail(status(503, nil)), wefttest.Say("ok"))
+	res, err := core.New(model, core.WrapModel(mw.Retry(mw.BaseDelay(0), mw.MaxTotal(time.Minute)))).Generate(context.Background(), core.Prompt("x"))
+	if err != nil || res.Text() != "ok" {
+		t.Fatalf("under MaxTotal: %v, %v", res, err)
+	}
+}
+
 func TestRetryNotForClientErrorsOverflowOrMidStream(t *testing.T) {
 	cases := map[string]error{
 		"400":             status(400, nil),
@@ -367,12 +394,49 @@ func TestRepairJSON(t *testing.T) {
 		tool := core.RawTool("t", "", nil, func(_ context.Context, args json.RawMessage) (string, error) {
 			got = args
 			return "ok", nil
-		})
+		}, core.Replay(core.ReplaySafe))
 		if _, err := core.New(model, tool, core.WrapModel(mw.RepairJSON())).Generate(context.Background(), core.Prompt("x")); err != nil {
 			t.Fatal(err)
 		}
 		if string(got) != want {
 			t.Errorf("repair(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// WR-15: a tool that is not ReplaySafe never runs on guessed
+	// arguments — a cut is not closed, the model reads INVALID_INPUT —
+	// while a fence is still stripped and whitespace trimmed (lossless).
+	for in, want := range map[string]string{
+		`{"to":"ali`:                 "",
+		`{"a":1,`:                    "",
+		"```json\n{\"a\":1}\n```":    `{"to":"","a":1}`,
+		"```json\n{\"a\":1}\n``` \n": `{"to":"","a":1}`,
+		"```json\n{\"a\":1":          "",
+	} {
+		for _, policy := range []core.ReplayPolicy{core.ReplayNever, core.ReplayKeyed} {
+			var got string
+			ran := false
+			send := core.Tool("send", "", func(_ context.Context, v struct {
+				To string `json:"to"`
+				A  int    `json:"a"`
+			}) (string, error) {
+				b, _ := json.Marshal(v)
+				got, ran = string(b), true
+				return "sent", nil
+			}, core.Replay(policy))
+			model := wefttest.Script(wefttest.ToolCalls(wefttest.Call{Name: "send", Args: in}), wefttest.Say("ok"))
+			res, err := core.New(model, send, core.WrapModel(mw.RepairJSON())).Generate(context.Background(), core.Prompt("x"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want == "" {
+				if r := res.Steps[0].Results[0]; ran || !r.IsError || !strings.HasPrefix(r.Content, "INVALID_INPUT") {
+					t.Errorf("%v tool, cut %q: ran=%v result %+v; want INVALID_INPUT, never run", policy, in, ran, r)
+				}
+				continue
+			}
+			if !ran || got != want {
+				t.Errorf("%v tool, lossless %q: ran=%v got %q, want %q", policy, in, ran, got, want)
+			}
 		}
 	}
 	// Unrepairable arguments pass through and fail decoding as before.

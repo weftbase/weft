@@ -398,7 +398,7 @@ func TestOnionDevDetailLayerSpans(t *testing.T) {
 		handlerParent = sp.(*recSpan).parent
 		sp.End()
 		return "ok", nil
-	})
+	}, core.Replay(core.ReplaySafe)) // RepairJSON closes cut arguments for a ReplaySafe tool only
 	model := wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{ID: "w1", Name: "work", Args: "```\n{\"a\":\"b"}),
 		wefttest.Say("done"))

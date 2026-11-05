@@ -68,7 +68,13 @@ func MaxSteps(n int) MaxStepsOption { return core.MaxSteps(n) }
 // partial transcript on RunError.Result. There is no default limit:
 // the right value is workload-specific, and MaxSteps is the default
 // budget. Usage.Total() is not a separate limit — a caller who wants a
-// total sets both fields.
+// total sets both fields. A Subagent child the loop abandoned — its
+// call's Timeout passed, or the run was canceled under it — is counted
+// up to the moment it was abandoned: whatever it spends after (its
+// goroutine runs on until it honours its context) is reported on its
+// own run's record but reaches neither RunResult.Usage nor this limit.
+// Give delegations a Timeout their child honours, and a UsageLimit of
+// their own on the child agent.
 func UsageLimit(max Usage) Option { return core.UsageLimit(max) }
 
 // PrepareStep installs a function the loop calls before every model
@@ -1408,7 +1414,13 @@ func ApproveBy(callID, by, grantID string) RunOption { return core.ApproveBy(cal
 // the transcript). by names the decider's class, as ApproveBy's. The
 // arguments are validated as any call's are (decode, StrictInput): a
 // call whose edited arguments do not fit its tool fails as a call with
-// bad arguments would.
+// bad arguments would. The EDITED line is part of the result, under
+// the result cap (MaxResultBytes). An edit covers one resume: the
+// transcript keeps the model's call, so a call that parks again in the
+// resume (ParkUnknown, a middleware's park) is reported on
+// RunResult.Pending with the model's own arguments — what a plain
+// Approve of it would run — and runs the edit again only when decided
+// again with ApproveEdited (weft/thread does, from its record).
 func ApproveEdited(callID string, args json.RawMessage, by string) RunOption {
 	return core.ApproveEdited(callID, args, by)
 }
@@ -1506,6 +1518,9 @@ func KeptSteps(n int) RunOption { return core.KeptSteps(n) }
 // describe the code, not one run's experiment (WEFT-PLAYGROUND §10.1
 // [D5]). With no names, the run keeps the agent's full set. Several
 // OnlyTools options add up: the run keeps every tool any of them names.
+// The narrowing holds for an Agent.CallTool from inside the run's tool
+// handlers too: a narrowed-away tool is unknown there (ErrNoSuchTool),
+// as it is to the loop. A Subagent's child run does not inherit it.
 func OnlyTools(names ...string) RunOption { return core.OnlyTools(names...) }
 
 // UseModel replaces the agent's model for this run, rebuilding the
@@ -1586,8 +1601,11 @@ func ParkAllExcept(names ...string) RunOption { return core.ParkAllExcept(names.
 // fn receives the run's context (its metadata placed) and must return
 // promptly — it runs on the loop's goroutine before the first model
 // call; read a cached set, never the network. A nil or empty answer
-// parks nothing; a panic is contained, parks nothing and is reported
-// as one Debug line. Several ParkSource options add up; a nil fn is
+// parks nothing. A panic is contained and fails safe: the set it would
+// have named is unknown, so the run parks every call (its
+// weft.tool.pending.source park_source) but its own Output answer —
+// a breakpoint set that cannot be read is not an empty one — and it is
+// reported as one Warn line; the next run reads the source again. Several ParkSource options add up; a nil fn is
 // ignored. The answer is behaviour, not configuration the run carries:
 // it is not an override (no weft.override.* attribute) and a source
 // that answers nothing leaves the run byte-identical to one without it.
@@ -1658,8 +1676,12 @@ type DispatchFunc = core.DispatchFunc
 // gate runs inside the call's Timeout: a call whose Timeout passes (or
 // whose run is canceled) before the gate returns is answered as timed
 // out (canceled), and its handler never starts, even when the gate
-// then lets it through. Neither a Subagent's child run nor a CallTool
-// from inside the handler inherits it. The last option wins.
+// then lets it through. A Subagent's child run — any run started on
+// the call's context — does not inherit it. A CallTool from inside the
+// handler passes it again, as an inner call (Call.Outer names the
+// dispatching call; ADR 0031 §4); a CallTool from a WrapTools
+// middleware, before the call's handler started, is refused with
+// ErrNotDispatched under a gate. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return core.BeforeDispatch(fn) }
 
 // AfterDispatchFunc is the hook AfterDispatch installs: called once the
@@ -1678,7 +1700,8 @@ type AfterDispatchFunc = core.AfterDispatchFunc
 // gate let through after the loop had given up on it (BeforeDispatch)
 // calls it at once: its handler never starts. A handler that never
 // returns never calls it. A CallTool from inside the handler
-// inherits it; a Subagent's child run does not. The last option wins.
+// inherits it; a Subagent's child run — any run started on the call's
+// context — does not. The last option wins.
 func AfterDispatch(fn AfterDispatchFunc) RunOption { return core.AfterDispatch(fn) }
 
 // ParkUnknown returns the RunOption that parks a call whose outcome is
@@ -1693,7 +1716,11 @@ func AfterDispatch(fn AfterDispatchFunc) RunOption { return core.AfterDispatch(f
 // ladder (weft/thread: a keyed retry or a person; the tool's Reconcile
 // is asked only by RecoverTurn after a crash or a shutdown, never for
 // a call parked in a live turn, whose handler may still be running).
-// A Subagent's child run does not inherit it.
+// A Subagent's child run — any run started on the call's context — does
+// not inherit it. Approving a parked call runs it again in the resume,
+// a new run: its default IdempotencyKey is run-scoped and differs
+// there, so a caller that retries such a call needs IdempotencyKeys to
+// keep its key (weft/thread passes it; Call.IdempotencyKey).
 func ParkUnknown() RunOption { return core.ParkUnknown() }
 
 // Prompt adds a user message to the run's input.
@@ -1851,7 +1878,14 @@ func AgentFromContext(ctx context.Context) *Agent { return core.AgentFromContext
 // and the tool's result is the child's final text (or, for a child
 // built with Output, the submitted JSON). The child's events arrive in
 // the parent's stream wrapped in Nested; its usage is added to the
-// parent's RunResult.Usage and recorded on StepRecord.SubagentUsage.
+// parent's RunResult.Usage and recorded on StepRecord.SubagentUsage —
+// up to the moment the call ends: a child abandoned at its Timeout or
+// at the parent's cancellation runs on until it honours its context,
+// and what it spends after is on its own run's record only, never on
+// the parent's usage or UsageLimit. The child inherits none of the
+// parent run's per-call options: ParkOn, ParkUnknown, OnlyTools,
+// IdempotencyKeys, BeforeDispatch, AfterDispatch (ParkAllExcept and
+// Metadata it does inherit).
 //
 // A subagent is an ordinary tool: Timeout bounds the child run,
 // MaxResultBytes caps its answer, RequireApproval gates the delegation,

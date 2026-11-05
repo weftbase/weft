@@ -1253,7 +1253,15 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		}
 		var es []Entry
 		s.locked(func() {
-			es = s.recoveryEntries(c, t.runID, c.Args, settings, s.parkQuorum(), startMaybe, nil)
+			// The core reports a re-parked call as the transcript holds
+			// it (the model's arguments); a call this resume ran on a
+			// revision's edited arguments is retried on those, as the
+			// cut-off path does (recoverResumeLocked).
+			args := c.Args
+			if ea, _, edited, ok := editedArgsOf(s.approvalWalkLocked().requests[c.ID], c); edited && ok {
+				args = ea
+			}
+			es = s.recoveryEntries(c, t.runID, args, settings, s.parkQuorum(), startMaybe, nil)
 		})
 		unknown[c.ID] = es
 		if d, ok := es[len(es)-1].(ApprovalDecisionEntry); !ok || d.Outcome == OutcomeApprove {

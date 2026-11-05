@@ -121,7 +121,13 @@ func (o usageLimitOption) apply(a *Agent) { a.usageLimit = o.max }
 // partial transcript on RunError.Result. There is no default limit:
 // the right value is workload-specific, and MaxSteps is the default
 // budget. Usage.Total() is not a separate limit — a caller who wants a
-// total sets both fields.
+// total sets both fields. A Subagent child the loop abandoned — its
+// call's Timeout passed, or the run was canceled under it — is counted
+// up to the moment it was abandoned: whatever it spends after (its
+// goroutine runs on until it honours its context) is reported on its
+// own run's record but reaches neither RunResult.Usage nor this limit.
+// Give delegations a Timeout their child honours, and a UsageLimit of
+// their own on the child agent.
 func UsageLimit(max Usage) Option { return usageLimitOption{max} }
 
 type maxModelRetriesOption struct{ n int }

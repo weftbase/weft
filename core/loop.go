@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"maps"
 	"reflect"
 	"runtime/debug"
@@ -57,6 +58,12 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 	link := runLinkAttrs(ctx)
 	callerSpan := remoteCallerSpan(ctx)
 	ctx = enterRun(ctx)
+	// What a tool call's context carries for its own handler — the
+	// dispatch gate and hook, ParkUnknown, the park rule, the OnlyTools
+	// narrowing, the inner-dispatch keying — is that run's and that
+	// call's alone: a run started on it (a Subagent's child, a Generate
+	// in a handler or a tool middleware) starts from none of it.
+	ctx = clearCallScope(ctx)
 	// The run's metadata is merged and placed before any span starts, so
 	// every span and record of this run carries it and a Subagent's child
 	// run inherits it through the tool call's context (ADR 0024 S1.1).
@@ -409,7 +416,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 	// attributes were taken above, so a source's answer is never an
 	// override.
 	if len(a.parkSources) > 0 {
-		cfg.parkSourced = a.readParkSources(ctx, cfg.id)
+		cfg.parkSourced, cfg.parkSourceFailed = a.readParkSources(ctx, cfg.id)
 	}
 	ctx, parkSet := cfg.resolvePark(ctx)
 	res.Park = parkSet.export()
@@ -751,7 +758,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 			}
 		default:
 			var retried []string
-			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown)
+			rec.Results, pending, sub, retried = a.execTools(ctx, cfg.id, step, tools, calls, seq, emit, nil, parallelism, parkSet, &records, state.retries, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown, cfg.onlyTools)
 			for _, name := range retried {
 				state.retries[name]++
 			}
@@ -1225,7 +1232,7 @@ func (a *Agent) modelInfo() ModelInfo { return InfoOf(a.model) }
 // rec is the run's recorder, told each call's truncation before its
 // ToolFinish is emitted (the tool_finish record's
 // weft.tool.truncated_bytes); nil records nothing.
-func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc, after AfterDispatchFunc, parkUnknown bool) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
+func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*ToolDef, calls []ToolCallPart, seq *atomic.Int64, emit func(Event), approved map[string]decision, parallelism int, parkSet *parkRule, rec *recorder, retryBase map[string]int, keys func(Call) string, dispatch DispatchFunc, after AfterDispatchFunc, parkUnknown bool, only []string) (results []ToolResultPart, pending []ToolCallPart, subagents map[string]Usage, retried []string) {
 	outcomes := make([]ToolResultPart, len(calls))
 	parked := make([]bool, len(calls))
 	sem := make(chan struct{}, parallelism)
@@ -1337,11 +1344,18 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 		prov, ok := approved[call.ID]
 		isApproved := ok && prov.approved
 		c := Call{RunID: runID, Step: step, CallID: call.ID, Name: call.Name, Approved: isApproved}
+		var keyErr error
 		if keys != nil {
-			c.IdempotencyKey = keys(c)
+			c.IdempotencyKey, keyErr = a.safeKey(ctx, keys, c)
 		}
 		if c.IdempotencyKey == "" {
 			c.IdempotencyKey = defaultIdempotencyKey(runID, call.ID)
+		}
+		// An approved call on edited arguments (ApproveEdited): its result
+		// starts with the pinned EDITED line, under the result cap.
+		var edited string
+		if isApproved && prov.args != nil {
+			edited = editedPrefix + string(prov.args) + "\n"
 		}
 		wg.Add(1)
 		inflight.Add(1)
@@ -1360,6 +1374,13 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			if parkUnknown {
 				callCtx = withParkUnknown(callCtx)
 			}
+			if only != nil {
+				callCtx = withOnlyTools(callCtx, only)
+			}
+			// A CallTool from a tool middleware, before the call reaches
+			// its handler, is keyed (or, under a gate, refused) from this
+			// scope; the chain's base installs the handler's own.
+			callCtx = withInner(callCtx, &innerDispatch{outer: c, gate: dispatch, after: after, early: true})
 			// A CallTool from inside the handler dispatches under the
 			// same park rule as the loop (WR-7): approval never fails open.
 			callCtx = withParkRule(callCtx, parkSet)
@@ -1374,7 +1395,15 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 			var fail toolFailure
 			var cut int
 			var park string
-			outcomes[i], park, retry, cut, fail = a.callTool(callCtx, call, def, parkSet, rec)
+			if keyErr != nil {
+				// The call's key could not be named: it never starts
+				// (fail closed), and the model reads the refusal.
+				fail = readToolError(keyErr)
+				outcomes[i] = ToolResultPart{CallID: call.ID, Name: call.Name, IsError: true}
+				outcomes[i].Content, cut = capResultN(fail.text, a.callCap(def))
+			} else {
+				outcomes[i], park, retry, cut, fail = a.callTool(callCtx, call, def, parkSet, rec, edited)
+			}
 			parked[i] = park != ""
 			retriedAt[i] = retry
 			if retry && retryBase != nil {
@@ -1468,17 +1497,15 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 		return nil, nil, nil, err
 	}
 	var approved []ToolCallPart
-	edited := map[string]bool{}
 	for _, c := range calls {
 		if d, ok := cfg.decisions[c.ID]; ok && d.approved {
 			if d.args != nil {
 				c.Args = cloneRaw(d.args) // the decider's arguments, executed as given
-				edited[c.ID] = true
 			}
 			approved = append(approved, c)
 		}
 	}
-	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown)
+	ran, pending, sub, _ := a.execTools(ctx, cfg.id, 0, tools, approved, seq, emit, cfg.decisions, cfg.effectiveParallelism(a.parallelism), parkSet, rec, nil, cfg.keys, cfg.dispatch, cfg.afterDispatch, cfg.parkUnknown, cfg.onlyTools)
 	byID := make(map[string]ToolResultPart, len(ran))
 	for _, r := range ran {
 		byID[r.CallID] = r
@@ -1486,6 +1513,17 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 	parked := make(map[string]bool, len(pending))
 	for _, c := range pending {
 		parked[c.ID] = true
+	}
+	// A call that parks again is reported as the transcript holds it —
+	// the model's own arguments, never an edit's (C4): the next run
+	// resumes the transcript's call, so a plain Approve of what Pending
+	// shows runs exactly what it shows. An edit covers one resume; to
+	// run it again, decide it again with ApproveEdited.
+	pending = pending[:0]
+	for _, c := range calls {
+		if parked[c.ID] {
+			pending = append(pending, c)
+		}
 	}
 	results := make([]ToolResultPart, 0, len(calls))
 	for _, c := range calls {
@@ -1512,11 +1550,8 @@ func (a *Agent) resolvePending(ctx context.Context, cfg runConfig, calls []ToolC
 			continue
 		}
 		if r, ok := byID[c.ID]; ok {
-			if edited[c.ID] {
-				// The model wrote other arguments: its result says
-				// which ones ran.
-				r.Content = editedPrefix + string(cfg.decisions[c.ID].args) + "\n" + r.Content
-			}
+			// An edited call's result already starts with the EDITED
+			// line (execTools), under the result cap.
 			results = append(results, r)
 			continue
 		}
@@ -1747,11 +1782,26 @@ func deniedResult(reason string) string {
 // ErrNotDispatched), and a handler of a tool that is not ReplaySafe
 // cut off by the run's cancellation before it answered returns an
 // error wrapping ErrOutcomeUnknown — return it, and the dispatching
-// call's outcome is unknown too.
+// call's outcome is unknown too. It resolves against the run's tools:
+// a tool the run's OnlyTools narrowed away is unknown (ErrNoSuchTool).
+// Called from a WrapTools middleware of a loop call — before that
+// call's handler has started — it is not a handler's inner call: under
+// a BeforeDispatch gate it is refused with an error wrapping
+// ErrNotDispatched (nothing has let an effect start under the outer
+// call yet), and with none it runs keyed from the outer call's key
+// apart from the handler's (Call.IdempotencyKey). A run started on a
+// call's context — a Subagent's child — inherits none of this: its
+// calls answer to its own options.
 func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error) {
 	tools, err := a.dispatchTools()
 	if err != nil {
 		return "", err
+	}
+	if only := onlyToolsFrom(ctx); only != nil {
+		// From inside a run narrowed by OnlyTools: the inner call
+		// resolves against the run's tools, as the loop's own calls do —
+		// a narrowed-away tool is unknown (ErrNoSuchTool).
+		tools = narrowTools(tools, only)
 	}
 	def, _ := findTool(tools, call.Name)
 	strict := a.strict
@@ -1767,7 +1817,10 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	outer, nested := CallFromContext(ctx)
 	if nested {
 		inner := Call{RunID: outer.RunID, Step: outer.Step, CallID: call.ID, Name: call.Name, Outer: outer.CallID}
-		if in := innerFrom(ctx); in != nil && in.outer.CallID == outer.CallID {
+		// The handler's own scope matches the whole Call — run, step and
+		// id — never the id alone: a child run's call may reuse its
+		// parent's call id (Gemini's call_0).
+		if in := innerFrom(ctx); in != nil && !in.early && in.outer == outer {
 			// Keyed from the outer call and its position, and gated like
 			// the loop's own calls: a retry of the outer call that
 			// dispatches in the same order reuses the same keys.
@@ -1778,6 +1831,18 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 			if in.after != nil {
 				ctx = withAfterDispatch(ctx, in.after)
 			}
+		} else if in != nil && in.early && in.outer == outer {
+			// From a WrapTools middleware: the outer call has not passed
+			// the gate, its handler has not started, so nothing has let
+			// an effect begin under it. Under a gate the inner call is
+			// refused (ADR 0031 §4's 2026-11-05 amendment: inner calls
+			// start only under a started outer call); with none it is
+			// keyed from the outer key and its position among the
+			// middleware's CallTool calls, apart from the handler's.
+			if in.gate != nil {
+				return "", fmt.Errorf("%w: tool %q was dispatched from a tool middleware of call %q, before that call's handler started; under a dispatch gate an inner call is dispatched only from inside the handler", ErrNotDispatched, call.Name, outer.CallID)
+			}
+			inner.IdempotencyKey = middlewareKey(in.outer.IdempotencyKey, in.n.Add(1))
 		}
 		ctx = withCall(ctx, inner)
 	}
@@ -1982,21 +2047,32 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 //
 // cut is the bytes the result cap removed from the content (0 when it
 // cut nothing): the observer's weft.tool.truncated_bytes.
-func (a *Agent) callTool(ctx context.Context, call ToolCallPart, def *ToolDef, parkSet *parkRule, rec *recorder) (res ToolResultPart, park string, retry bool, cut int, fail toolFailure) {
+func (a *Agent) callTool(ctx context.Context, call ToolCallPart, def *ToolDef, parkSet *parkRule, rec *recorder, edited string) (res ToolResultPart, park string, retry bool, cut int, fail toolFailure) {
 	res = ToolResultPart{CallID: call.ID, Name: call.Name}
-	resultCap := a.resultCap
+	resultCap := a.callCap(def)
 	timeout := a.toolTimeout
 	strict := a.strict
 	if def != nil {
-		if def.capSet {
-			resultCap = def.resultCap
-		}
 		if def.timeoutSet {
 			timeout = def.timeout // includes the Timeout(0) lift
 		}
 		strict = strict || def.strict
 	}
-	defer func() { res.Content, cut = capResultN(res.Content, resultCap) }()
+	defer func() {
+		if park != "" {
+			return // a parked call has no result
+		}
+		if edited != "" {
+			// An edited call's EDITED line is part of the result the
+			// model reads, so the cap covers it too (rule 8) — never
+			// cutting into the pinned line itself.
+			res.Content = edited + res.Content
+			if resultCap > 0 && resultCap < len(editedPrefix) {
+				resultCap = len(editedPrefix)
+			}
+		}
+		res.Content, cut = capResultN(res.Content, resultCap)
+	}()
 
 	// mark belongs to this call's chain alone, but not to one goroutine:
 	// a middleware may call next more than once at a time (hedging) or
@@ -2018,7 +2094,7 @@ func (a *Agent) callTool(ctx context.Context, call ToolCallPart, def *ToolDef, p
 		out, fail = invokeWithTimeout(ctx, fn, call, timeout, mark)
 	}
 	if fail.err != nil {
-		if fail.park {
+		if fail.park && !ranPastHandler(def, mark) {
 			park = mark.parked()
 			if park == "" {
 				park = parkByMiddleware
@@ -2149,6 +2225,33 @@ func (a *Agent) callTimeout(def *ToolDef) time.Duration {
 	return a.toolTimeout
 }
 
+// callCap is the result cap a call to def runs under: its own
+// MaxResultBytes, else the agent's (0: none).
+func (a *Agent) callCap(def *ToolDef) int {
+	if def != nil && def.capSet {
+		return def.resultCap
+	}
+	return a.resultCap
+}
+
+// safeKey asks the run's IdempotencyKeys function for c's key, contained:
+// a panic names no key, and the call fails closed — an error wrapping
+// ErrNotDispatched, its handler never started (rule 1: the run goes on)
+// — reported as one Warn line.
+func (a *Agent) safeKey(ctx context.Context, keys func(Call) string, c Call) (key string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			key = ""
+			err = fmt.Errorf("%w: the run's IdempotencyKeys function panicked naming the call's key: %v", ErrNotDispatched, p)
+			if l := a.obs.logger(); l.Enabled(ctx, slog.LevelWarn) {
+				l.LogAttrs(ctx, slog.LevelWarn, "idempotency key function panicked: the call is not dispatched",
+					slog.String(logRun, c.RunID), slog.String(logCall, c.CallID), slog.String(logTool, c.Name), slog.String(logErr, fmt.Sprint(p)))
+			}
+		}
+	}()
+	return keys(c), nil
+}
+
 // toolTimeoutError is a per-call timeout, typed so the observer can
 // classify it as error.type "timeout" without matching text; Error
 // preserves the pinned model-visible string (ADR 0002).
@@ -2245,6 +2348,10 @@ type handlerMark struct {
 	// err is the error the handler last returned (nil: none, or it
 	// never returned).
 	err error
+	// answered: the handler returned (with err) — it did not panic and
+	// is not still running. A call whose handler answered with no error
+	// took effect, whatever a layer around it did after (outcomeUnknown).
+	answered bool
 	// entered: the call passed every middleware, the approval check
 	// and the dispatch gate, and its handler was called — it may have
 	// taken effect.
@@ -2314,8 +2421,23 @@ func (m *handlerMark) park(by string) {
 
 func (m *handlerMark) returning(err error) {
 	m.mu.Lock()
-	m.err = err
+	m.err, m.answered = err, true
 	m.mu.Unlock()
+}
+
+// answer reports whether the handler returned (not panicked, not still
+// running) and the error it last returned.
+func (m *handlerMark) answer() (answered bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.answered, m.err
+}
+
+// panicValue is the value the handler last panicked with.
+func (m *handlerMark) panicValue() any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.value
 }
 
 // parked is parkedBy, read under the lock.
@@ -2383,11 +2505,7 @@ func samePanicValue(p, q any) (same bool) {
 func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, timeout time.Duration, mark *handlerMark) (string, toolFailure) {
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	type outcome struct {
-		out  string
-		fail toolFailure
-	}
-	done := make(chan outcome, 1)
+	done := make(chan timedOutcome, 1)
 	// expired is the deadline fact, asked first of an error matching
 	// DeadlineExceeded (settleToolError): a call whose own deadline has
 	// passed timed out, whatever else its error says — parked or not,
@@ -2395,15 +2513,14 @@ func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, ti
 	expired := func() bool { return ctx.Err() == nil && tctx.Err() != nil }
 	go func() {
 		out, fail := invokeContained(tctx, fn, call, mark, expired)
-		done <- outcome{out, fail}
+		done <- timedOutcome{out, fail}
 	}()
 	// The timeout and the run's cancellation are core's own errors:
 	// read uncontained, they cannot panic.
 	timedOut := func() toolFailure {
 		return readToolError(&toolTimeoutError{name: call.Name, d: timeout})
 	}
-	select {
-	case o := <-done:
+	if o, answered := awaitAnswer(done, tctx.Done()); answered {
 		// A handler that honoured the deadline returns
 		// DeadlineExceeded itself; name the timeout rather than
 		// echoing the context error. The match was read in the
@@ -2419,17 +2536,42 @@ func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, ti
 			return o.out, settleToolError(call.Name, o.fail.err, mark, nil)
 		}
 		return o.out, o.fail
-	case <-tctx.Done():
-		// Whether the handler started is settled now, for good: one
-		// still in the chain — a slow middleware, a slow gate — never
-		// starts after this answer.
-		if mark != nil {
-			mark.abandon()
+	}
+	// Whether the handler started is settled now, for good: one still
+	// in the chain — a slow middleware, a slow gate — never starts
+	// after this answer.
+	if mark != nil {
+		mark.abandon()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", readToolError(err)
+	}
+	return "", timedOut()
+}
+
+// timedOutcome is a call's answer on invokeWithTimeout's channel.
+type timedOutcome struct {
+	out  string
+	fail toolFailure
+}
+
+// awaitAnswer waits for the call's answer or its deadline, whichever
+// comes first — and when both are ready at once, the answer: a select
+// alone picks between ready cases at random, and would throw away the
+// real result of a handler that answered right at its Timeout (C9).
+// answered is false only when the deadline came and no answer was
+// waiting.
+func awaitAnswer(done <-chan timedOutcome, deadline <-chan struct{}) (timedOutcome, bool) {
+	select {
+	case o := <-done:
+		return o, true
+	case <-deadline:
+		select {
+		case o := <-done:
+			return o, true
+		default:
+			return timedOutcome{}, false
 		}
-		if err := ctx.Err(); err != nil {
-			return "", readToolError(err)
-		}
-		return "", timedOut()
 	}
 }
 
@@ -2456,13 +2598,18 @@ func capResultN(s string, resultCap int) (string, int) {
 }
 
 // outcomeUnknown reports whether a failed call's outcome is unknown,
-// and the pinned text the model reads for it (ADR 0032, WR-6): a tool
-// that is not ReplaySafe whose handler started and gave no answer of
-// its own — its Timeout passed (the handler is abandoned and may still
-// complete), the run was canceled under it (a cancel, an interrupt, a
-// close), or it panicked (whatever it did first, it did). A failure the
-// handler returned while the run was live is its own answer and keeps
-// its words.
+// and the pinned text the model reads for it (ADR 0032, WR-6, and its
+// 2026-11-05 amendment): a tool that is not ReplaySafe whose handler
+// started and gave no answer of its own — its Timeout passed (the
+// handler is abandoned and may still complete), the run was canceled
+// under it (a cancel, an interrupt, a close), it panicked (whatever it
+// did first, it did), it said so (ErrOutcomeUnknown), or a layer around
+// it gave up on it while it still ran — and one whose handler answered
+// with no error while a layer around it (a WrapTools middleware, the
+// AfterDispatch hook) then failed: the effect happened, the answer never
+// reached the model. A failure the handler returned while the run was
+// live is its own answer and keeps its words, whatever a middleware
+// made of it after.
 func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail toolFailure, mark *handlerMark, timeout time.Duration) (string, bool) {
 	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
 		return "", false
@@ -2473,15 +2620,73 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 	if ctx.Err() != nil {
 		return fmt.Sprintf("%s: tool %q was cut off before it answered; it may have run; outcome unknown", CodeOutcomeUnknown, call.Name), true
 	}
-	if pe, ok := errors.AsType[*toolPanicError](fail.err); ok && mark.handlerPanicked() {
+	if mark.handlerPanicked() {
 		// The handler was entered and panicked: whatever it did before
-		// the panic, it did — the effect is unknown, not failed.
-		return fmt.Sprintf("%s: tool %q panicked before it answered (%v); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, pe.value), true
+		// the panic, it did — the effect is unknown, not failed. The
+		// value named is the one the containment caught, else (a
+		// middleware recovered it and failed otherwise) the handler's.
+		v := mark.panicValue()
+		if pe, ok := errors.AsType[*toolPanicError](fail.err); ok {
+			v = pe.value
+		}
+		return fmt.Sprintf("%s: tool %q panicked before it answered (%v); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, v), true
 	}
 	if errors.Is(fail.err, ErrOutcomeUnknown) {
 		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, fail.text), true
 	}
+	answered, herr := mark.answer()
+	switch {
+	case !answered:
+		// A layer around the handler (a middleware's own deadline, say)
+		// gave up on it while it still ran.
+		return fmt.Sprintf("%s: tool %q had not answered when a layer around it failed (%s); it may still complete; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
+	case herr == nil:
+		return fmt.Sprintf("%s: tool %q answered, but a layer around it failed after (%s); it may have taken effect; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
+	case errIsContained(herr, ErrOutcomeUnknown):
+		// The handler said it lost its answer; a middleware masked that.
+		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
+	}
 	return "", false
+}
+
+// ranPastHandler reports whether a call parked by a layer around its
+// handler (ErrApprovalRequired from a middleware) had already run it: a
+// tool that is not ReplaySafe whose handler started and did not answer
+// with an error of its own. Such a call is not parked — approving it
+// would run the effect again — but read as of unknown outcome. A
+// handler's own ErrApprovalRequired still parks its call.
+func ranPastHandler(def *ToolDef, mark *handlerMark) bool {
+	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
+		return false
+	}
+	answered, herr := mark.answer()
+	return !answered || herr == nil
+}
+
+// failText is the failure's text, read contained when the settled
+// failure carries none (a park's error).
+func failText(f toolFailure) (text string) {
+	if f.text != "" || f.err == nil {
+		return f.text
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			text = fmt.Sprintf("an error whose Error method panicked: %v", p)
+		}
+	}()
+	return f.err.Error()
+}
+
+// errIsContained is errors.Is(err, target), contained: a panic in the
+// error's own Is reads as no match — the error's failure is the
+// contained panic's, the plain "panicked" result rule 1 pins.
+func errIsContained(err, target error) (is bool) {
+	defer func() {
+		if recover() != nil {
+			is = false
+		}
+	}()
+	return errors.Is(err, target)
 }
 
 type parkUnknownKey struct{}

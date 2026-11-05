@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -381,5 +382,70 @@ func TestCosignersAreRecordedNotCounted(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "usr_alice,usr_carol" {
 		t.Fatalf("recorded cosigners = %v", got)
+	}
+}
+
+// C4 (core): a resume that ran an edited call whose outcome is then
+// unknown (its Timeout passed while it ran) parks it as a recovery
+// request on the edited arguments — the arguments it ran on — though
+// the core reports the re-parked call as the transcript holds it; and
+// approving the request retries the edit, never the model's original.
+func TestEditedCallUnknownInALiveTurnKeepsTheEdit(t *testing.T) {
+	var mu sync.Mutex
+	var ran []string
+	pay := core.Tool("pay", "Pay.", func(ctx context.Context, in struct {
+		To     string `json:"to"`
+		Amount int    `json:"amount"`
+	}) (string, error) {
+		mu.Lock()
+		ran = append(ran, fmt.Sprintf(`{"to":%q,"amount":%d}`, in.To, in.Amount))
+		n := len(ran)
+		mu.Unlock()
+		if n == 1 {
+			time.Sleep(60 * time.Millisecond) // answers after its Timeout
+		}
+		return "paid", nil
+	}, core.RequireApproval(), core.Timeout(10*time.Millisecond))
+	s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{"to":"bob","amount":900}`}),
+		wefttest.Say("done"),
+		wefttest.Say("done"),
+	), pay), thread.AutoResume(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, _ := s.Send(bg, core.User("pay"))
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(bg, thread.Edit("c1", json.RawMessage(`{"to":"bob","amount":40}`)).Bind(pendingCall(t, s, "c1"))); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := s.Resume(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = rt.Wait()
+	if err := s.WaitIdle(bg); err != nil {
+		t.Fatal(err)
+	}
+	r := pendingCall(t, s, "c1")
+	if !r.Recovery || string(r.Args) != `{"amount":40,"to":"bob"}` {
+		t.Fatalf("recovery request = %+v, want the edited arguments it ran on", r)
+	}
+	if _, err := s.Decide(bg, thread.Approve("c1").Bind(r)); err != nil {
+		t.Fatal(err)
+	}
+	if rt, err = s.Resume(bg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 2 || ran[0] != `{"to":"bob","amount":40}` || ran[1] != `{"to":"bob","amount":40}` {
+		t.Fatalf("ran %v; want the edit, then the edit again", ran)
 	}
 }
