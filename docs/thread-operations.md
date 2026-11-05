@@ -662,11 +662,15 @@ not the numbers themselves.
   reading `parked`) waits for the park, so the receipt reads
   `canceled` when `Cancel` returns, as for a parked child (before
   0.18.2 it returned at once, the receipt still `parked`).
-- **Do not let the parent's decision chain approve a delegating
-  call.** A grant or a live `Approver` that matches a pool wrap's tool
-  re-runs the delegation when it parks (see `Pool.Decide`'s godoc for
-  whether your version still has this gap). Scope grants and the
-  Approver away from wrap names.
+- **A delegating call takes no decision of its own.** The parent's
+  decision chain never consults a grant or the live `Approver` for a
+  call that delegates to a pool child — it parks for the child's answer
+  — and `Decide`, `DecideSigned` and `Request` refuse it with
+  `ErrDelegated`. Decide the child's mirrored requests (`Pending` lists
+  them, `Child` naming the session); the pool completes the call when
+  the child ends. A cut-off turn's delegating call whose delegation is
+  still open takes neither an approval nor an `Edit`
+  (`ErrStillRunning`): the pool settles it first.
 - **Deleting a parent deletes no child.** Cascade yourself:
   `pool.Descendants(ctx, parent)` returns the whole subtree deepest
   first — delete in that order, the parent last.
@@ -708,7 +712,11 @@ not the numbers themselves.
   no-op: nil, nothing recorded — and the same signed bytes again
   (`DecideSigned`, same nonce) are applied, not `ErrReplay`, and not
   audited. A different decision on a decided request is `ErrNotPending`;
-  another one under a spent nonce `ErrReplay`.
+  another one under a spent nonce `ErrReplay`. This holds after a
+  `Branch` back to a boundary a resume already applied the decision at:
+  the call reads pending there again, and an identical re-forward —
+  signed or not — runs nothing. A deliberate new decision on that line
+  must differ from the spent one (another `Who`, another reason).
 - **Edits.** `thread.Edit(callID, args).Bind(r)` corrects a parked
   call: the request closes and a revision opens on the edited arguments
   (`Request.RevisionOf`), approved once by the editor — under
@@ -719,6 +727,11 @@ not the numbers themselves.
   `EDITED: the call ran with the arguments …`. A recovery request takes
   no edit. Re-checking policy on the edited arguments is the decider's.
   A session that holds an edit is format 6: a 0.21 reader refuses it.
+  An edit needs a request entry to revise: a dangling call `Pending`
+  names with a synthetic `r_…` id takes approve, deny or resolve, and an
+  edit of it is `ErrInvalidDecision`. A revision a quorum still has to
+  approve fires `OnRequest`, from the `Decide`/`DecideSigned` that
+  recorded the edit.
 - **Cosigners.** An approval service outside the session that counts
   its own quorum forwards one decision naming every decider it counted
   in `Decision.Cosigners` (MAC-covered
@@ -755,7 +768,9 @@ not the numbers themselves.
   the session's own denials still record. `s.Grant` stays an
   in-process, unsigned call: whoever can call it can pre-approve.
 - **Signed decisions are bound** to the request entry and the run that
-  parked the call, and are single-use (`ErrReplay`, across restarts).
+  parked the call, and are single-use: another decision under a
+  recorded nonce is `ErrReplay`, across restarts; the same signed
+  decision again is applied (nil, nothing recorded).
   A challenge minted before upgrading to this version does not verify
   (the challenge domain moved to v2): request a fresh one.
 - **Expiry is lazy.** `thread.RequestExpiry(d)` gives each request a
@@ -770,6 +785,34 @@ not the numbers themselves.
   whatever `Who` the caller wrote. A quorum that must hold against the
   deciding process itself needs `RequireSigned` and one key per
   approver.
+- **`Via` is the session's.** Every door records its own channel —
+  `Decide` "user", `DecideSigned` "signed", the live `Approver`
+  "approver" — whatever the decision's `Via` field held, so no decider
+  can pose as one of the session's own paths (a "recovery" approval
+  skipping the quorum, a "grant" counted as the grant). An `Approver`
+  answer an earlier build stored with `Via` "recovery" is read as an
+  approver's. A layer that relays decisions names itself with
+  `thread.WithApprovedBy(ctx, class)` on `Decide` or `DecideSigned`: the
+  class is recorded on the decision entry (`approved_by`) and reported
+  as `weft.tool.approved_by` on the resumed call, also by a `Resume`
+  another process arms.
+- **Drift.** An approved call runs only while its tool's input schema
+  hashes to what the request recorded when it parked — a `ToolSource`
+  tool (MCP served the documented way) included. A tool that changed
+  its input, or that the agent (or its source) no longer has, is
+  denied at the resume with a drift text the model reads. Requests
+  recorded before a `ToolSource` tool's schema was kept carry none and
+  are not checked.
+- **Grants are schema-bound and revocable to the last moment.** A
+  session grant (`s.Grant`, `ApproveAlways`) records its tool's schema
+  hash at the mint and matches only while the tool still has it; a
+  grant for a tool the agent did not hold then, or one recorded before
+  the field existed, matches on name and arguments alone. A grant
+  revoked after it approved a call that still waits at the boundary (a
+  sibling parked for a person) withdraws that approval: the resume does
+  not run the call ("DENIED: no decision"; audit `grant_revoked`).
+  A shared `GrantStore` grant carries no schema and its revocation is
+  the store's.
 - **The audit trail is an index, not evidence.** `s.Audit()` returns
   every request, chain step, decision, grant and revocation the
   session recorded. The entries are plain appended lines, unsigned and

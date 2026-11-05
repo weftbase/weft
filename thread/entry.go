@@ -385,7 +385,15 @@ type ApprovalDecisionEntry struct {
 	Content  string    `json:"content,omitempty"`
 	Who      string    `json:"who,omitempty"`
 	Via      string    `json:"via,omitempty"`
-	RunID    string    `json:"run_id,omitempty"`
+	// ApprovedBy is the approval class the deciding call's context
+	// named (WithApprovedBy) — "runtime", "inbox" — on a decision
+	// recorded through Decide or DecideSigned: the layer that relayed
+	// it, beside Via's door and Who's decider. Reporting only; the
+	// session never decides on it. Empty when the context named none,
+	// and on every path of the session's own. Additive: an older reader
+	// ignores it.
+	ApprovedBy string `json:"approved_by,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
 	// Nonce and KeyID are the signed-decision replay guard's record
 	// (ADR 0021 §3): a decision that arrived signed carries the nonce
 	// it answered and the key that vouched for it, so a replayed
@@ -403,11 +411,14 @@ type ApprovalDecisionEntry struct {
 	// Approver), written in the same append as the request or without
 	// one, and RunID names the occurrence either way.
 	RequestID string `json:"request_id,omitempty"`
-	// ArgsSHA256 is the hash of the arguments the decider was shown,
-	// when it stated one (Decision.ArgsSHA256; a signed decision's
-	// challenge always does): the session refused the decision unless
-	// it equalled the request's, so it records what was seen, not only
-	// what was decided. Empty when the decider stated none.
+	// ArgsSHA256 is the hash of the arguments the decider was shown:
+	// Decide and DecideSigned require it (Decision.Bind; a signed
+	// decision's challenge carries it) and refuse the decision unless it
+	// equals the request's, so it records what was seen, not only what
+	// was decided. A chain step's decision (an Approver that stated
+	// none, a grant) and the session's own denials (expiry, interrupt)
+	// may leave it empty — and so may a decision recorded before Decide
+	// required it.
 	ArgsSHA256 string `json:"args_sha256,omitempty"`
 	// Always records that the decision was an "approve and always
 	// allow" (ApproveAlways): the grant is minted when the call's
@@ -484,6 +495,17 @@ type GrantEntry struct {
 	// the grantor either way. Empty on a grant recorded before it was
 	// kept.
 	Via string `json:"via,omitempty"`
+	// SchemaSHA256 is the hex SHA-256 of the granted tool's input
+	// schema when the grant was minted — the tool as a step would
+	// resolve it then, a ToolSource's included. The grant matches a
+	// call only while the tool's schema still hashes to it: a tool that
+	// changed its input since takes a new grant (WR-26), the drift rule
+	// a parked call's approval follows. Empty when the session's agent
+	// held no tool of that name at the mint, and on a grant recorded
+	// before the field was kept: such a grant matches on name and
+	// arguments alone, as it always did. Additive: an older reader
+	// ignores it.
+	SchemaSHA256 string `json:"schema_sha256,omitempty"`
 }
 
 // GrantRevokedEntry ends a grant (ADR 0021 §4): revocation is an

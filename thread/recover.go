@@ -481,16 +481,12 @@ func hasToolCall(m core.Message) bool {
 	return false
 }
 
-// toolLocked returns the agent's tool by name, nil when it has none
-// (a tool since removed, or one only a ToolSource supplies): such a
-// call is treated as core.ReplayNever. Callers hold s.mu.
+// toolLocked returns the agent's tool by name — a ToolSource's tools
+// resolved like the static ones (currentTool) — nil when it has none (a
+// tool since removed): such a call is treated as core.ReplayNever.
+// Callers hold s.mu.
 func (s *Session) toolLocked(name string) *core.ToolDef {
-	for _, def := range s.agent.Tools() {
-		if def.Name == name {
-			return def
-		}
-	}
-	return nil
+	return currentTool(s.agent, name)
 }
 
 // replayOfLocked is a call's replay class, ReplayNever for a tool the

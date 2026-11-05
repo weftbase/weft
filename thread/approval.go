@@ -56,7 +56,7 @@ const (
 	StepApprover = "approver" // the live chain step, consulted and bounded
 	StepPark     = "park"     // the request persisted, the turn ended pending
 	StepExpiry   = "expiry"   // an expired request denied
-	StepResume   = "resume"   // the boundary's resume run: one entry "started" before the run, one "completed" or "failed" with its end
+	StepResume   = "resume"   // the boundary's resume run: one entry "started" before the run, one "completed" or "failed" with its end; between them, per approved call it will not run, "drift" (its tool changed) or "grant_revoked" (GrantID: the session grant that approved it was revoked)
 	StepSigned   = "signed"   // a signed decision refused; Detail names why, no decision recorded
 	StepRecover  = "recover"  // RecoverTurn: per run, Outcome continued (Detail: the new run), parked, resumed or closed; per call, "retry" (Detail: the replay class) beside the session's own approval
 	StepDispatch = "dispatch" // the dispatch gate let a call that is not ReplaySafe start: appended and flushed before its handler runs (ADR 0032)
@@ -209,10 +209,12 @@ type Decision struct {
 	// (and in a keyring KeyID), never an email or a name.
 	Who string
 	// Via names the channel the decision arrived by. The session fills
-	// it on every path it records — Decide always records "user",
-	// DecideSigned "signed", whatever this field holds; only an
-	// Approver's answer keeps a Via of its own ("approver" when
-	// empty).
+	// it on every path it records, whatever this field holds — Decide
+	// records "user", DecideSigned "signed", an Approver's answer
+	// "approver" — so no decider can pose as one of the session's own
+	// paths ("grant", "expiry", "recovery", …), which count differently
+	// under Quorum. Name the layer that relayed a decision with
+	// WithApprovedBy instead.
 	Via string
 	// Always approves and grants the same thing for the future: the
 	// tool plus the call's exact arguments become a session grant
@@ -376,6 +378,12 @@ func (o onRequestOption) applySession(c *sessionConfig) {
 // calling it. The session does no I/O of its own for this; a panic in
 // fn is contained and logged, never failing the turn. A nil fn is
 // ignored.
+//
+// An edit's revision (Request.RevisionOf) is a new request too: when
+// the Decide or DecideSigned that recorded the edit leaves it pending
+// (under Quorum it still needs approvers), fn is called for it on that
+// caller's goroutine, after the decision is durable and before the
+// call returns, holding no session lock.
 func OnRequest(fn func(Request)) SessionOption { return onRequestOption(fn) }
 
 type requestExpiryOption time.Duration
@@ -484,6 +492,33 @@ func (s *Session) offeredPendingLocked() []Request {
 // the same on every session — a pool child included, whose parent's
 // decisions reach it through the pool's own replay, not this door.
 //
+// Deciding is idempotent: a decision bound to a request (Decision.Bind)
+// that repeats one already on file for it — same outcome, reason,
+// content, Who, arguments, Always, edit and cosigners — is applied:
+// nothing is recorded, nothing runs, and no error is returned. That
+// holds while the decision is in force (under Quorum, one approval
+// short), once the request is decided, and after a Branch back to a
+// boundary a resume already applied it at — the call reads pending
+// there again, and the same decision forwarded again (a platform's
+// retry, a reconciler) does not run it a second time; DecideSigned
+// answers a signed redelivery the same way. A deliberate new decision
+// on that line must differ from the spent one: another Who, or another
+// reason. A decision a Fork copied is the origin's and repeats nothing
+// in the fork.
+//
+// An Edit is refused (ErrInvalidDecision) for a dangling call no
+// request entry names — Pending's synthetic "r_…" request — and, like
+// an approval, with ErrStillRunning while the call's thread/pool
+// delegation is still open or its handler is still running: an edit
+// approves its revision, a second run beside the first.
+//
+// When the batch opens a revision (an Edit) that stays pending — under
+// Quorum it still needs approvers — OnRequest fires for it after the
+// decision is durable, once Decide has let go of the session.
+//
+// The approval class ctx carries (WithApprovedBy) is recorded on each
+// decision entry (ApprovalDecisionEntry.ApprovedBy).
+//
 // Expiry is resolved first, on every call: each pending request
 // strictly past its expiry is denied on the spot with the stated
 // reason (an expiry audit step and a decision with Via "expiry"),
@@ -503,10 +538,21 @@ func (s *Session) Decide(ctx context.Context, ds ...Decision) (*Turn, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	from := len(s.order)
+	t, err := s.decideUnsignedLocked(ctx, ds)
+	revs, fn := s.openedRevisionsLocked(from), s.cfg.onRequest
+	s.mu.Unlock()
+	s.notifyRequests(fn, revs)
+	return t, err
+}
+
+// decideUnsignedLocked is Decide's body under the session lock.
+// Callers hold s.mu.
+func (s *Session) decideUnsignedLocked(ctx context.Context, ds []Decision) (*Turn, error) {
 	if s.cfg.requireSigned {
 		return nil, fmt.Errorf("%w: session %s", ErrSignatureRequired, s.header.ID)
 	}
+	by := approvedByOf(ctx)
 	wrappers := s.approvalWalkLocked().wrappers
 	batch := make([]recordedDecision, len(ds))
 	for i, d := range ds {
@@ -521,18 +567,48 @@ func (s *Session) Decide(ctx context.Context, ds ...Decision) (*Turn, error) {
 			return nil, fmt.Errorf("%w: call %q completes with child session %s", ErrDelegated, d.CallID, child)
 		}
 		d.Via = viaUser // the door names the channel, never the caller
-		batch[i] = recordedDecision{Decision: d}
+		batch[i] = recordedDecision{Decision: d, approvedBy: by}
 	}
 	return s.decideLocked(ctx, batch, true)
 }
 
 // recordedDecision is a decision on its way into the file: what was
 // decided, plus the signed path's record — the nonce it answered and
-// the key that vouched for it, both empty on every unsigned path.
+// the key that vouched for it, both empty on every unsigned path — and
+// the approval class the deciding call's context named
+// (WithApprovedBy), recorded on the entry as ApprovedBy.
 type recordedDecision struct {
 	Decision
-	nonce string
-	keyID string
+	nonce      string
+	keyID      string
+	approvedBy string
+}
+
+// openedRevisionsLocked returns the revisions (Request.RevisionOf) the
+// entries appended since index from opened and left pending — an edit
+// under Quorum, whose revision still needs approvers — so the deciding
+// call can notify them through OnRequest once it has let go of the
+// lock, as the chain notifies the requests it parks. Callers hold s.mu.
+func (s *Session) openedRevisionsLocked(from int) []Request {
+	if s.cfg.onRequest == nil || from >= len(s.order) {
+		return nil
+	}
+	var opened []string
+	for _, e := range s.order[from:] {
+		if re, ok := e.(ApprovalRequestEntry); ok && re.RevisionOf != "" {
+			opened = append(opened, re.ID)
+		}
+	}
+	if len(opened) == 0 {
+		return nil
+	}
+	var out []Request
+	for _, r := range s.pendingLocked() {
+		if slices.Contains(opened, r.ID) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // decideLocked is Decide's body after its door check: expiry is
@@ -604,28 +680,23 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	// matches what was recorded for it. Without a request id a retry
 	// is ambiguous and never takes this path.
 	kept := batch[:0:0]
-	var inForce approvalWalk
-	walked := false
 	for _, d := range batch {
 		req, ok := byCall[d.CallID]
-		if (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d) {
+		if (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d, false) {
 			continue
 		}
-		if ok && d.RequestID == req.ID && d.RequestID != "" {
-			// Still pending — under Quorum, one approval short: the same
-			// decision again counts nothing and records nothing. Only a
-			// decision in force repeats (a spent one, on another line of
-			// the tree, does not: the call reads pending again).
-			if !walked {
-				inForce, walked = s.approvalWalkLocked(), true
-			}
-			ds := scopedDecisions(inForce.decisions[req.CallID], req.RunID)
-			if req.Child == "" {
-				_, ds = inForce.occurrence(req.CallID)
-			}
-			if slices.ContainsFunc(ds, func(de ApprovalDecisionEntry) bool { return de.RequestID == d.RequestID && sameDecision(de, d) }) {
-				continue
-			}
+		if ok && d.RequestID == req.ID && d.RequestID != "" && s.alreadyDecidedLocked(d, true) {
+			// Still pending, and the same decision is on file for this
+			// very request: in force (under Quorum, one approval short),
+			// or spent by a resume a Branch has since left (the call
+			// reads pending again). Either way it is the same forward
+			// again — it counts nothing, records nothing and runs
+			// nothing, as DecideSigned answers a signed redelivery from
+			// its nonce scan (R7). A deliberate new decision after a
+			// Branch differs from the spent one (another Who or reason).
+			// A decision a Fork copied is the origin's, never this
+			// session's: it does not make a fork's decision a repeat.
+			continue
 		}
 		kept = append(kept, d)
 	}
@@ -633,6 +704,7 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		return nil // every decision was already recorded
 	}
 	batch = kept
+	walk := s.approvalWalkLocked()
 	seen := make(map[string]bool, len(batch))
 	for _, d := range batch {
 		if !validOutcome(d.Kind) {
@@ -661,14 +733,30 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q (request %s): approving retries it; approve again once its handler has returned",
 				ErrStillRunning, d.CallID, req.ID)
 		}
-		if d.Kind == OutcomeApprove && req.Child == "" && s.delegationOpenLocked(d.CallID) {
+		if d.Kind == OutcomeEdit && s.handlerRunningLocked(req) {
+			// An edit approves the call on other arguments: the same
+			// second run an approval would start beside the first.
+			return fmt.Errorf("%w: call %q (request %s): editing it runs it again; decide it once its handler has returned",
+				ErrStillRunning, d.CallID, req.ID)
+		}
+		if (d.Kind == OutcomeApprove || d.Kind == OutcomeEdit) && req.Child == "" && s.delegationOpenLocked(d.CallID) {
 			// Its thread/pool delegation is still open (a cut-off
-			// turn's delegating call, left to the pool): approving
-			// would delegate a second time beside the first.
+			// turn's delegating call, left to the pool): approving —
+			// or editing, which approves the revision — would delegate
+			// a second time beside the first.
 			return fmt.Errorf("%w: call %q (request %s): its thread/pool delegation is still open; the pool settles it, approve again only once it has settled",
 				ErrStillRunning, d.CallID, req.ID)
 		}
 		if d.Kind == OutcomeEdit {
+			if walk.requests[req.CallID].ID != req.ID {
+				// A dangling call no request entry names (Pending's
+				// synthetic "r_…" id): nothing parked it through the
+				// chain, so there is no request to revise — no run
+				// settings, schema or metadata a revision would carry.
+				// Approve, deny or resolve it as it stands.
+				return fmt.Errorf("%w: call %q (request %s) has no request entry to revise; approve, deny or resolve it",
+					ErrInvalidDecision, d.CallID, req.ID)
+			}
 			if _, err := canonicalArgs(d.EditedArgs); err != nil || !jsonObject(d.EditedArgs) {
 				return fmt.Errorf("%w: the edit of call %q carries no JSON object of arguments", ErrInvalidDecision, d.CallID)
 			}
@@ -680,7 +768,6 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	// One atomic Append carries every decision — and every grant an
 	// Always decision makes: a partial recording of a batch cannot
 	// happen (the storage's all-or-nothing rule).
-	walk := s.approvalWalkLocked()
 	now := s.approvalNow()
 	var entries []Entry
 	parent := s.leaf
@@ -703,6 +790,7 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			Content:    d.Content,
 			Who:        d.Who,
 			Via:        d.Via,
+			ApprovedBy: d.approvedBy,
 			RunID:      req.RunID,
 			Nonce:      d.nonce,
 			KeyID:      d.keyID,
@@ -725,18 +813,14 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			}
 			e.ID, e.ParentID, e.Created = s.mintIDLocked(), parent, now
 			entries = append(entries, e)
-			old := walk.requests[req.CallID]
-			if old.ID != req.ID {
-				old = ApprovalRequestEntry{CallID: req.CallID, Tool: req.Tool, RunID: req.RunID, Reason: req.Reason,
-					Expiry: req.Expiry, Quorum: req.Quorum}
-			}
+			old := walk.requests[req.CallID] // validated above: the request entry req names
 			rev := old
 			rev.Args, rev.ArgsSHA256, rev.RevisionOf, rev.Recovery = edited, hashArgs(edited), req.ID, false
 			rev.Run = old.Run.Clone()
 			rev.ID, rev.ParentID, rev.Created = s.mintIDLocked(), e.ID, now
 			entries = append(entries, rev)
 			ap := ApprovalDecisionEntry{CallID: d.CallID, Outcome: OutcomeApprove, Reason: d.Reason, Who: d.Who, Via: d.Via,
-				RunID: rev.RunID, KeyID: d.keyID, RequestID: rev.ID, ArgsSHA256: rev.ArgsSHA256, Cosigners: slices.Clone(d.Cosigners)}
+				ApprovedBy: d.approvedBy, RunID: rev.RunID, KeyID: d.keyID, RequestID: rev.ID, ArgsSHA256: rev.ArgsSHA256, Cosigners: slices.Clone(d.Cosigners)}
 			ap.ID, ap.ParentID, ap.Created = s.mintIDLocked(), rev.ID, now
 			entries = append(entries, ap)
 			parent = ap.ID
@@ -756,7 +840,7 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		all := append(before, e)
 		held[d.CallID] = all
 		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
-			g := alwaysGrant(req.Tool, req.Args, e)
+			g := alwaysGrant(s.agent, req.Tool, req.Args, e)
 			g.ID, g.ParentID, g.Created = s.mintIDLocked(), parent, now
 			entries = append(entries, g)
 			parent = g.ID
@@ -1250,9 +1334,12 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 				CallID: c.ID, Step: StepApprover, Outcome: outcome, RunID: t.runID,
 			})
 			if decided {
-				if d.Via == "" {
-					d.Via = viaApprover
-				}
+				// The chain names the channel, never the approver (as
+				// Decide records "user" whatever the caller wrote): a Via
+				// of the approver's choosing could pose as the session's
+				// own paths — "recovery" skipping the quorum, "grant" or
+				// "expiry" changing how it is counted.
+				d.Via = viaApprover
 				de := decisionFrom(c.ID, d, t.runID)
 				steps = append(steps, de)
 				var eff ApprovalDecisionEntry
@@ -1267,7 +1354,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 					// approval; the decision keeps the wish (Always)
 					// and the approval that completes the quorum mints
 					// the grant.
-					steps = append(steps, alwaysGrant(c.Name, c.Args, de))
+					steps = append(steps, alwaysGrant(s.agent, c.Name, c.Args, de))
 				}
 			}
 		}
@@ -1357,15 +1444,33 @@ func (s *Session) consultApprover(ctx context.Context, r Request) (Decision, boo
 // deferral otherwise, and the unknown-tool text a tool source that
 // changed shape leaves.
 func parkingReason(s *Session, tool string) string {
-	for _, def := range s.agent.Tools() {
-		if def.Name == tool {
-			if def.RequiresApproval() {
-				return "tool requires approval"
-			}
-			return "middleware required approval"
+	if def := currentTool(s.agent, tool); def != nil {
+		if def.RequiresApproval() {
+			return "tool requires approval"
 		}
+		return "middleware required approval"
 	}
 	return "unknown tool"
+}
+
+// currentTool returns a's tool named name as a step starting now would
+// resolve it — a ToolSource's tools included (core.Agent.CurrentTools),
+// not only the static set Agent.Tools reports — or nil when a holds
+// none of that name, or its source's snapshot is malformed (it resolves
+// nothing then: no step could run against it either). The source is
+// the agent's code; it is called on the caller's goroutine, under
+// whatever lock the caller holds.
+func currentTool(a *core.Agent, name string) *core.ToolDef {
+	tools, err := a.CurrentTools()
+	if err != nil {
+		return nil
+	}
+	for _, def := range tools {
+		if def.Name == name {
+			return def
+		}
+	}
+	return nil
 }
 
 // fireOnRequest delivers the chain's parked requests to the OnRequest
@@ -1376,6 +1481,13 @@ func (s *Session) fireOnRequest(cr *chainResult) {
 	if s.cfg.onRequest == nil || len(cr.parkedCalls) == 0 {
 		return
 	}
+	reqs, fn := s.chainRequests(cr)
+	s.notifyRequests(fn, reqs)
+}
+
+// chainRequests reads back the requests the chain parked, in call
+// order, with the OnRequest callback to deliver them to.
+func (s *Session) chainRequests(cr *chainResult) ([]Request, func(Request)) {
 	want := make(map[string]bool, len(cr.parkedCalls))
 	for _, c := range cr.parkedCalls {
 		want[c.ID] = true
@@ -1392,6 +1504,17 @@ func (s *Session) fireOnRequest(cr *chainResult) {
 	fn := s.cfg.onRequest
 	s.mu.Unlock()
 	slices.Reverse(reqs) // call order, like everything the chain reports
+	return reqs, fn
+}
+
+// notifyRequests delivers reqs to fn, the OnRequest callback, holding
+// no lock and after the append that made them durable. Panics are
+// contained — a push notification must not fail a turn that already
+// landed, nor a decision that is already recorded.
+func (s *Session) notifyRequests(fn func(Request), reqs []Request) {
+	if fn == nil {
+		return
+	}
 	for _, r := range reqs {
 		func() {
 			defer func() {
@@ -1464,6 +1587,11 @@ func (s *Session) auditResumeStartLocked(ctx context.Context, t *Turn) error {
 				drifted = append(drifted, ApprovalAuditEntry{
 					CallID: c.ID, Step: StepResume, Outcome: "drift", Detail: drift, RunID: t.runID,
 				})
+			} else if g := s.revokedGrantLocked(ds); g != "" {
+				drifted = append(drifted, ApprovalAuditEntry{
+					CallID: c.ID, Step: StepResume, Outcome: "grant_revoked", GrantID: g, RunID: t.runID,
+					Detail: fmt.Sprintf("grant %s that approved the call was revoked before the resume; the call was not run", g),
+				})
 			}
 		}
 	}
@@ -1513,20 +1641,19 @@ func (s *Session) driftLocked(r ApprovalRequestEntry) string {
 }
 
 // toolSchemaHash is the hex SHA-256 of the input schema of a's tool
-// named name, as JSON — "" when a's static tools hold none of that
-// name (a ToolSource's tool is not checked).
+// named name, as JSON — "" when a holds no tool of that name. A
+// ToolSource's tools are resolved like the static ones (currentTool),
+// so a call parked under a source is checked for drift too.
 func toolSchemaHash(a *core.Agent, name string) string {
-	for _, def := range a.Tools() {
-		if def.Name != name {
-			continue
-		}
-		b, err := json.Marshal(def.InputSchema)
-		if err != nil {
-			return ""
-		}
-		return hashArgs(b)
+	def := currentTool(a, name)
+	if def == nil {
+		return ""
 	}
-	return ""
+	b, err := json.Marshal(def.InputSchema)
+	if err != nil {
+		return ""
+	}
+	return hashArgs(b)
 }
 
 // requestFromEntry lifts a stored request entry to its Request value.
@@ -1765,14 +1892,7 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 			spent[id] = true
 		}
 	}
-	// The entries a Fork copied sit at and before the fork point in
-	// append order; everything after it is this session's own.
-	inherited := -1
-	if p := s.header.Parent; p != nil && p.Entry != "" {
-		if i, ok := s.byID[p.Entry]; ok {
-			inherited = i
-		}
-	}
+	inherited := s.inheritedIndexLocked()
 	for _, e := range path {
 		switch e := e.(type) {
 		case MessageEntry:
@@ -1807,6 +1927,14 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 			if i, ok := s.byID[e.ID]; ok && i <= inherited {
 				continue
 			}
+			if e.Via == viaRecovery && e.Outcome == OutcomeApprove && !s.ownRecoveryRetryLocked(e, w.requests[e.CallID]) {
+				// A recovery approval the session did not write — an
+				// Approver's answer a build before the chain forced its
+				// Via kept as "recovery" — is an approver's, counted under
+				// the quorum like any other (effectiveDecision's one-
+				// decision shortcut is the session's own retry's alone).
+				e.Via = viaApprover
+			}
 			w.decisions[e.CallID] = append(w.decisions[e.CallID], e)
 		}
 	}
@@ -1838,6 +1966,32 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 		}
 	}
 	return w
+}
+
+// ownRecoveryRetryLocked reports whether d, an approval with Via
+// "recovery", is the session's own retry of a cut-off call (ADR 0032;
+// recoveryEntries): it answers a recovery request (re, the request in
+// force for its call) and directly follows the StepRecover "retry"
+// audit entry the ladder writes in the same append. Callers hold s.mu.
+func (s *Session) ownRecoveryRetryLocked(d ApprovalDecisionEntry, re ApprovalRequestEntry) bool {
+	if !re.Recovery || re.RunID != d.RunID {
+		return false
+	}
+	a, ok := s.precedingLocked(d.ID).(ApprovalAuditEntry)
+	return ok && a.Step == StepRecover && a.Outcome == recoverRetry && a.CallID == d.CallID
+}
+
+// inheritedIndexLocked is the last index in s.order a Fork copied from
+// the session's origin — the entries at and before the fork point in
+// append order; everything after it is this session's own — or -1 for
+// a session that is no fork. Callers hold s.mu.
+func (s *Session) inheritedIndexLocked() int {
+	if p := s.header.Parent; p != nil && p.Entry != "" {
+		if i, ok := s.byID[p.Entry]; ok {
+			return i
+		}
+	}
+	return -1
 }
 
 // conflictReason is the model-visible denial text for conflicting
@@ -2212,11 +2366,27 @@ func (s *Session) danglingDecisionsLocked(denyUndecided bool, onBehalf string) [
 				opts = append(opts, core.Deny(c.ID, drift))
 				continue
 			}
+			if s.revokedGrantLocked(ds) != "" {
+				// A session grant that approved it was revoked before
+				// this resume: the approval no longer stands, and the
+				// call is not run — the core's "no decision" denial, the
+				// resume's audit entry naming the grant.
+				undecided = true
+				continue
+			}
 			// The resumed call's execute_tool span names who or what
 			// approved it (UX-B-14): reporting only, the resume is Approve's.
 			by, grant := s.approvalSourceLocked(d)
-			if by == approvedByUser && onBehalf != "" {
-				by = onBehalf
+			if by == approvedByUser {
+				switch {
+				case onBehalf != "":
+					by = onBehalf
+				case d.ApprovedBy != "":
+					// The class the deciding call named, recorded on the
+					// decision: a resume another call armed — a Resume
+					// after a restart — reports it all the same.
+					by = d.ApprovedBy
+				}
 			}
 			if args, _, edited, ok := editedArgsOf(walk.requests[c.ID], c); edited {
 				// A revision (or a recovery retry of one): the call runs on
@@ -2336,13 +2506,20 @@ func recoveryDecisionErr(req Request, d Decision) error {
 // recorded for the request it names: same request, outcome, reason,
 // content, decider, shown arguments, standing wish and signing key. A
 // decision naming no request never repeats one (G4). Callers hold s.mu.
-func (s *Session) alreadyDecidedLocked(d recordedDecision) bool {
+//
+// With own, a decision a Fork copied from its origin (at or before the
+// fork point in append order) is not counted: it was the origin's.
+func (s *Session) alreadyDecidedLocked(d recordedDecision, own bool) bool {
 	if d.RequestID == "" {
 		return false
 	}
-	for _, e := range s.order {
+	inherited := -1
+	if own {
+		inherited = s.inheritedIndexLocked()
+	}
+	for i, e := range s.order {
 		de, ok := e.(ApprovalDecisionEntry)
-		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID {
+		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID || i <= inherited {
 			continue
 		}
 		if sameDecision(de, d) {

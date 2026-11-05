@@ -121,7 +121,9 @@ var (
 	// with the process. It is returned too for an approval of a
 	// delegating call whose thread/pool delegation is still open (an
 	// acceptance receipt with no settlement): approving would delegate
-	// a second time beside the first; the pool resolves the call.
+	// a second time beside the first; the pool resolves the call. An
+	// Edit is refused the same way in either case: it approves its
+	// revision, the same second run.
 	ErrStillRunning = errors.New("thread: the call's abandoned handler is still running")
 
 	// ErrRollbackRefused is returned beside a Turn by a Send under the
