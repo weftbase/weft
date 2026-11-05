@@ -253,7 +253,15 @@ type SinkOpener func(ctx context.Context) (sdktrace.SpanExporter, sdklog.Exporte
 // Timeout (default 2 s): telemetry never blocks control, so a Sink that
 // hangs costs the run at most that long — the export is abandoned and
 // its records counted dropped, and while it is still stuck every later
-// record is dropped at once, until it returns. A Sink is first-party (FirstParty): content
+// record is dropped at once, until it returns. The deadline is the
+// Timeout's alone: a record emitted on a canceled context (a run's tail
+// after its cancellation) is still written. A Sink whose export can wait
+// longer than 2 s by design — a SQLite store with a long busy_timeout
+// behind another writer — should set Timeout to at least that wait, or
+// its records are dropped while the store would have taken them. The
+// pipeline's Shutdown waits for an abandoned export still running before
+// it shuts the exporters down, and leaves them open (an error says so)
+// rather than call Shutdown under a running Export. A Sink is first-party (FirstParty): content
 // on, raw bodies, the dev detail and app logs eligible. An export error
 // is counted as the destination's drop and named by its throttled WARN,
 // never handed to OTel's global error handler. The exporters' Shutdown
@@ -422,7 +430,9 @@ func Headers(h map[string]string) DestOption {
 
 // Timeout sets the destination's export request timeout: an OTLP
 // request's, or a Sink's per-export deadline (default 2 s; past it the
-// export is abandoned and its records counted dropped).
+// export is abandoned and its records counted dropped). A Sink backed by
+// a store that may wait on a lock — SQLite with a busy_timeout — needs a
+// Timeout no shorter than that wait.
 func Timeout(d time.Duration) DestOption {
 	return destOptionFunc(func(dd *dest) { dd.timeout = d })
 }

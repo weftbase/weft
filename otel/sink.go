@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,7 +27,17 @@ import (
 // defaultSinkTimeout) the export is abandoned and its records counted
 // dropped, and while an abandoned export is still running every later
 // one is dropped at once (at most one goroutine per signal is left
-// behind) until it returns.
+// behind) until it returns. The deadline is the gate's alone: an export
+// does not inherit the emitting context's cancellation — a run canceled
+// mid-tool still has its tail records written — only its values.
+//
+// The pipeline's Shutdown never overlaps an export: before it shuts a
+// Sink's exporters down it waits for an abandoned export still running
+// (sinkGate.settle), bounded by the shutdown's ctx and one more Timeout;
+// when the export is still inside Export after that, the exporters are
+// not shut down at all — the concurrency an exporter never promised to
+// survive is worse than a store left for the process exit to close —
+// and Shutdown returns an error saying so.
 
 // defaultSinkTimeout bounds one Sink export when the destination sets
 // no Timeout.
@@ -38,6 +49,10 @@ type sinkGate struct {
 	drops   *dropCounter
 	// stalled: an abandoned export has not returned yet.
 	stalled atomic.Bool
+	// mu guards inflight: closed when the abandoned export returns, nil
+	// when none is running.
+	mu       sync.Mutex
+	inflight chan struct{}
 }
 
 func newSinkGate(timeout time.Duration, drops *dropCounter) *sinkGate {
@@ -55,7 +70,7 @@ func (g *sinkGate) export(ctx context.Context, n int64, fn func(context.Context)
 		g.drops.dropped(n, errSinkStalled)
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, g.timeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), g.timeout)
 	done := make(chan error, 1)
 	go func() { done <- fn(ctx) }()
 	select {
@@ -67,11 +82,44 @@ func (g *sinkGate) export(ctx context.Context, n int64, fn func(context.Context)
 	case <-ctx.Done():
 		g.stalled.Store(true)
 		g.drops.dropped(n, fmt.Errorf("sink export abandoned after %s: %w", g.timeout, context.Cause(ctx)))
+		left := make(chan struct{})
+		g.mu.Lock()
+		g.inflight = left
+		g.mu.Unlock()
 		go func() {
 			<-done
 			cancel()
+			g.mu.Lock()
+			if g.inflight == left {
+				g.inflight = nil
+			}
+			g.mu.Unlock()
+			close(left)
 			g.stalled.Store(false)
 		}()
+	}
+}
+
+// settle waits for an abandoned export still running to return, bounded
+// by ctx and one more of the gate's Timeout (the export has had its own
+// already). It reports an error when the export is still running: the
+// Sink's exporters must not be shut down under it.
+func (g *sinkGate) settle(ctx context.Context) error {
+	g.mu.Lock()
+	left := g.inflight
+	g.mu.Unlock()
+	if left == nil {
+		return nil
+	}
+	t := time.NewTimer(g.timeout)
+	defer t.Stop()
+	select {
+	case <-left:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-t.C:
+		return fmt.Errorf("still running %s after the shutdown began", g.timeout)
 	}
 }
 

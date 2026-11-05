@@ -3,6 +3,8 @@ package otel
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,5 +154,122 @@ func TestFlushBudget(t *testing.T) {
 	defer cancel()
 	if got := flushBudget(ctx); got > 2*time.Second || got < 1900*time.Millisecond {
 		t.Errorf("4 s ctx: flush budget %v, want half", got)
+	}
+}
+
+// overlapLogs is a Sink log exporter that blocks every export, ignoring
+// its ctx, until release closes, and notes whether its Shutdown ever
+// ran while an Export was still inside the exporter.
+type overlapLogs struct {
+	release  chan struct{}
+	inExport *atomic.Int32
+	shutdown *atomic.Int32
+	overlap  *atomic.Bool
+}
+
+func (h overlapLogs) Export(context.Context, []sdklog.Record) error {
+	h.inExport.Add(1)
+	defer h.inExport.Add(-1)
+	<-h.release
+	return nil
+}
+
+func (h overlapLogs) Shutdown(context.Context) error {
+	h.shutdown.Add(1)
+	if h.inExport.Load() > 0 {
+		h.overlap.Store(true)
+	}
+	return nil
+}
+func (overlapLogs) ForceFlush(context.Context) error { return nil }
+
+// The pipeline's Shutdown never shuts a Sink's exporters down under an
+// export the gate abandoned and that is still running: it waits for it
+// (bounded by its ctx and one more Timeout) and, when the export returns
+// in time, shuts down as usual; when it does not, it leaves the
+// exporters open and says so in its error — never the concurrency an
+// exporter never had.
+func TestSinkShutdownNeverOverlapsAnExport(t *testing.T) {
+	for _, returns := range []bool{true, false} {
+		h := overlapLogs{release: make(chan struct{}), inExport: new(atomic.Int32), shutdown: new(atomic.Int32), overlap: new(atomic.Bool)}
+		p, err := Start(context.Background(), NoGlobal(), NoEnv(), Heartbeat(0), Sink("store", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+			return nil, h, nil
+		}, Timeout(50*time.Millisecond)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		agentThrough(t, p) // the first export is abandoned and stays inside Export
+		if h.inExport.Load() == 0 {
+			t.Fatal("no export left running")
+		}
+		if returns {
+			go func() { time.Sleep(20 * time.Millisecond); close(h.release) }()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		err = p.Shutdown(ctx)
+		cancel()
+		if h.overlap.Load() {
+			t.Errorf("returns=%v: Shutdown ran while an export was still inside the exporter", returns)
+		}
+		if returns {
+			if h.shutdown.Load() != 1 {
+				t.Errorf("returns=%v: the exporter was shut down %d times, want once", returns, h.shutdown.Load())
+			}
+		} else {
+			if h.shutdown.Load() != 0 {
+				t.Errorf("returns=%v: the exporter was shut down under a running export", returns)
+			}
+			if err == nil || !strings.Contains(err.Error(), "still running at shutdown") {
+				t.Errorf("returns=%v: Shutdown = %v, want it to say the export was still running", returns, err)
+			}
+			close(h.release)
+		}
+	}
+}
+
+// A run canceled mid-tool emits its tail records on its canceled ctx;
+// the Sink's export deadline is the gate's alone, so a Sink that writes
+// at once writes them — none counted lost, Shutdown clean.
+func TestCanceledRunTailRecordsReachTheSink(t *testing.T) {
+	mem := newMemExporter()
+	p, err := Start(context.Background(), NoGlobal(), NoEnv(), Heartbeat(0), Sink("store", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+		return nil, mem, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	hang := core.Tool("hang", "Hang.", func(ctx context.Context, _ struct{}) (string, error) {
+		cancel()
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	agt := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "hang", ID: "c1", Args: `{}`}),
+		wefttest.Say("x"),
+	), core.Name("a"), hang, core.TracerProvider(p.TracerProvider()), core.LoggerProvider(p.LoggerProvider()))
+	_, _ = agt.Generate(ctx, core.Prompt("go"))
+	if lost := p.dests[0].drops.lost(); lost != 0 {
+		t.Errorf("%d records counted lost after a canceled run (written %d)", lost, len(mem.snapshot()))
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown = %v", err)
+	}
+}
+
+// A working Sink and a normal run shut down with no error.
+func TestCleanSinkShutdown(t *testing.T) {
+	mem := newMemExporter()
+	p, err := Start(context.Background(), NoGlobal(), NoEnv(), Sink("store", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+		return nil, mem, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentThrough(t, p)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Errorf("clean Shutdown = %v", err)
 	}
 }
