@@ -43,10 +43,18 @@ lookup := weft.Tool("lookup_order", "Look up an order by ID.",
 //   return "", weft.ModelRetry("date must be ISO-8601")   // RETRY: … (MaxModelRetries, default 3)
 // More per-tool options: weft.Sequential() (barrier), weft.RequireApproval(),
 // weft.PromptSnippet("…"), weft.Replay(weft.ReplaySafe) (the side-effect class for
-// re-runs: unannotated counts as never — substitute-or-park, never silently re-fired),
+// re-runs: unannotated counts as never — substitute-or-park, never silently re-fired;
+// weft.ReplayKeyed: the handler deduplicates on call.IdempotencyKey, so a recovery may retry it
+// with the same key), weft.Reconcile(func(ctx, key) (found bool, result string, err error))
+// (the recovery ladder's second rung: ask the system of record; asked only by thread's RecoverTurn),
 // weft.WrapTools(mw...).
+// Unknown outcome (ADR 0032): a tool that is not ReplaySafe whose handler started and gave no answer
+// (its Timeout, a cancel, a panic) reads "OUTCOME_UNKNOWN: …" (weft.CodeOutcomeUnknown), never "timed out";
+// a handler that cannot tell whether its effect happened returns an error wrapping weft.ErrOutcomeUnknown.
 // agt.CallTool(ctx, weft.ToolCallPart{…}) dispatches one call by hand through the tool chain (inside a run, under its park rule);
-// outside a run it records nothing (no run, event or span — Studio cannot show it).
+// outside a run it records nothing (no run, event or span) and applies no run policy.
+// agt.ServeCall(ctx, call, key) is the server's variant: one call outside any run under the tool's
+// Timeout and result cap, its handler's Call carrying the client's own key (weft/mcp's Serve uses it).
 
 // 1b. Tools defined outside Go source: explicit schema, raw args.
 //     weft.RawTool("parse_invoice", "…", schema, func(ctx, raw) (string, error))
@@ -64,7 +72,14 @@ lookup := weft.Tool("lookup_order", "Look up an order by ID.",
 //     tools, _ := mcp.Tools(ctx, sess, mcp.Prefix("gh_"))   // a server's tools as weft tools (RawTool; schema verbatim)
 //     mcp.Tools(ctx, sess, mcp.Server("github"), mcp.Transport("stdio")) // name the server for the record: Origin
 //       "mcp:github" (the tools record's source, execute_tool's weft.tool.origin), source_detail, skipped[] (O8)
-//     mcp.Serve(srv, agt, "Support agent.")                 // an agent (and its tools) as an MCP server
+//     mcp.Serve(srv, agt, "Support agent.")                 // an agent (and its tools) as an MCP server:
+//       each tool under its Timeout and result cap; its handler's Call carries the client's _meta key
+//       (ai.weftbase/idempotency_key); the agent tool is a Subagent (its parks cannot be decided over MCP)
+//     Every imported tools/call sends its Call.IdempotencyKey in _meta (this release also under the old
+//     dev.weftgo/ name); an answer lost after sending is ErrOutcomeUnknown — OUTCOME_UNKNOWN unless the tool is
+//     ReplaySafe; a call that provably never left is a plain "mcp: …" failure; with no deadline a call is bounded
+//     at one minute. mcp.CallerMeta() adds the caller link (traceparent + ai.weftbase/caller; Serve applies it
+//     with weft.WithCaller(ctx, weft.Caller{RunID, CallID, Span}) — a remote link, never parenthood).
 
 // 2. An agent is a value. Build once, run many times, concurrently.
 agt := weft.New(model,                       // any weft.Model (adapters, or wefttest.Script)
@@ -81,7 +96,7 @@ agt := weft.New(model,                       // any weft.Model (adapters, or wef
     weft.Parallelism(4),                       // or weft.Sequential()
     weft.Thinking(weft.ThinkingConfig{Level: weft.ThinkOff}), // reasoning default (adapters map what they can)
     weft.ToolChoice(weft.ToolChoiceConfig{Mode: weft.ToolChoiceAny}), // force a tool call every step (Named/None too; PrepareStep can rewrite per step)
-    weft.ParkSource(func(ctx context.Context) []string {...}), // a park set read once per run at its start, merged as ParkOn (ADR 0030; return promptly — a cached set); runtime.Breakpoints() is one
+    weft.ParkSource(func(ctx context.Context) []string {...}), // a park set read once per run at its start, merged as ParkOn (ADR 0030; return promptly — a cached set); Weftbase's runtime breakpoints are one
     weft.Params(weft.RequestParams{Temperature: ptr(0.2)}), // per-run/step sampling (TopP, MaxTokens, Stop, Seed; nil = construction default; a negative MaxTokens fails the step)
     weft.Tap(func(ctx context.Context, ev weft.Event) {...}), // observer: sees every event, changes nothing
     weft.OnRunEnd(func(ctx context.Context, res *weft.RunResult, err error) {...}), // outcome observer: once per run, even on failure — the otel pipeline pairs it with Tap
@@ -136,12 +151,15 @@ res, err := agt.Generate(ctx, weft.Prompt("Where is order 1234?"))
 //   weft.SettingsOf(ctx, opts...)   // what a run would run under, as data (RunSettings; .Options() puts it back)
 //   weft.IdempotencyKeys(fn)        // name each call's Call.IdempotencyKey (default: run-scoped); thread passes a recovery-stable one
 //   weft.BeforeDispatch(fn)         // a gate right before each handler (past middleware and approval): an error → ErrNotDispatched result (ADR 0031)
+//   weft.AfterDispatch(fn)          // called once a started handler returned or panicked — also one the loop abandoned, when it finally returns
+//   weft.ParkUnknown()              // a call of unknown outcome parks (res.Pending, pending.source outcome_unknown) instead of reading OUTCOME_UNKNOWN
+//   weft.WithCaller(ctx, weft.Caller{RunID, CallID, Span}) // a caller in another process: weft.caller.* + a span link, never parenthood
 // A changed run carries weft.override.hash + weft.override.* on its invoke_agent span (the experiment's fingerprint).
 // res.Text(), res.Messages (full transcript), res.Steps, res.Usage, res.ID
 // Cancel with a cause: ctx, cancel := context.WithCancelCause(ctx); cancel(weft.CancelCause("app.shutdown"))
 //   — the run fails with a *RunError matching context.Canceled; its invoke_agent span records
 //   weft.cancel.cause app.shutdown beside weft.run.stopped_by canceled (any cause with a Kind() string
-//   method is named; a deadline reads "deadline"; ExampleCancelCause). thread and runtime pass theirs.
+//   method is named; a deadline reads "deadline"; ExampleCancelCause). weft/thread passes its own (thread.interrupted, thread.closed).
 
 // 3a. Steer a running turn (ADR 0019): a pull source the loop drains at two
 //     fixed points — after the tool batch (every call paired with its
@@ -178,10 +196,11 @@ res2, err := agt.Generate(ctx, weft.Messages(res.Messages...), weft.Prompt("And 
 //     agt.Generate(ctx, weft.Messages(res.Messages...), weft.Approve(id), weft.Deny(id, "why"))
 //     weft.Resolve(id, content) resumes with a result computed outside the process — the
 //     handler never runs; Resolve on a non-pending id is a loud run error.
-//     weft.ResumeOf(res.ID) links the resume to the parked run (weft.resumed_from; Studio's
-//     parked row reads resumed_by) — the core cannot infer it; thread and runtime pass it.
+//     weft.ResumeOf(res.ID) links the resume to the parked run (weft.resumed_from; a reader — Weftbase's
+//     console — derives resumed_by from it) — the core cannot infer it; weft/thread passes it.
 //     weft.ApproveBy(id, by, grantID) is Approve naming its provenance (reporting only): the call's
-//     execute_tool span carries weft.tool.approved_by (thread: user|grant|approver|quorum|policy|recovery) + weft.grant.id.
+//     execute_tool span carries weft.tool.approved_by (thread: user|grant|approver|quorum|policy|recovery, or the
+//     class an arming ctx names with thread.WithApprovedBy(ctx, "inbox")) + weft.grant.id.
 //     weft.Metadata(map[string]string{"weft.approval.actor": who}) names the decider. A denied call's
 //     execute_tool span is zero-length, weft.tool.denied (+ denied_kind denied|no_decision).
 //     Middleware parks any call by returning an error wrapping ErrApprovalRequired.
@@ -201,8 +220,11 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    the full destination menu): otel.Install(dests...) sends every event, delta,
 //    transcript record and span as it happens (weft.heartbeat records —
 //    otel.Heartbeat(d), default 10 s — keep a quiet run reading running).
-//    // weft/otel reads only the OTEL_* variables and, with nothing configured,
-//    // records nothing (one INFO line). Storing and showing runs is the platform's:
+//    // weft/otel reads the OTEL_* variables and WEFT_ENV (the dev gate; neither under otel.NoEnv())
+//    // and, with nothing configured, records nothing (one INFO line). A Sink export is bounded by its
+//    // Timeout (default 2 s: abandoned and counted dropped, never a stalled run); p.Shutdown returns
+//    // otel.ErrRecordsLost (a *LossError, per destination) when any record was lost; the resource carries
+//    // weft.record.v (the record contract's version). Storing and showing runs is the platform's:
 //    // weftbase (github.com/weftbase/weftbase) — exporter.Install()() from
 //    // github.com/weftbase/weftbase/exporter, Studio, obsdb, the runtime link,
 //    // `weftbase dev`; its AGENTS.md has blocks 6–7b. Layering: nothing here imports
@@ -219,7 +241,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    Turns: turn, _ := s.Send(ctx, weft.User("…")[, thread.As(p), thread.RunOptions(…)]) — prompt durable
 //    before the run; turn.Wait() | WaitContext(ctx) | Done() | Events() | Outcome() | Next(); s.WaitIdle(ctx).
 //    Runs carry weft.session.id, weft.turn and, with thread.PublicID(id) (Create only), weft.public_id;
-//    once SetInfo named a title, weft.session.title (metadata: survives content-off; Studio titles the session with it);
+//    once SetInfo named a title, weft.session.title (metadata: survives content-off; a reader — Weftbase's console — titles the session with it);
 //    after a navigation, weft.turn.parent (the turn whose line it continues, first turn only) and weft.session.branch
 //    (the label on the entry branched to, else the leaf entry's id).
 //    thread.WithRunMetadata(kv) (Create/Fork: into Header.RunMeta; Open: held over it; s.RunMeta()) stamps every
@@ -234,10 +256,10 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    ClearOldToolResults(n), BeforeCompact (thread.Proceed() | Cancel() | Replace(c)); overflow re-runs once.
 //    Each compaction emits a session marker record (kind compaction, informational, no messages) at
 //    ApplyCompaction, under the last run of this session that produced the context (held for the next run
-//    when none did; still held at Close → emitted held:true, under no run, as the state log's records); obsdb.DB.Compactions and the run page read it back. Its body names summarizer_model /
+//    when none did; still held at Close → emitted held:true, under no run, as the state log's records); a reader (Weftbase's obsdb) reads it back. Its body names summarizer_model /
 //    summarizer_usage, and every summarizer model call (compaction, SummarizeLeft) is a chat span with
 //    weft.chat.role summarizer + its usage, under the turn in flight or the last run (never in the run's own usage, nor its
-//    provider/model/meta; obsdb.SessionRow.SummarizerUsage sums it per session, apart from Usage).
+//    provider/model/meta; a reader sums it per session apart from Usage).
 //    The state log as records (U12.1, record contract §4 kind thread, event weft.thread.<kind>): approval.request /
 //    decision (via, key_id, grant_id) / refused, grant.mint / use / revoke / expire, receipt (queued / accepted /
 //    delivered / deferred / dropped), interrupt, rewind, branch, uncompact, label, pin, fork, pool.delegate /
@@ -245,7 +267,7 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    held for that run; still held at Close → emitted held:true, under no run when none), decided under the
 //    session lock and emitted by one goroutine per Session (never under the lock; Close waits), ids/enums/counts always, who/reasons/texts under the body's "content" (the agent's
 //    Content, else the destination's policy; weft/otel strips it, otel.ContentThread for Redact); label names
-//    are metadata. An index, not evidence (ADR 0021, amendment 2026-10-19); the timeline that reads them is U12.2's.
+//    are metadata. An index, not evidence (ADR 0021, amendment 2026-10-19); the timeline that reads them is the platform's.
 //    Approvals (ADR 0021): s.Pending(); s.Decide(ctx, thread.Approve(id).Bind(r) | Deny | Resolve | ResolveError |
 //    ApproveAlways) → auto-resume (turn.Next()) or s.Resume(ctx); every Decide decision is bound to the request it
 //    answers — d.Bind(r) sets d.RequestID, d.ArgsSHA256 = r.ID, r.ArgsSHA256 (unbound: ErrInvalidDecision; another
@@ -270,8 +292,11 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    (TurnEntry.CutOff) for RecoverTurn, then Close again to seal; pool.Close(ctx canceled with that cause) likewise.
 //    Crash recovery (ADR 0032): a call that is not ReplaySafe starts only once its step entry is on file (else
 //    ErrNotDispatched); after a crash a cut-off turn with a call of unknown outcome refuses Send/Continue/Resume/arming
-//    (ErrRecoveryRequired) until s.RecoverTurn(ctx) — Open → Claim → RecoverTurn: ReplayKeyed calls retry with their
-//    same key, ReplayNever calls park as recovery requests (Request.Recovery: approve = retry, deny = skip, no edit).
+//    (ErrRecoveryRequired) until s.RecoverTurn(ctx) — Open → Claim → RecoverTurn, the ladder: ReplayKeyed calls retry with
+//    their same key; a ReplayNever call whose tool has weft.Reconcile is looked up in the system of record (found → its
+//    result is recorded, the tool does not run; missing → retried under the same key; an error → a person); the rest
+//    park as recovery requests (Request.Recovery: approve = retry, deny = skip, no edit). Live turns carry ParkUnknown:
+//    a call of unknown outcome goes down the ladder at the turn's end (never reconciled while its handler may run).
 //    Errors: retry ErrBusy, ErrLocked · reopen ErrStale, ErrClosed · terminal ErrCorrupt, ErrNewerFormat.
 
 // 8. Observability pipeline (package weft/otel; several destinations at once,
@@ -433,7 +458,7 @@ ignore it.
 ## Working in this repo
 
 - Run `make test` (`go test -race -timeout 20m ./...`), `make vet`, `make lint`
-  before claiming done. Add a test in `contract_test.go` for any promise
+  before claiming done. Add a test in `core/contract_test.go` for any promise
   you add or change; add a godoc example for any public feature.
 - Keep the public surface small: functional options, sealed interfaces
   (`Option`, `Event`, `Part`, `ModelEvent`), no config structs, no

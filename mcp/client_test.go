@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/core/wefttest"
@@ -945,11 +947,21 @@ func TestToolsRPCErrorIsNotTransport(t *testing.T) {
 func TestToolsCallCarriesItsKeyAndLostAnswersAreUnknown(t *testing.T) {
 	var mu sync.Mutex
 	var key any
+	var calls int
+	entered := make(chan struct{})
 	sess, stop := served(t, func(srv *sdk.Server) {
-		addRemoteTool(srv, "pay", false, func(_ context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		addRemoteTool(srv, "pay", false, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 			mu.Lock()
 			key = req.Params.Meta[MetaIdempotencyKey]
+			calls++
+			n := calls
 			mu.Unlock()
+			if n > 1 {
+				// The second call reaches the server and runs; its
+				// answer is lost when the connection drops under it.
+				close(entered)
+				<-ctx.Done()
+			}
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "paid"}}}, nil
 		})
 	})
@@ -980,12 +992,117 @@ func TestToolsCallCarriesItsKeyAndLostAnswersAreUnknown(t *testing.T) {
 	if got != seen || seen == "" {
 		t.Fatalf("server saw key %v, the call carried %q", got, seen)
 	}
-	stop() // the connection drops
+	go func() { <-entered; stop() }() // the connection drops mid-call
 	res, err := agent.Generate(context.Background(), core.Prompt("pay again"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r := res.Steps[0].Results[0]; !r.IsError || !strings.HasPrefix(r.Content, core.CodeOutcomeUnknown+`: tool "pay" `) {
 		t.Fatalf("a lost answer reads %q, want OUTCOME_UNKNOWN", r.Content)
+	}
+}
+
+// E5: a tools/call on a session already closed is refused by the SDK
+// before anything is written (ErrClientClosing, -32003): nothing can
+// have run, so it is a plain "mcp: …" failure, never an unknown
+// outcome (ADR 0032's 2026-11-05 amendment).
+func TestToolsCallOnAClosedSessionIsNotSent(t *testing.T) {
+	sess, stop := served(t, func(srv *sdk.Server) { AddTools(srv, echoTool()) })
+	defer stop()
+	tools, err := Tools(context.Background(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sess.Close()
+	_, err = tools[0].Invoke(context.Background(), json.RawMessage(`{"text":"x"}`))
+	if err == nil || errors.Is(err, core.ErrOutcomeUnknown) || !strings.HasPrefix(err.Error(), "mcp: ") {
+		t.Fatalf("closed session: %v (unknown=%v), want a plain mcp: failure", err, errors.Is(err, core.ErrOutcomeUnknown))
+	}
+	if got := errorTypeOf(err); got != "mcp_transport" {
+		t.Errorf("error.type %s, want mcp_transport", got)
+	}
+	agent := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "echo", ID: "c1", Args: `{"text":"x"}`}),
+		wefttest.Say("ok"),
+	), tools[0])
+	res, err := agent.Generate(context.Background(), core.Prompt("echo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := res.Steps[0].Results[0]; !r.IsError || r.Content != `mcp: connection closed: calling "tools/call": client is closing` {
+		t.Errorf("result %q", r.Content)
+	}
+}
+
+// E5: the go-sdk's ErrServerClosing (-32004) is also what a server
+// answers to a request it received while closing, so it stays an
+// unknown outcome; ErrClientClosing (-32003) as a JSON-RPC error is
+// not sent.
+func TestClosingCodesClassified(t *testing.T) {
+	if !notSent(&jsonrpc.Error{Code: -32003, Message: "client is closing"}) {
+		t.Error("-32003 is pre-write")
+	}
+	if notSent(&jsonrpc.Error{Code: -32004, Message: "server is closing"}) {
+		t.Error("-32004 may follow receipt")
+	}
+	if notSent(fmt.Errorf("%w: calling %q: server is closing", sdk.ErrConnectionClosed, "tools/call")) {
+		t.Error("a closing server stays unknown")
+	}
+	if !notSent(fmt.Errorf("%w: calling %q: client is closing: EOF", sdk.ErrConnectionClosed, "tools/call")) {
+		t.Error("a closed client is not sent")
+	}
+}
+
+// WR-17: an imported tool's call whose ctx carries no deadline — no
+// Timeout on the tool or the agent, no run deadline — is bounded by
+// default (one minute; shortened here), and reads as a lost answer; a
+// Timeout set through Policy replaces the default.
+func TestToolsCallBoundedByDefault(t *testing.T) {
+	old := defaultCallTimeout
+	defaultCallTimeout = 50 * time.Millisecond
+	defer func() { defaultCallTimeout = old }()
+	release := make(chan struct{})
+	defer close(release)
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "hang", false, func(ctx context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			select {
+			case <-ctx.Done():
+			case <-release:
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "late"}}}, nil
+		})
+	})
+	defer stop()
+	tools, err := Tools(context.Background(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = tools[0].Invoke(context.Background(), json.RawMessage(`{}`))
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Fatalf("unbounded call: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("the default bound did not hold: %v", d)
+	}
+	// A deadline of the caller's own replaces the default.
+	tools, err = Tools(context.Background(), sess, Policy(core.Timeout(300*time.Millisecond)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "hang", ID: "c1", Args: `{}`}),
+		wefttest.Say("ok"),
+	), tools[0])
+	start = time.Now()
+	res, err := agent.Generate(context.Background(), core.Prompt("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d < 250*time.Millisecond {
+		t.Errorf("the Policy Timeout was cut short by the default: %v", d)
+	}
+	if r := res.Steps[0].Results[0]; r.Content != `OUTCOME_UNKNOWN: tool "hang" did not answer within 300ms; it may still complete; outcome unknown` {
+		t.Errorf("result %q", r.Content)
 	}
 }

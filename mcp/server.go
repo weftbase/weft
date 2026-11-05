@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -115,9 +118,31 @@ func argumentBytes(req *sdk.CallToolRequest) json.RawMessage {
 // dispatched through the agent's tool chain (Agent.CallTool) so
 // middleware and approval policy apply — an approval-gated tool
 // answers with the ErrApprovalRequired text rather than running, loud
-// where AddTools refuses outright. Run policy (Timeout,
-// MaxResultBytes) is not applied, per CallTool's rule; the SDK's own
-// request handling bounds the call.
+// where AddTools refuses outright. Each call runs as the loop would run
+// it (core.Agent.ServeCall): under the tool's Timeout, else the agent's
+// ("tool X timed out after d"; "OUTCOME_UNKNOWN: …" for a tool that is
+// not ReplaySafe — its handler is abandoned and may still complete),
+// with the result cap (the tool's MaxResultBytes, else the agent's)
+// and panic containment. The SDK bounds nothing: a call with no Timeout
+// runs until it answers or the client cancels it.
+//
+// A served tool's handler reads its call with core.CallFromContext. Its
+// IdempotencyKey is the client's: params._meta's MetaIdempotencyKey
+// (else, for one release, LegacyMetaIdempotencyKey) — what an imported
+// weft tool always sends, the same on a retry — so a deduplicating
+// handler applies a retried tools/call once. A request with no key
+// carries none (empty: the SDK hands a handler no JSON-RPC request id,
+// and a key weft invented would differ on a retry or collide across
+// sessions — dedupe needs the client's own). Its CallID is derived from
+// the key when there is one ("mcp_" and 24 hex digits of its SHA-256),
+// else "mcp_<session>_<n>": the session's id (a random instance id per
+// Serve when the transport names none) and this Serve's count — for
+// audit lines, not identity.
+//
+// The agent tool runs the agent as a child run (a Subagent): a call the
+// child parks for approval cannot be decided over MCP — the tool answers
+// with the pending error and the child run's work so far is lost; a
+// served agent whose tools need approval is served for reads only.
 //
 // The agent tool is core.Subagent under the name: the same
 // {"prompt": string} input schema, the same Output handling, the same
@@ -149,7 +174,7 @@ func Serve(s *sdk.Server, a *core.Agent, description string) {
 		panic("weft/mcp: Serve: the agent has no name; set one with core.Name — the exposed tool is named after the agent")
 	}
 	AddTools(s, core.Subagent(a.Name(), description, a))
-	state := &serveState{}
+	state := &serveState{instance: instanceID()}
 	seen := map[string]bool{a.Name(): true}
 	for _, t := range a.Tools() {
 		if t == nil {
@@ -163,28 +188,79 @@ func Serve(s *sdk.Server, a *core.Agent, description string) {
 	}
 }
 
-// serveState numbers the calls one Serve dispatches, so middleware and
-// audit logs see distinct ids exactly as the loop's calls would. It
-// hangs off the Serve call, not the package: two servers in one process
-// number independently, like two runs.
-type serveState struct{ seq atomic.Int64 }
+// serveState numbers the calls one Serve dispatches with no key, so
+// middleware and audit logs see distinct ids exactly as the loop's
+// calls would. It hangs off the Serve call, not the package: two
+// servers in one process number independently, like two runs, and the
+// instance id keeps a restarted server's ids apart from the last one's.
+type serveState struct {
+	seq      atomic.Int64
+	instance string
+}
+
+// instanceID is a random id naming one Serve, for call ids only — never
+// an idempotency key.
+func instanceID() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// metaKeyMax bounds an idempotency key read from _meta, in bytes: a
+// longer one is ignored, as a malformed caller id is.
+const metaKeyMax = 1024
+
+// servedKey is the client's idempotency key for a served call: the
+// string under MetaIdempotencyKey (LegacyMetaIdempotencyKey for one
+// release); "" when absent, not a string, empty or too long.
+func servedKey(req *sdk.CallToolRequest) string {
+	if req == nil || req.Params == nil {
+		return ""
+	}
+	v, _ := metaValue(req.Params.Meta, MetaIdempotencyKey)
+	k, _ := v.(string)
+	if len(k) > metaKeyMax {
+		return ""
+	}
+	return k
+}
+
+// servedCallID is a served call's id: derived from its key when it has
+// one (a retry reads the same id), else the session and this Serve's
+// count.
+func servedCallID(req *sdk.CallToolRequest, key string, state *serveState) string {
+	if key != "" {
+		h := sha256.Sum256([]byte(key))
+		return "mcp_" + hex.EncodeToString(h[:12])
+	}
+	sid := ""
+	if req != nil && req.Session != nil {
+		sid = req.Session.ID()
+	}
+	if sid == "" {
+		sid = state.instance
+	}
+	return fmt.Sprintf("mcp_%s_%d", sid, state.seq.Add(1))
+}
 
 // chainHandler dispatches one of Serve's tool calls through the
-// agent's chain: WrapTools middleware runs (mw.Allow, mw.Audit see the
-// call), StrictInput applies at both levels, and a RequireApproval
-// tool returns the ErrApprovalRequired error, which becomes an isError
-// result reading `weft: tool call requires approval: tool "x"` — loud,
-// never a bypass.
+// agent's chain under the run policy (core.Agent.ServeCall): WrapTools
+// middleware runs (mw.Allow, mw.Audit see the call), StrictInput
+// applies at both levels, the tool's Timeout and result cap hold, and a
+// RequireApproval tool returns the ErrApprovalRequired error, which
+// becomes an isError result reading `weft: tool call requires approval:
+// tool "x"` — loud, never a bypass.
 func chainHandler(a *core.Agent, t *core.ToolDef, state *serveState) sdk.ToolHandler {
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		args := argumentBytes(req)
 		ctx = servedContext(ctx, req)
+		key := servedKey(req)
 		call := core.ToolCallPart{
-			ID:   fmt.Sprintf("mcp_call_%d", state.seq.Add(1)),
+			ID:   servedCallID(req, key, state),
 			Name: t.Name,
 			Args: args,
 		}
-		out, err := containedInvoke(t.Name, func() (string, error) { return a.CallTool(ctx, call) })
+		out, err := a.ServeCall(ctx, call, key)
 		if err != nil {
 			return errorResult(err), nil
 		}

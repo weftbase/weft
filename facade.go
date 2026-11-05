@@ -2196,5 +2196,6 @@ func Reconcile(fn ReconcileFunc) ToolOption { return core.Reconcile(fn) }
 type Call = core.Call
 
 // CallFromContext returns the Call a tool handler is serving. ok is false
-// when ctx did not come from the agent loop (a direct Invoke, for example).
+// when ctx did not come from the agent loop (a direct Invoke, for example)
+// or from Agent.ServeCall.
 func CallFromContext(ctx context.Context) (Call, bool) { return core.CallFromContext(ctx) }

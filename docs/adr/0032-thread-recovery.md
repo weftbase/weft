@@ -693,6 +693,8 @@ A handler's own failure keeps its words whatever a middleware made of it
 answer"; a handler that panicked with a middleware recovering it reads
 the panic text. A `ReplaySafe` tool keeps the old texts.
 
+**A settled call never starts later.** Once a call's chain has returned, the loop settles the call and refuses its handler from then on (the 0.22.1 lock, `handlerMark.abandon`): a middleware that let go of `next` before the handler started cannot have it start behind an answer that says it never ran. Pinned by `TestToolMarkConcurrentCallers/abandoning`.
+
 **An answer at the deadline is kept (C9).** A handler that answered as
 its `Timeout` passed lost its answer to a coin flip between the two
 ready cases; the loop now takes a waiting answer before it reads the
@@ -733,3 +735,22 @@ Tests: `TestLayerFailureAfterTheHandlerIsAnUnknownOutcome`,
 `TestParkSourcePanicLetsTheAnswerThrough` (core), `TestRepairJSON`,
 `TestRetryMaxTotalBoundsTheCall` (core/mw),
 `TestEditedCallUnknownInALiveTurnKeepsTheEdit` (thread).
+
+## Amendment (2026-11-05 — weft/mcp: a closed client sends nothing; keys both ways)
+
+A `tools/call` the go-sdk refuses with `ErrClientClosing` (-32003,
+"client is closing") was never written — the SDK's connection checks
+its state and refuses before it registers or writes the request — so it
+is a plain failure the model reads as `mcp: connection closed: calling
+"tools/call": client is closing…` (error.type `mcp_transport`), never
+`OUTCOME_UNKNOWN`. `ErrServerClosing` (-32004) stays an unknown outcome:
+a server also answers it to a request it received. For the transition
+release the idempotency key is sent under both `_meta` names (the old
+`dev.weftgo/idempotency_key` as well), so a 0.22 server keeps
+deduplicating — the amendment above's "only the new names" holds for the
+caller link alone; the old key name goes in the next release. And
+`mcp.Serve` hands a served tool's handler the client's key as its
+`Call.IdempotencyKey` (`core.Agent.ServeCall`), so a weft server
+deduplicates too. Pinned by `TestToolsCallOnAClosedSessionIsNotSent`,
+`TestClosingCodesClassified`, `TestMetaKeysRenamed`,
+`TestServeHandsTheClientKey` (mcp).

@@ -531,3 +531,109 @@ func TestAddToolsEmitsNoAnnotations(t *testing.T) {
 		}
 	}
 }
+
+// TestServeHandsTheClientKey (E1): a served tool's handler reads the
+// client's idempotency key from params._meta (the legacy name for one
+// release), its call id derived from the key, so a retried tools/call
+// with the same key — on this Serve or a restarted one — is applied once
+// by a deduplicating handler. A request with no key carries none, and
+// its ids stay distinct across two Serves.
+func TestServeHandsTheClientKey(t *testing.T) {
+	applied := map[string]int{}
+	var seen []core.Call
+	pay := core.Tool("pay", "Pay.", func(ctx context.Context, _ struct{}) (string, error) {
+		c, ok := core.CallFromContext(ctx)
+		if !ok {
+			return "", errors.New("no call on ctx")
+		}
+		seen = append(seen, c)
+		if c.IdempotencyKey != "" {
+			applied[c.IdempotencyKey]++
+			if applied[c.IdempotencyKey] > 1 {
+				return "already paid", nil
+			}
+		}
+		return "paid", nil
+	}, core.Replay(core.ReplayKeyed))
+	call := func(sess *sdk.ClientSession, meta sdk.Meta) string {
+		t.Helper()
+		res, err := sess.CallTool(context.Background(), &sdk.CallToolParams{Name: "pay", Arguments: map[string]any{}, Meta: meta})
+		if err != nil || res.IsError {
+			t.Fatalf("call: %v %+v", err, res)
+		}
+		return res.Content[0].(*sdk.TextContent).Text
+	}
+	for restart := 0; restart < 2; restart++ {
+		agt := core.New(wefttest.Script(wefttest.Say("x")), core.Name("billing"), pay)
+		s := sdk.NewServer(&sdk.Implementation{Name: "srv", Version: "0"}, nil)
+		Serve(s, agt, "billing agent")
+		sess := newSession(t, s)
+		call(sess, sdk.Meta{MetaIdempotencyKey: "K-same"})
+		call(sess, sdk.Meta{LegacyMetaIdempotencyKey: "K-old"})
+		call(sess, nil)
+	}
+	if applied["K-same"] != 2 || applied["K-old"] != 2 {
+		t.Fatalf("keys seen: %v", applied)
+	}
+	var keyed, unkeyed []string
+	for _, c := range seen {
+		switch c.IdempotencyKey {
+		case "":
+			unkeyed = append(unkeyed, c.CallID)
+		case "K-same":
+			keyed = append(keyed, c.CallID)
+		}
+		if c.Name != "pay" || c.Approved || c.RunID != "" {
+			t.Errorf("call %+v", c)
+		}
+	}
+	if len(keyed) != 2 || keyed[0] != keyed[1] || !strings.HasPrefix(keyed[0], "mcp_") || len(keyed[0]) != 4+24 {
+		t.Errorf("keyed call ids %v: want one id derived from the key", keyed)
+	}
+	if len(unkeyed) != 2 || unkeyed[0] == unkeyed[1] || strings.HasPrefix(unkeyed[0], "mcp_call_") {
+		t.Errorf("unkeyed call ids %v: want distinct, per-Serve ids", unkeyed)
+	}
+}
+
+// TestServeAppliesToolPolicy (E2): Serve runs each call under the
+// tool's Timeout (else the agent's) and result cap — the SDK bounds
+// nothing. A timed-out tool that is not ReplaySafe reads OUTCOME_UNKNOWN;
+// a ReplaySafe one the pinned "timed out" text.
+func TestServeAppliesToolPolicy(t *testing.T) {
+	slow := core.Tool("slow", "Slow.", func(ctx context.Context, _ struct{}) (string, error) {
+		time.Sleep(2 * time.Second)
+		return "finished anyway", nil
+	}, core.Timeout(20*time.Millisecond))
+	slowRead := core.Tool("slow_read", "Slow read.", func(ctx context.Context, _ struct{}) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}, core.Replay(core.ReplaySafe))
+	big := core.Tool("big", "Big.", func(context.Context, struct{}) (string, error) {
+		return strings.Repeat("y", 50), nil
+	}, core.MaxResultBytes(5))
+	agt := core.New(wefttest.Script(wefttest.Say("x")), core.Name("a"), core.Timeout(30*time.Millisecond), slow, slowRead, big)
+	s := sdk.NewServer(&sdk.Implementation{Name: "srv", Version: "0"}, nil)
+	Serve(s, agt, "a")
+	sess := newSession(t, s)
+	text := func(name string) (string, bool) {
+		t.Helper()
+		res, err := sess.CallTool(context.Background(), &sdk.CallToolParams{Name: name, Arguments: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Content[0].(*sdk.TextContent).Text, res.IsError
+	}
+	start := time.Now()
+	if got, isErr := text("slow"); !isErr || got != `OUTCOME_UNKNOWN: tool "slow" did not answer within 20ms; it may still complete; outcome unknown` {
+		t.Errorf("slow: %v %q", isErr, got)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the tool's Timeout did not bound the served call: %v", d)
+	}
+	if got, isErr := text("slow_read"); !isErr || got != `tool "slow_read" timed out after 30ms` {
+		t.Errorf("slow_read (agent default): %v %q", isErr, got)
+	}
+	if got, isErr := text("big"); isErr || got != "yyyyy\n…[truncated 45 bytes]" {
+		t.Errorf("big: %v %q", isErr, got)
+	}
+}

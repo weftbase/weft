@@ -40,7 +40,8 @@ const MetaCaller = "ai.weftbase/caller"
 // MetaIdempotencyKey is the params._meta key every tools/call carries
 // its core.Call.IdempotencyKey under — always, whether or not the
 // caller link is sent: a server that deduplicates on it applies a call
-// retried after a lost answer once (WR-8).
+// retried after a lost answer once (WR-8). Serve hands it to the served
+// tool's handler as its Call.IdempotencyKey.
 const MetaIdempotencyKey = "ai.weftbase/idempotency_key"
 
 // LegacyMetaCaller is MetaCaller's name before 0.23.0. weft never sends
@@ -50,10 +51,11 @@ const MetaIdempotencyKey = "ai.weftbase/idempotency_key"
 const LegacyMetaCaller = "dev.weftgo/caller"
 
 // LegacyMetaIdempotencyKey is MetaIdempotencyKey's name before 0.23.0.
-// weft never sends it (and reads no idempotency key itself); it is
-// here for a server that deduplicates on the key: during the
-// transition read MetaIdempotencyKey, else this one — what a 0.22
-// client sends. Removed in the next release.
+// For this one transition release an imported tool's tools/call sends
+// the key under both names, so a 0.22 server that deduplicates on this
+// one keeps deduplicating; Serve reads MetaIdempotencyKey, else this
+// one — what a 0.22 client sends. A server that deduplicates should do
+// the same. Removed (sent and read) in the next release.
 const LegacyMetaIdempotencyKey = "dev.weftgo/idempotency_key"
 
 // metaValue is the value under key in a request's _meta, read under its

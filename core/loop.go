@@ -2093,6 +2093,11 @@ func (a *Agent) callTool(ctx context.Context, call ToolCallPart, def *ToolDef, p
 	} else {
 		out, fail = invokeWithTimeout(ctx, fn, call, timeout, mark)
 	}
+	// The chain has returned: the loop settles the call now. A handler
+	// a layer let go of before it started (a middleware that gave up on
+	// next, a goroutine it left behind) never starts afterwards — the
+	// answer read below stays true (enter refuses, as for a Timeout).
+	mark.abandon()
 	if fail.err != nil {
 		if fail.park && !ranPastHandler(def, mark) {
 			park = mark.parked()

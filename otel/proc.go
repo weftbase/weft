@@ -185,7 +185,9 @@ func (p *destProc) OnEmit(ctx context.Context, r *sdklog.Record) error {
 			keep = p.stripThread(&clone)
 		}
 		if !keep {
-			p.drops.filtered(1)
+			// A body the chain could not read is a lost record, not a
+			// policy choice: counted dropped, so Shutdown reports it.
+			p.drops.dropped(1, errThreadBody)
 			return nil // never sent with content it could not strip
 		}
 	case "raw":

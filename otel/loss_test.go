@@ -1,0 +1,156 @@
+package otel
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
+)
+
+// stuckSinkLogs never finishes an export until its ctx ends — or,
+// with ignoreCtx, never at all (until release closes).
+type stuckSinkLogs struct {
+	ignoreCtx bool
+	release   chan struct{}
+}
+
+func (h stuckSinkLogs) Export(ctx context.Context, _ []sdklog.Record) error {
+	if h.ignoreCtx {
+		<-h.release
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (stuckSinkLogs) Shutdown(context.Context) error   { return nil }
+func (stuckSinkLogs) ForceFlush(context.Context) error { return nil }
+
+// E3 (R8, R12): a hung Sink never stalls the run whose records it
+// writes. Each synchronous export is bounded by the destination's
+// Timeout (default 2 s); past it the export is abandoned and counted
+// dropped, and while it is stuck every later record is dropped at once
+// — so a run of many records finishes in about one Timeout, whether or
+// not the exporter honours its ctx.
+func TestHungSinkDoesNotStallTheRun(t *testing.T) {
+	for _, ignore := range []bool{false, true} {
+		release := make(chan struct{})
+		p, err := Start(context.Background(), NoGlobal(), NoEnv(), Sink("store", func(context.Context) (sdktrace.SpanExporter, sdklog.Exporter, error) {
+			return nil, stuckSinkLogs{ignoreCtx: ignore, release: release}, nil
+		}, Timeout(100*time.Millisecond)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		agt := core.New(wefttest.Script(wefttest.Say("hi")), core.Name("a"),
+			core.TracerProvider(p.TracerProvider()), core.LoggerProvider(p.LoggerProvider()))
+		start := time.Now()
+		done := make(chan error, 1)
+		go func() { _, err := agt.Generate(context.Background(), core.Prompt("go")); done <- err }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("ignoreCtx=%v: the run is blocked on a hung Sink", ignore)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("ignoreCtx=%v: the run took %v behind a Sink with a 100ms Timeout", ignore, d)
+		}
+		if n := p.dests[0].logProc.(*destProc).drops.count.Load(); n == 0 {
+			t.Errorf("ignoreCtx=%v: no record counted dropped", ignore)
+		}
+		close(release)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = p.Shutdown(ctx)
+		cancel()
+	}
+}
+
+// The default bound, with no Timeout option: about two seconds.
+func TestHungSinkDefaultBound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits the 2 s default")
+	}
+	g := newSinkGate(0, newDropCounter("t"))
+	if g.timeout != defaultSinkTimeout || defaultSinkTimeout != 2*time.Second {
+		t.Fatalf("default %v", g.timeout)
+	}
+	start := time.Now()
+	g.export(context.Background(), 1, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	if d := time.Since(start); d < defaultSinkTimeout || d > defaultSinkTimeout+time.Second {
+		t.Errorf("export bounded after %v", d)
+	}
+	if g.drops.count.Load() != 1 {
+		t.Errorf("dropped %d", g.drops.count.Load())
+	}
+}
+
+// hangBatchLogs is a batch destination's exporter that never finishes
+// an export until its ctx ends.
+type hangBatchLogs struct{}
+
+func (hangBatchLogs) Export(ctx context.Context, _ []sdklog.Record) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (hangBatchLogs) Shutdown(context.Context) error   { return nil }
+func (hangBatchLogs) ForceFlush(context.Context) error { return nil }
+
+// E4 (WR-36): records a hung destination still holds at Shutdown are
+// lost, and Shutdown says so — a *LossError matching ErrRecordsLost,
+// counted per destination — within the caller's ctx: the flush takes
+// half of it, the providers' shutdown the rest.
+func TestShutdownReportsLoss(t *testing.T) {
+	p, err := Start(context.Background(), NoGlobal(), NoEnv(), Heartbeat(0), Exporters(nil, hangBatchLogs{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentThrough(t, p)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = p.Shutdown(ctx)
+	if d := time.Since(start); d > 2500*time.Millisecond {
+		t.Errorf("Shutdown took %v with a 1.5 s ctx", d)
+	}
+	if !errors.Is(err, ErrRecordsLost) {
+		t.Fatalf("Shutdown = %v, want ErrRecordsLost", err)
+	}
+	var loss *LossError
+	if !errors.As(err, &loss) || loss.Lost == 0 || loss.ByDestination["exporters"] != loss.Lost {
+		t.Fatalf("loss = %+v", loss)
+	}
+	if err2 := p.Shutdown(context.Background()); !errors.Is(err2, ErrRecordsLost) {
+		t.Errorf("a second Shutdown = %v, want the first's result", err2)
+	}
+}
+
+// A pipeline that lost nothing shuts down clean.
+func TestShutdownCleanWithoutLoss(t *testing.T) {
+	mem := newMemExporter()
+	p, err := Start(context.Background(), NoGlobal(), NoEnv(), Heartbeat(0), Exporters(nil, mem))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentThrough(t, p)
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown = %v", err)
+	}
+}
+
+func TestFlushBudget(t *testing.T) {
+	if got := flushBudget(context.Background()); got != 5*time.Second {
+		t.Errorf("no deadline: %v", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if got := flushBudget(ctx); got > 2*time.Second || got < 1900*time.Millisecond {
+		t.Errorf("4 s ctx: flush budget %v, want half", got)
+	}
+}

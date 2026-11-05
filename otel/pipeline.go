@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,12 +139,23 @@ func (p *Pipeline) ForceFlush(ctx context.Context) error {
 }
 
 // Shutdown runs S2.4's order: stop heartbeats → flush every destination
-// in parallel (5 s budget) → shut down the providers → shut every
-// Sink's exporters down last. Every wait in it is bounded by ctx: a
-// destination stuck in a write (a Sink behind another process's lock,
-// a hung exporter) costs the caller its context, never more. Shutdown runs
-// once; a concurrent or later call returns the first's result, or its
-// own ctx's error should that come first.
+// in parallel → shut down the providers → shut every Sink's exporters
+// down last. Every wait in it is bounded by ctx: a destination stuck in
+// a write (a Sink behind another process's lock, a hung exporter) costs
+// the caller its context, never more. The flush takes at most half of
+// what ctx has left (5 s at most), so the providers' own shutdown — the
+// batch processors' last export — always gets a slice of its own.
+//
+// Loss is reported, never silent (WR-36): Shutdown returns the flush's
+// and every provider's and Sink's shutdown errors joined, and, when any
+// record was lost during the pipeline's life or its shutdown — a failed
+// or abandoned export, a full queue's refusal, a record a destination
+// could not shape safely — a *LossError matching ErrRecordsLost that
+// counts them per destination. Records a destination's policy filtered
+// by design (deltas under NoDeltas, raw bodies a third party never
+// takes) are not losses. Shutdown runs once; a concurrent or later call
+// returns the first's result, or its own ctx's error should that come
+// first.
 func (p *Pipeline) Shutdown(ctx context.Context) error {
 	if !p.closing.CompareAndSwap(false, true) {
 		select {
@@ -167,19 +179,89 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 	}
 	installedMu.Unlock()
 	p.stopHeartbeat(ctx)
-	flushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	_ = p.ForceFlush(flushCtx)
+	flushCtx, cancel := context.WithTimeout(ctx, flushBudget(ctx))
+	err := p.ForceFlush(flushCtx)
 	cancel()
+	if err != nil {
+		err = fmt.Errorf("otel: flush: %w", err)
+	}
 	if p.lp != nil {
-		_ = p.lp.Shutdown(ctx)
+		if e := p.lp.Shutdown(ctx); e != nil {
+			err = errors.Join(err, fmt.Errorf("otel: logger provider shutdown: %w", e))
+		}
 	}
 	if p.tp != nil {
-		_ = p.tp.Shutdown(ctx)
+		if e := p.tp.Shutdown(ctx); e != nil {
+			err = errors.Join(err, fmt.Errorf("otel: tracer provider shutdown: %w", e))
+		}
 	}
 	for _, rt := range p.dests {
-		p.closeErr = errors.Join(p.closeErr, rt.closeSink(ctx))
+		err = errors.Join(err, rt.closeSink(ctx))
 	}
+	if lost := p.lossError(); lost != nil {
+		err = errors.Join(lost, err)
+	}
+	p.closeErr = err
 	return p.closeErr
+}
+
+// flushBudget is the share of ctx Shutdown's flush may spend: half of
+// what is left, at most 5 s (5 s without a deadline).
+func flushBudget(ctx context.Context) time.Duration {
+	const most = 5 * time.Second
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return most
+	}
+	return min(most, time.Until(dl)/2)
+}
+
+// ErrRecordsLost is what Pipeline.Shutdown's error matches when any
+// record was lost during the pipeline's life: errors.Is(err,
+// otel.ErrRecordsLost); errors.As a *LossError for the counts.
+var ErrRecordsLost = errors.New("otel: records lost")
+
+// LossError counts the records a pipeline lost, per destination name:
+// failed or abandoned exports, a full queue's refusals, records a
+// destination could not shape safely — not those a destination's policy
+// filters by design. It matches ErrRecordsLost.
+type LossError struct {
+	Lost          int64            // the total
+	ByDestination map[string]int64 // destination name → records lost
+}
+
+func (e *LossError) Error() string {
+	names := make([]string, 0, len(e.ByDestination))
+	for n := range e.ByDestination {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%s=%d", n, e.ByDestination[n])
+	}
+	return fmt.Sprintf("otel: %d records lost (%s)", e.Lost, strings.Join(parts, ", "))
+}
+
+// Is matches ErrRecordsLost.
+func (e *LossError) Is(target error) bool { return target == ErrRecordsLost }
+
+// lossError is the pipeline's losses so far, nil when none.
+func (p *Pipeline) lossError() *LossError {
+	var e *LossError
+	for _, rt := range p.dests {
+		if rt.drops == nil {
+			continue
+		}
+		if n := rt.drops.lost(); n > 0 {
+			if e == nil {
+				e = &LossError{ByDestination: map[string]int64{}}
+			}
+			e.Lost += n
+			e.ByDestination[rt.name] += n
+		}
+	}
+	return e
 }
 
 // stopHeartbeat stops the heartbeat goroutine and waits for it under
@@ -346,7 +428,10 @@ func Install(opts ...Option) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = p.Shutdown(ctx)
+		if err := p.Shutdown(ctx); err != nil {
+			// Loss at exit is said, never silent (WR-36).
+			slog.Warn("weft/otel: shutdown", "err", err.Error())
+		}
 	}
 }
 
@@ -533,6 +618,7 @@ func build(ctx context.Context, cfg config, dests []dest) (p *Pipeline, failed e
 type destRuntime struct {
 	name     string
 	tags     []any // the destination's Tag tags (Pipeline.Tags)
+	drops    *dropCounter
 	spanProc sdktrace.SpanProcessor
 	logProc  sdklog.Processor
 	// sinkSpan and sinkLog are a Sink's exporters, which closeSink shuts
@@ -596,6 +682,7 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 	// concurrent runs — the atomics guarded the counters, not the
 	// field).
 	drops := newDropCounter(d.name)
+	rt.drops = drops
 
 	logDelay, spanDelay := d.batchDelays()
 	var spanExp sdktrace.SpanExporter
@@ -611,11 +698,11 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 		}
 		rt.sinkSpan, rt.sinkLog = se, le
 		if d.traces && se != nil {
-			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, sinkSpanExporter{exp: se, drops: drops})))
+			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, sinkSpanExporter{exp: se, gate: newSinkGate(d.timeout, drops)})))
 		}
 		if d.logs && le != nil {
 			rt.logProc = &destProc{
-				name: d.name, inner: sdklog.NewSimpleProcessor(sinkLogExporter{exp: le, drops: drops}),
+				name: d.name, inner: sdklog.NewSimpleProcessor(sinkLogExporter{exp: le, gate: newSinkGate(d.timeout, drops)}),
 				content: content, contentC: contentCfg, noDeltas: d.noDeltas, drops: drops,
 				raw: cfg.rawBodies && d.rawOn(), appLogs: d.appLogsOn(),
 			}
@@ -790,6 +877,12 @@ func samplerOf(cfg config) sdktrace.Sampler {
 	return sdktrace.ParentBased(sdktrace.AlwaysSample())
 }
 
+// recordContractVersion is the record contract's version
+// (docs/record-contract.md §1), the resource's weft.record.v: it moves
+// when a record or span changes shape in a way a reader must know
+// (WR-38) — never with the framework version alone.
+const recordContractVersion = 1
+
 // buildResource assembles the resource in precedence order, lowest
 // first: the binary's name, the standard OTEL_SERVICE_NAME /
 // OTEL_RESOURCE_ATTRIBUTES, the Service option, and the caller's
@@ -801,6 +894,7 @@ func buildResource(cfg config) (*sdkresource.Resource, error) {
 	attrs := append([]attribute.KeyValue{
 		semconv.ServiceName(filepath.Base(os.Args[0])),
 		attribute.String("weft.version", weftVersion()),
+		attribute.Int("weft.record.v", recordContractVersion),
 	}, vcsAttrs()...)
 	base, err := sdkresource.New(context.Background(),
 		sdkresource.WithAttributes(attrs...),
