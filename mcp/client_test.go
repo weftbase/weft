@@ -28,13 +28,17 @@ func servedOpts(t *testing.T, opts *sdk.ServerOptions, configure func(*sdk.Serve
 	srv := sdk.NewServer(&sdk.Implementation{Name: "remote", Version: "0"}, opts)
 	configure(srv)
 	serverTransport, clientTransport := sdk.NewInMemoryTransports()
-	runCtx, stop := context.WithCancel(context.Background())
-	go func() { _ = srv.Run(runCtx, serverTransport) }()
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = srv.Run(runCtx, serverTransport) }()
 	client := sdk.NewClient(&sdk.Implementation{Name: "importer", Version: "0"}, nil)
 	sess, err := client.Connect(context.Background(), clientTransport, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	// stop returns once the server has stopped, so a call made after it
+	// never reaches a server still draining its cancel.
+	stop := sync.OnceFunc(func() { cancel(); <-done })
 	return sess, stop
 }
 
