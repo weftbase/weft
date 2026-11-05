@@ -235,3 +235,99 @@ func TestParseTraceparent(t *testing.T) {
 		t.Errorf("tracestate / flags lost: %+v", sc)
 	}
 }
+
+// TestMetaKeysRenamed (0.23.0): weft sends only the ai.weftbase/ keys —
+// the caller link under CallerMeta and the idempotency key always —
+// never the dev.weftgo/ ones.
+func TestMetaKeysRenamed(t *testing.T) {
+	if MetaCaller != "ai.weftbase/caller" || MetaIdempotencyKey != "ai.weftbase/idempotency_key" {
+		t.Fatalf("keys %q %q", MetaCaller, MetaIdempotencyKey)
+	}
+	got := make(chan sdk.Meta, 1)
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "pay", false, func(_ context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			got <- req.Params.Meta
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "paid"}}}, nil
+		})
+	})
+	defer stop()
+	tools, err := Tools(context.Background(), sess, CallerMeta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{"q":"a"}`}),
+		wefttest.Say("ok"),
+	), tools[0])
+	if _, err := agent.Generate(context.Background(), core.RunID("r1"), core.Prompt("pay")); err != nil {
+		t.Fatal(err)
+	}
+	meta := <-got
+	if _, ok := meta[MetaCaller]; !ok {
+		t.Errorf("no %s in %v", MetaCaller, meta)
+	}
+	if k, _ := meta[MetaIdempotencyKey].(string); k == "" {
+		t.Errorf("no %s in %v", MetaIdempotencyKey, meta)
+	}
+	for _, k := range []string{LegacyMetaCaller, LegacyMetaIdempotencyKey} {
+		if _, ok := meta[k]; ok {
+			t.Errorf("sent the legacy key %s: %v", k, meta)
+		}
+	}
+}
+
+// TestServedReadsLegacyCallerKey: for one release a served call reads
+// its caller under the pre-0.23 key when the new one is absent, and the
+// new key wins when both are present.
+func TestServedReadsLegacyCallerKey(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	helper := core.New(wefttest.Script(wefttest.Say("a"), wefttest.Say("b")), core.Name("helper"), core.TracerProvider(tp))
+	srv := sdk.NewServer(&sdk.Implementation{Name: "helpers", Version: "0"}, nil)
+	Serve(srv, helper, "Helps.")
+	st, ct := sdk.NewInMemoryTransports()
+	go func() { _ = srv.Run(context.Background(), st) }()
+	sess, err := sdk.NewClient(&sdk.Implementation{Name: "c", Version: "0"}, nil).Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	for _, c := range []struct {
+		meta sdk.Meta
+		want string
+	}{
+		{sdk.Meta{LegacyMetaCaller: map[string]any{"run_id": "old1", "call_id": "c1"}}, "old1"},
+		{sdk.Meta{LegacyMetaCaller: map[string]any{"run_id": "old2", "call_id": "c2"},
+			MetaCaller: map[string]any{"run_id": "new2", "call_id": "c2"}}, "new2"},
+	} {
+		exp.Reset()
+		res, err := sess.CallTool(context.Background(), &sdk.CallToolParams{Meta: c.meta, Name: "helper", Arguments: map[string]any{"prompt": "x"}})
+		if err != nil || res.IsError {
+			t.Fatalf("call: %v %+v", err, res)
+		}
+		var caller string
+		for _, s := range exp.GetSpans().Snapshots() {
+			if s.Name() == "invoke_agent helper" {
+				caller = attrOf(s, "weft.caller.run.id")
+			}
+		}
+		if caller != c.want {
+			t.Errorf("_meta %v: served run caller %q, want %q", c.meta, caller, c.want)
+		}
+	}
+}
+
+func TestMetaValueFallback(t *testing.T) {
+	m := sdk.Meta{LegacyMetaIdempotencyKey: "old"}
+	if v, ok := metaValue(m, MetaIdempotencyKey); !ok || v != "old" {
+		t.Errorf("legacy only: %v %v", v, ok)
+	}
+	m[MetaIdempotencyKey] = "new"
+	if v, _ := metaValue(m, MetaIdempotencyKey); v != "new" {
+		t.Errorf("both: %v, want the new key's", v)
+	}
+	if _, ok := metaValue(sdk.Meta{}, MetaCaller); ok {
+		t.Error("empty _meta read a caller")
+	}
+}

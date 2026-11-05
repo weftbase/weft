@@ -653,3 +653,14 @@ Tests: `TestInterruptedResumeLeavesItsRecoveryRequestForAPerson`,
 `TestRefusedChildReplayKeepsTheDelegationParked`,
 `TestPoolReplayNeverSettlesAnUndecidedRecoveryRequest`,
 `TestCloseGiveUpSyncDelegationIsNotOfferedAsARetry` (thread/pool).
+
+## Amendment (2026-11-05 — the _meta keys are renamed)
+
+The idempotency key's `_meta` name quoted above, `dev.weftgo/idempotency_key`,
+is `ai.weftbase/idempotency_key` (`mcp.MetaIdempotencyKey`) from 0.23.0,
+and the caller link's `dev.weftgo/caller` is `ai.weftbase/caller`. weft
+sends only the new names; for one release `mcp.Serve` reads a caller
+under the old name when the new one is absent, and the old names stay
+exported as `mcp.LegacyMetaCaller` / `mcp.LegacyMetaIdempotencyKey` for
+servers that deduplicate during the transition. The rest of the
+decision is unchanged.

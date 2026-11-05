@@ -144,7 +144,8 @@ process boundary the caller names itself: `core.WithCaller(ctx,
 core.Caller{RunID, CallID, Span})` links every run started directly on
 `ctx` (not inside a tool call — a call on the context wins — and no run
 started inside such a run inherits the link), and `mcp.Serve` does that
-for a `tools/call` whose `params._meta` carries `dev.weftgo/caller`
+for a `tools/call` whose `params._meta` carries `ai.weftbase/caller`
+(read under the pre-0.23 `dev.weftgo/caller` too, for one release)
 `{run_id, call_id}` and a W3C `traceparent` — `mcp.Tools`' imported
 tools send both under `mcp.CallerMeta()` (off by default: the ids name
 the caller's runs to the server). Such a link is **remote**: the run

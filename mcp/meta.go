@@ -35,13 +35,43 @@ import (
 
 // MetaCaller is the params._meta key a tools/call names its weft
 // caller under: {"run_id": "<run>", "call_id": "<tool call>"}.
-const MetaCaller = "dev.weftgo/caller"
+const MetaCaller = "ai.weftbase/caller"
 
 // MetaIdempotencyKey is the params._meta key every tools/call carries
 // its core.Call.IdempotencyKey under — always, whether or not the
 // caller link is sent: a server that deduplicates on it applies a call
 // retried after a lost answer once (WR-8).
-const MetaIdempotencyKey = "dev.weftgo/idempotency_key"
+const MetaIdempotencyKey = "ai.weftbase/idempotency_key"
+
+// LegacyMetaCaller is MetaCaller's name before 0.23.0. weft never sends
+// it; a served call whose _meta lacks MetaCaller is read under it, for
+// one release, so a 0.22 client stays linked. Removed in the next
+// release.
+const LegacyMetaCaller = "dev.weftgo/caller"
+
+// LegacyMetaIdempotencyKey is MetaIdempotencyKey's name before 0.23.0.
+// weft never sends it (and reads no idempotency key itself); it is
+// here for a server that deduplicates on the key: during the
+// transition read MetaIdempotencyKey, else this one — what a 0.22
+// client sends. Removed in the next release.
+const LegacyMetaIdempotencyKey = "dev.weftgo/idempotency_key"
+
+// metaValue is the value under key in a request's _meta, read under its
+// legacy name when key is absent (MetaCaller, MetaIdempotencyKey; for
+// one release, as the Legacy constants say): the new name wins when
+// both are present. ok is false when neither is.
+func metaValue(meta sdk.Meta, key string) (v any, ok bool) {
+	if v, ok = meta[key]; ok {
+		return v, true
+	}
+	switch key {
+	case MetaCaller:
+		v, ok = meta[LegacyMetaCaller]
+	case MetaIdempotencyKey:
+		v, ok = meta[LegacyMetaIdempotencyKey]
+	}
+	return v, ok
+}
 
 // metaIDMax bounds a caller id read from _meta, in bytes (core's
 // metadata value bound): a longer one is ignored.
@@ -83,7 +113,8 @@ func servedContext(ctx context.Context, req *sdk.CallToolRequest) context.Contex
 			c.Span = sc
 		}
 	}
-	if m, ok := meta[MetaCaller].(map[string]any); ok {
+	raw, _ := metaValue(meta, MetaCaller)
+	if m, ok := raw.(map[string]any); ok {
 		run, _ := m["run_id"].(string)
 		call, _ := m["call_id"].(string)
 		if run != "" && len(run) <= metaIDMax && len(call) <= metaIDMax {

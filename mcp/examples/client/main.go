@@ -73,7 +73,7 @@ func run() error {
 	defer cancel()
 
 	sessions, err := connectAll(ctx, []*sdk.Server{
-		remote("github", "search", "repo weftgo/weft found"),
+		remote("github", "search", "repo weftbase/weft found"),
 		remote("db", "query", "3 rows"),
 	})
 	if err != nil {

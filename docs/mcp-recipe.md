@@ -15,7 +15,7 @@ to the call that made it, opt in on the client:
 
 Every call those tools make then carries, in `params._meta`, the W3C
 `traceparent` (and `tracestate`) of its `execute_tool` span and
-`dev.weftgo/caller` `{run_id, call_id}`. The served run records
+`ai.weftbase/caller` (`mcp.MetaCaller`) `{run_id, call_id}`. The served run records
 `weft.caller.run.id` / `weft.caller.call.id` with `weft.caller.remote`,
 and its `invoke_agent` span links (an OpenTelemetry link) to the caller's
 span — its own trace, never the caller's child, so the client's
@@ -29,7 +29,7 @@ for a third party's.
 
 **The idempotency key always rides along.** Every `tools/call` carries
 the call's `Call.IdempotencyKey` in `params._meta` under
-`dev.weftgo/idempotency_key` (`mcp.MetaIdempotencyKey`), with or without
+`ai.weftbase/idempotency_key` (`mcp.MetaIdempotencyKey`), with or without
 `CallerMeta`: a server that deduplicates on it applies a retried call
 once. A transport failure — the connection dropped after the request
 may have reached the server — is an unknown outcome
@@ -37,3 +37,11 @@ may have reached the server — is an unknown outcome
 (`ReplayNever` unless you vouch otherwise) the model reads
 `OUTCOME_UNKNOWN: …`, and a `weft/thread` session parks the call for its
 recovery ladder (ADR 0032).
+
+Before 0.23.0 the keys were `dev.weftgo/caller` and
+`dev.weftgo/idempotency_key`. weft sends only the new names; for one
+release `mcp.Serve` still reads a caller under the old one
+(`mcp.LegacyMetaCaller`) when the new key is absent, and a server that
+deduplicates should read `ai.weftbase/idempotency_key`, falling back to
+`dev.weftgo/idempotency_key` (`mcp.LegacyMetaIdempotencyKey`) for 0.22
+clients. The legacy names go in the next release.
