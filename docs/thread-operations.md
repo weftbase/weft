@@ -726,7 +726,9 @@ not the numbers themselves.
   its own `Quorum`.
 - **Idempotency keys.** Every call a session runs carries
   `weft.Call.IdempotencyKey` = `thread.IdempotencyKey(session id,
-  assistant entry id, call id)` (ADR 0031): a tool with side effects
+  assistant entry id, call id, edited args SHA-256)` (ADR 0031; the
+  last is empty unless a person edited the arguments, so an edited call
+  gets a key of its own): a tool with side effects
   passes it to an API that deduplicates. The same call keeps it across
   a crash, a restart, a resume on another worker and a recovery retry;
   `Request.IdempotencyKey` names it on a parked call. A call the model

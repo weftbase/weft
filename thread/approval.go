@@ -222,10 +222,11 @@ type Decision struct {
 	Always bool
 	// RequestID and ArgsSHA256 bind the decision to what its decider
 	// was shown — the Request's ID (the occurrence) and ArgsSHA256 (the
-	// arguments). Both are optional; when set, the session checks them
-	// against the pending request before anything is recorded: another
-	// occurrence of the call id fails with ErrNotPending, other
-	// arguments with ErrArgsChanged. A decider that shows a request
+	// arguments). Both are required (Decision.Bind sets them); a
+	// decision missing either fails with ErrInvalidDecision. The
+	// session checks them against the pending request before anything
+	// is recorded: another occurrence of the call id fails with
+	// ErrNotPending, other arguments with ErrArgsChanged. A decider that shows a request
 	// in one place and decides it in another (an inbox, a web page
 	// left open for days) copies both from the Request it showed, so a
 	// stale page can never decide a call it did not show. ArgsSHA256

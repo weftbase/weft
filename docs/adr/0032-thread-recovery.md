@@ -187,7 +187,7 @@ are ordinary decisions. All appear in `Audit()` and as
 `cut off: the call may have run; approve to retry it with the same
 idempotency key, deny to skip it`, `cut off: the call deduplicates on
 its idempotency key and is retried`, `cut off: the call is ReplaySafe
-and runs again`; the turn's `err`
+and is not run again; the model may ask for it again`; the turn's `err`
 `thread: turn cut off: the session's writer stopped before the turn ended`.
 A dropped step changes the transcript the model sees: its assistant
 message leaves the path (it stays in the file on its own line).
