@@ -821,6 +821,19 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 		}
 		s.agent.Logger().Debug("thread: settled boundary not resumed", "session", s.header.ID, "err", err)
 	}
+	if len(s.queue) > 0 && !s.boundaryLocked() && s.recoveryRequiredLocked() {
+		// The turn that just landed — or one before it — left a call of
+		// unknown outcome its end could not record (ErrNotPersisted, a
+		// panic in the session's machinery): the file reads it cut off.
+		// The next send would repair that call into a synthetic result
+		// and the model could ask for it again, so the queue is held, as
+		// Send refuses (ErrRecoveryRequired), until RecoverTurn decides it
+		// (its run, or the boundary it parks, takes the queue on).
+		s.agent.Logger().Warn("thread: a cut-off turn left a call of unknown outcome; the queue waits for RecoverTurn",
+			"session", s.header.ID, "queued", len(s.queue))
+		s.exitRunnerLocked()
+		return workItem{}, false
+	}
 	if len(s.queue) > 0 && !s.boundaryLocked() && s.readyHintsLocked() {
 		// Under OnReady the queue is not drained: its head is handed
 		// over, and the owner's Continue starts it.
@@ -964,7 +977,7 @@ func (s *Session) runOneContained(item workItem) {
 				"session", s.header.ID, "run", item.ps.turn.RunID(), "panic", p)
 			// The turn may already be decided (the panic came from
 			// after it); finish refuses to overwrite it.
-			s.land(item, nil, fmt.Errorf("%w: %v", ErrTurnPanicked, p))
+			s.land(item, nil, s.withRecoveryRequired(fmt.Errorf("%w: %v", ErrTurnPanicked, p)))
 		}
 	}()
 	if item.resume {
@@ -985,8 +998,18 @@ func (s *Session) runOne(item workItem) {
 	t := ps.turn
 	persist := context.WithoutCancel(ps.ctx)
 	var promptErr error
+	held := false
 	s.locked(func() {
 		if t.promptWritten() {
+			return
+		}
+		if s.recoveryRequiredFileLocked() {
+			// A cut-off run left a call of unknown outcome (ADR 0032): this
+			// queued send would repair it into a synthetic result. It goes
+			// back to the queue's head, unwritten; the epilogue holds the
+			// queue until RecoverTurn.
+			s.queue = append([]pendingSend{ps}, s.queue...)
+			held = true
 			return
 		}
 		if promptErr = s.appendPromptLocked(persist, t, ps.msg, ps.receipt, ps.settles); promptErr != nil {
@@ -997,6 +1020,9 @@ func (s *Session) runOne(item workItem) {
 		}
 		t.setPromptDone()
 	})
+	if held {
+		return
+	}
 	if promptErr != nil {
 		s.land(item, nil, fmt.Errorf("%w: prompt append: %w", ErrNotRun, promptErr))
 		return
@@ -1086,7 +1112,7 @@ func (s *Session) runResume(item workItem) {
 		// unknown outcome is never run again by a resume (RecoverTurn
 		// decides it first), and an undecided recovery request is
 		// never handed to the core to settle "no decision".
-		if err := s.resumeRefusedLocked(); err != nil {
+		if err := s.resumeRefusedFileLocked(); err != nil {
 			startErr = fmt.Errorf("%w: %w", ErrNotRun, err)
 			return
 		}
@@ -1462,7 +1488,12 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	}
 	// The turn is decided: its Wait returns here. A turn whose end the
 	// storage refused says so (ErrNotPersisted), the run's result
-	// riding beside the error.
+	// riding beside the error — and, when the end it could not write
+	// held a call of unknown outcome, ErrRecoveryRequired: the file
+	// reads the turn cut off, and the queue waits for RecoverTurn.
+	if perr != nil {
+		perr = s.withRecoveryRequired(perr)
+	}
 	s.land(item, res, joinErrs(report, perr))
 	// The trigger's second site (ADR 0020 §2): after the turn, with the
 	// new measurement recorded — and after the turn is decided, so a
@@ -2399,7 +2430,12 @@ func (t *Turn) Done() <-chan struct{} { return t.done }
 //   - ErrRecoveryRequired — beside a canceled run's error (an
 //     Interrupt, its own context): the turn left calls that may have
 //     run parked as recovery requests (Session.Pending). Sends queued
-//     behind it wait until a person decides them.
+//     behind it wait until a person decides them. Beside
+//     ErrNotPersisted or ErrTurnPanicked: the turn's end was not
+//     recorded and it left a call that may have run, so the session
+//     reads it cut off (ADR 0032) — Send refuses, and sends already
+//     queued behind it (a steer's follow-up included) wait, until
+//     Session.RecoverTurn decides the call.
 func (t *Turn) Wait() (*core.RunResult, error) {
 	<-t.done
 	t.mu.Lock()
@@ -2614,6 +2650,21 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 		out = append(out, core.Message{Role: core.RoleTool, Content: keptResults})
 	}
 	return out, unsettled
+}
+
+// withRecoveryRequired joins ErrRecoveryRequired to err when the file
+// now reads a cut-off run with a call of unknown outcome — a turn whose
+// end could not be written after it dispatched such a call: its caller
+// learns that RecoverTurn must run before anything queued behind it
+// does.
+func (s *Session) withRecoveryRequired(err error) error {
+	required := false
+	s.locked(func() { required = s.recoveryRequiredFileLocked() })
+	if !required {
+		return err
+	}
+	return fmt.Errorf("%w: session %s: the turn's end was not recorded and it left a call that may have run; RecoverTurn decides it before anything queued runs: %w",
+		ErrRecoveryRequired, s.header.ID, err)
 }
 
 // appendCallsOnce returns pending followed by the calls of more it

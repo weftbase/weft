@@ -386,14 +386,27 @@ type cutOff struct {
 // the leaf's path — a prompt entry's run id, a resume's "started"
 // audit, a recovery's continuation, an overflow attempt's re-run —
 // whose turn entry is missing or marked CutOff, and which no
-// StepRecover audit has handled. ok is false while this Session runs
-// a turn: that turn is running, not cut off. A file-level fact: a turn
-// another process is running looks the same (Open takes no lock), so
-// a caller acting on it Claims the session first. Callers hold s.mu.
+// StepRecover audit has handled. ok is false while this Session has a
+// turn in flight: that turn is running, not cut off. A runner between
+// items is not running one — the turn it ran has landed, and a turn
+// whose end could not be written (ErrNotPersisted, ErrTurnPanicked)
+// reads as cut off from then on, in this process as after a restart
+// (ADR 0032). A file-level fact: a turn another process is running
+// looks the same (Open takes no lock), so a caller acting on it Claims
+// the session first. Callers hold s.mu.
 func (s *Session) cutOffLocked() (cutOff, bool) {
-	if s.running {
+	if s.busyLocked() {
 		return cutOff{}, false
 	}
+	return s.cutOffFileLocked()
+}
+
+// cutOffFileLocked is cutOffLocked without the in-flight guard: what
+// the file says. The runner asks it about its own item before the item
+// has started anything — a resume before its "started" audit, a queued
+// send before its prompt — where the last run on the path is the one
+// before it. Callers hold s.mu.
+func (s *Session) cutOffFileLocked() (cutOff, bool) {
 	path, err := s.walkLocked(s.leaf)
 	if err != nil {
 		return cutOff{}, false
@@ -690,6 +703,14 @@ func (s *Session) recoveryRequiredLocked() bool {
 	return ok && len(s.unknownLocked(x)) > 0
 }
 
+// recoveryRequiredFileLocked is recoveryRequiredLocked read from the
+// file alone (cutOffFileLocked): the runner's own check on its item
+// before the item starts anything. Callers hold s.mu.
+func (s *Session) recoveryRequiredFileLocked() bool {
+	x, ok := s.cutOffFileLocked()
+	return ok && len(s.unknownLocked(x)) > 0
+}
+
 // errRecoveryRequiredLocked is ErrRecoveryRequired naming the session,
 // nil when nothing waits for recovery. Callers hold s.mu.
 func (s *Session) errRecoveryRequiredLocked() error {
@@ -715,8 +736,22 @@ func (s *Session) errRecoveryRequiredLocked() error {
 //
 // Callers hold s.mu.
 func (s *Session) resumeRefusedLocked() error {
-	if err := s.errRecoveryRequiredLocked(); err != nil {
-		return err
+	return s.resumeRefusedAsLocked(s.recoveryRequiredLocked())
+}
+
+// resumeRefusedFileLocked is resumeRefusedLocked for the runner's own
+// resume item, before it starts (runResume): the cut-off check reads
+// the file alone (recoveryRequiredFileLocked), the resume itself being
+// the item in flight. Callers hold s.mu.
+func (s *Session) resumeRefusedFileLocked() error {
+	return s.resumeRefusedAsLocked(s.recoveryRequiredFileLocked())
+}
+
+// resumeRefusedAsLocked is the choke point's body, with the cut-off
+// check's answer given. Callers hold s.mu.
+func (s *Session) resumeRefusedAsLocked(cutOffUnknown bool) error {
+	if cutOffUnknown {
+		return fmt.Errorf("%w: session %s", ErrRecoveryRequired, s.header.ID)
 	}
 	for _, r := range s.pendingLocked() {
 		if r.Recovery {
@@ -778,6 +813,12 @@ func (s *Session) resumeRefusedLocked() error {
 // model asks for in a continuation is held only by the agent's own
 // gates (RequireApproval, ParkSource, middleware).
 //
+// A turn whose end could not be written in this process (ErrNotPersisted,
+// ErrTurnPanicked) after it dispatched a call of unknown outcome is cut
+// off the same way: the runner holds the sends queued behind it, and
+// RecoverTurn — its run, the boundary it parks, or, when it starts
+// nothing, the queue's head at once — takes them on.
+//
 // RecoverTurn is an explicit start, like Resume: it starts its run
 // under OnReady too. It fails with ErrNotPending when no turn was cut
 // off, ErrBusy while a turn runs, ErrClosed on a closed session, and
@@ -813,9 +854,20 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 		if y, ok := s.cutOffLocked(); !ok || y.run != run {
 			return nil, fmt.Errorf("%w: the cut-off turn of session %s changed while it was reconciled", ErrNotPending, s.header.ID)
 		}
-		return s.recoverWithLocked(ctx, persist, x, rc)
+		return s.recoveredLocked(s.recoverWithLocked(ctx, persist, x, rc))
 	}
-	return s.recoverWithLocked(ctx, persist, x, nil)
+	return s.recoveredLocked(s.recoverWithLocked(ctx, persist, x, nil))
+}
+
+// recoveredLocked hands RecoverTurn's result on and, when it started no
+// run, restarts the runner at the queue's head: sends the runner held
+// behind the cut-off turn (epilogue) run now, unless a boundary the
+// recovery parked holds them. Callers hold s.mu.
+func (s *Session) recoveredLocked(t *Turn, err error) (*Turn, error) {
+	if err == nil && t == nil {
+		s.kickRunnerLocked()
+	}
+	return t, err
 }
 
 // recoverWithLocked is RecoverTurn's crash matrix over the cut-off run,
