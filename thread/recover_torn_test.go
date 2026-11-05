@@ -139,3 +139,108 @@ func TestTornTurnEndBatchReadsCutOff(t *testing.T) {
 		})
 	}
 }
+
+// tornRecover is tornTurnEnd for RecoverTurn's batch: the one that
+// carries its StepRecover audit entry.
+type tornRecover struct {
+	thread.Storage
+	keep int
+	size atomic.Int32
+	down atomic.Bool
+}
+
+func (c *tornRecover) Append(ctx context.Context, session string, entries ...thread.Entry) error {
+	if c.down.Load() {
+		return errors.New("the process is gone")
+	}
+	for _, e := range entries {
+		if a, ok := e.(thread.ApprovalAuditEntry); ok && a.Step == thread.StepRecover && a.CallID == "" {
+			c.down.Store(true)
+			c.size.Store(int32(len(entries)))
+			var raw []byte
+			for _, w := range entries[:min(c.keep, len(entries))] {
+				line, err := json.Marshal(w)
+				if err != nil {
+					return err
+				}
+				raw = append(append(raw, line...), '\n')
+			}
+			if len(raw) > 0 {
+				if err := c.Storage.(interface {
+					Inject(context.Context, string, []byte) error
+				}).Inject(ctx, session, raw); err != nil {
+					return err
+				}
+			}
+			return errors.New("the process is gone")
+		}
+	}
+	return c.Storage.Append(ctx, session, entries...)
+}
+
+// RecoverTurn's batch torn after any prefix of complete lines (the
+// crash matrix's recover_batch point cannot time a kill inside the
+// write): its StepRecover audit goes last, so every prefix still reads
+// the turn cut off — Send is refused, and the next RecoverTurn decides
+// the call once, as a recovery request a skip answers with the
+// OUTCOME_UNKNOWN text.
+func TestTornRecoverBatchStaysCutOff(t *testing.T) {
+	b := durableBackends(t)[0] // jsonl: the backend that keeps a prefix
+	size := 2
+	for keep := 0; keep < size; keep++ {
+		t.Run(fmt.Sprintf("keep_%d", keep), func(t *testing.T) {
+			pay := &sideEffect{name: "pay"}
+			id, st := crashTurn(t, b, func(cs *crashStore) *core.Agent {
+				pay.crash = cs
+				return core.New(wefttest.Script(charged("pay")), pay.def())
+			}, nil)
+			pay.crash = nil
+			st = restart(t, b, st, id)
+			torn := &tornRecover{Storage: st, keep: keep}
+			s, err := thread.Open(bg, torn, id, core.New(wefttest.Script(), pay.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.RecoverTurn(bg); err == nil {
+				t.Fatal("RecoverTurn over a dying store succeeded")
+			}
+			if n := int(torn.size.Load()); n > size {
+				size = n
+			}
+			st = restart(t, b, st, id)
+			defer closeStore(st)
+			model := wefttest.Script(wefttest.Say("ok"))
+			s2, err := thread.Open(bg, st, id, core.New(model, pay.def()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s2.Close(bg)
+			if r := s2.Ready(); len(r) != 1 || r[0].Kind != thread.ReadyRecover {
+				t.Fatalf("Ready = %+v, want ReadyRecover", r)
+			}
+			if _, err := s2.Send(bg, core.User("again")); !errors.Is(err, thread.ErrRecoveryRequired) {
+				t.Fatalf("Send = %v, want ErrRecoveryRequired", err)
+			}
+			if _, err := s2.RecoverTurn(bg); err != nil {
+				t.Fatalf("RecoverTurn: %v", err)
+			}
+			p := s2.Pending()
+			if len(p) != 1 || !p[0].Recovery {
+				t.Fatalf("Pending = %+v, want call_1 as one recovery request", p)
+			}
+			rt, err := s2.Decide(bg, bound(s2, thread.Deny("call_1", "no")))
+			if err != nil || rt == nil {
+				t.Fatalf("Decide(deny) = %v, %v", rt, err)
+			}
+			if _, err := rt.WaitContext(deadline(t, 5*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := toolResultIn(model.Requests()[0], "call_1"); !strings.HasPrefix(got, core.CodeOutcomeUnknown+": ") {
+				t.Errorf("the model reads call_1 as %q, want the OUTCOME_UNKNOWN skip", got)
+			}
+			if n := len(pay.ran()); n != 1 {
+				t.Errorf("pay ran %d times, want 1", n)
+			}
+		})
+	}
+}

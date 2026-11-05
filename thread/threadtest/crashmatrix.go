@@ -25,6 +25,13 @@
 //	pool_canceled a live pool's canceled settlement
 //	pool_capped   a live pool's capped settlement
 //
+// and the tool windows around a call with effects (crashmatrix_tools.go):
+//
+//	tool_running    killed mid-handler: a recovery request, one effect
+//	tool_ran_keyed  killed mid-handler of a keyed call: one keyed retry
+//	tool_dispatched killed after the dispatch record, before the handler
+//	recover_batch   killed right after RecoverTurn's batch
+//
 // The child performs the write, proves it is durable (the API returned
 // means the backend synced), prints its marker and dies — SIGKILL, no
 // cleanup, exactly a writer dropping dead at that write point. The
@@ -88,13 +95,18 @@ var crashPoints = []string{
 	// entries, and a live pool's parked, canceled and capped receipts.
 	"expiry_sweep", "auto_trim", "queued_send", "resume_join", "fork_settle",
 	"pool_parked", "pool_canceled", "pool_capped",
+	// The tool windows (crashmatrix_tools.go): a call with effects
+	// killed mid-handler, keyed, between its dispatch record and its
+	// handler, and RecoverTurn's batch.
+	"tool_running", "tool_ran_keyed", "tool_dispatched", "recover_batch",
 }
 
 // parentKilled are the points where the parent lands the kill (the
 // child is mid-run, blocked in its model); the rest self-kill right
 // after their write returned.
 func parentKilled(point string) bool {
-	return point == "prompt" || point == "steer" || point == "resume_join"
+	return point == "prompt" || point == "steer" || point == "resume_join" ||
+		(isToolPoint(point) && point != "recover_batch")
 }
 
 // CrashMatrix runs the parent side over every write point: for each,
@@ -157,6 +169,10 @@ func CrashMatrix(t *testing.T, helperTest string, pathFor func(point string) str
 			st, err := open(path)
 			if err != nil {
 				t.Fatalf("reopen after the crash at %s: %v", point, err)
+			}
+			if isToolPoint(point) {
+				assertToolCrashPoint(t, point, st, path)
+				return
 			}
 			assertCrashPoint(t, point, st)
 		})
@@ -820,6 +836,8 @@ func RunCrashMatrixChild(t *testing.T, open func() (thread.Storage, error)) {
 		crashMatrixJoinChild(st)
 	case "pool_parked", "pool_canceled", "pool_capped":
 		crashMatrixLivePoolChild(point, st)
+	case "tool_running", "tool_ran_keyed", "tool_dispatched", "recover_batch":
+		crashMatrixToolChild(point, st)
 	default:
 		fmt.Println("helper: unknown point", point)
 		os.Exit(2)
