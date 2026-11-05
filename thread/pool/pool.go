@@ -903,11 +903,13 @@ func Descendants(ctx context.Context, parent *thread.Session) ([]string, error) 
 // ledgers accepted. fresh marks the children whose receipt still reads
 // accepted, and verified marks theirs in it as it reads them: the
 // acceptance is written before the child is created, so such a child
-// may be absent (skipped, as a deleted one) or have no complete header
-// yet — being created now, or torn by a crash inside its creation. The
-// receipt is then the record that it is this parent's (a fork's copies
-// of receipts are settled, never accepted), and it is listed with
-// nothing below it, so a cascade deletes it too.
+// may be absent — not created yet, or never: skipped, as a deleted one
+// — or, on a backend whose Create is not atomic (jsonl), have a file
+// with no complete header — being created now, or torn by a crash
+// inside its creation. The receipt is then the record that it is this
+// parent's (a fork's copies of receipts are settled, never accepted),
+// and it is listed with nothing below it, so a cascade deletes it too.
+// Any other unreadable child fails.
 func verified(ctx context.Context, st thread.Storage, parentID string, ids []string, fresh map[string]bool) ([]string, map[string][]string, error) {
 	var out []string
 	below := map[string][]string{}
@@ -916,7 +918,11 @@ func verified(ctx context.Context, st thread.Storage, parentID string, ids []str
 		if errors.Is(err, thread.ErrNotFound) {
 			continue
 		}
-		if errors.Is(err, thread.ErrCorrupt) && fresh[id] {
+		if noHeader(err) && fresh[id] {
+			// Its receipt reads accepted and its file holds no complete
+			// header: a creation in flight, or a crash inside it (jsonl).
+			// Listed with nothing below it, so a cascade deletes it too;
+			// any other corruption fails loud.
 			out = append(out, id)
 			continue
 		}
