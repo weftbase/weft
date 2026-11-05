@@ -1557,12 +1557,6 @@ func (v *toolView) tool(name string) *core.ToolDef {
 	return v.defs[name]
 }
 
-// schemaHash is the hex SHA-256 of the input schema of the view's tool
-// named name, as JSON — "" when it holds no tool of that name.
-func (v *toolView) schemaHash(name string) string {
-	return schemaHashOf(v.tool(name))
-}
-
 // useToolsLocked installs the snapshot an entry point took before it
 // locked (snapshotTools): the locked reads that follow resolve tools
 // against it. Callers hold s.mu.
