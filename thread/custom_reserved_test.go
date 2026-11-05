@@ -18,7 +18,7 @@ func TestCustomRefusesAReservedKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close(bg)
+	defer func() { _ = s.Close(bg) }()
 	before := len(s.Entries())
 	for _, kind := range []string{"weft/pin", "weft/anything"} {
 		if err := s.Custom(bg, kind, []byte(`"e_x"`)); !errors.Is(err, thread.ErrReservedKey) {

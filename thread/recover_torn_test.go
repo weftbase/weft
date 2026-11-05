@@ -114,7 +114,7 @@ func TestTornTurnEndBatchReadsCutOff(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s2.Close(bg)
+			defer func() { _ = s2.Close(bg) }()
 			if _, err := s2.Send(bg, core.User("did it pay?")); !errors.Is(err, thread.ErrRecoveryRequired) {
 				t.Fatalf("Send = %v, want ErrRecoveryRequired", err)
 			}
@@ -214,7 +214,7 @@ func TestTornRecoverBatchStaysCutOff(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s2.Close(bg)
+			defer func() { _ = s2.Close(bg) }()
 			if r := s2.Ready(); len(r) != 1 || r[0].Kind != thread.ReadyRecover {
 				t.Fatalf("Ready = %+v, want ReadyRecover", r)
 			}

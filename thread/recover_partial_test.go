@@ -74,7 +74,7 @@ func TestShutdownWithAnAnsweredSiblingIsRecovered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s2.Close(bg)
+			defer func() { _ = s2.Close(bg) }()
 			te := turnEntryOf(t, s2, id+"-t1")
 			if !te.CutOff || len(te.Pending) != 1 || te.Pending[0].ID != "call_pay" {
 				t.Fatalf("turn entry: cut_off=%v pending=%v, want cut off with call_pay once", te.CutOff, te.Pending)
@@ -167,7 +167,7 @@ func TestShutdownKeepsAHandlersOwnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close(bg)
+	defer func() { _ = s2.Close(bg) }()
 	te := turnEntryOf(t, s2, id+"-t1")
 	for _, c := range te.Pending {
 		if c.ID == "call_pay" {

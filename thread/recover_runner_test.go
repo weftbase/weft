@@ -104,7 +104,7 @@ func TestQueuedSendWaitsForRecoveryOfAnUnrecordedTurnEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close(bg)
+	defer func() { _ = s.Close(bg) }()
 	a, err := s.Send(bg, core.User("pay order A"))
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestSteerFollowUpWaitsForRecoveryOfAnUnrecordedTurnEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close(bg)
+	defer func() { _ = s.Close(bg) }()
 	a, err := s.Send(bg, core.User("pay order A"))
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestQueuedSendWaitsForRecoveryOfAPanickedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close(bg)
+	defer func() { _ = s.Close(bg) }()
 	a, err := s.Send(bg, core.User("pay order A"))
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestQueuedSendWaitsForRecoveryOfAnUnrecordedResumeEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close(bg)
+	defer func() { _ = s.Close(bg) }()
 	a, err := s.Send(bg, core.User("pay order A"))
 	if err != nil {
 		t.Fatal(err)
