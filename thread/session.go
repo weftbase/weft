@@ -1683,9 +1683,15 @@ func (s *Session) writableLocked() error {
 //     hold through Releaser. Its error is Close's result.
 //
 // If ctx ends while Close is waiting, Close gives up: it cancels the
-// running turn (which records as canceled, its unanswered calls
-// carrying the interruption text), ends every queued Turn with
-// ErrClosed, and returns ctx.Err(). The session then stays closed to
+// running turn, ends every queued Turn with ErrClosed, and returns
+// ctx.Err(). How the canceled turn records depends on what it was
+// doing (ADR 0032). A turn that had started no call of unknown outcome
+// records as canceled, its unanswered calls carrying the interruption
+// text. A turn felled under ErrShutdown (ctx's cause), or one whose
+// started calls that are not core.ReplaySafe gave no answer, records
+// as cut off (TurnEntry.CutOff): those calls stay unanswered, with no
+// synthetic text, and Session.RecoverTurn — in this process or the
+// next — decides them. The session then stays closed to
 // new work, and nothing can start another run — but the canceled turn
 // may still be writing its end, so the session is not yet sealed and
 // the storage not yet released. Call Close again to finish: it waits
