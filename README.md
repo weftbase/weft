@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/weftbase/weft/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/weftbase/weft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/weftbase/weft.svg)](https://pkg.go.dev/github.com/weftbase/weft)
-[![Version](https://img.shields.io/badge/version-v0.22.0-orange)](https://github.com/weftbase/weft/releases/tag/v0.22.0)
+[![Version](https://img.shields.io/badge/version-v0.22.1-orange)](https://github.com/weftbase/weft/releases/tag/v0.22.1)
 
 A modular framework for building AI agents in Go — designed the way the
 standard library is: small interfaces, `context` everywhere, functional
@@ -36,7 +36,7 @@ Concurrency is the point, not a feature: a step's tools fan out over
 goroutines, parallelism is a one-line dial, and tool failures never cancel
 their siblings.
 
-> **Status:** v0.22.0 — experimental, pre-1.0, released as one module
+> **Status:** v0.22.1 — experimental, pre-1.0, released as one module
 > (plus `core`; see [Releases](https://github.com/weftbase/weft/releases),
 > `CHANGELOG.md` and, coming from 0.8, [`MIGRATION-0.9.md`](MIGRATION-0.9.md)). The core's three load-bearing contracts — message
 > model, error model, tool contract — are implemented and tested, and
