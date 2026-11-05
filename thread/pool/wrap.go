@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -99,6 +100,11 @@ func (o toolOptionsOption) applyWrap(c *wrapConfig) { c.toolOpts = append(c.tool
 // the act of delegating (ADR 0014) — no child is created until the
 // call is approved, as no handler runs. A WrapTools middleware given
 // here runs before the approval boundary, the delegation after it.
+// Handler middleware (core.WrapHandler, alone or in a core.ToolOptions
+// bundle) is refused by Wrap: the delegation is the wrapped tool's
+// handler middleware and, under a session, answers the call in place
+// of the subagent's handler, so middleware below it would run on the
+// bare path only — silently skipped wherever a session runs the call.
 func ToolOptions(opts ...core.ToolOption) WrapOption { return toolOptionsOption{opts} }
 
 // Wrap returns a subagent tool whose children the pool runs (ADR 0022
@@ -138,7 +144,8 @@ func ToolOptions(opts ...core.ToolOption) WrapOption { return toolOptionsOption{
 // can resume them. One name therefore names one agent — wrapping a
 // different agent under a name the pool already holds fails with
 // ErrDuplicateWrap; wrapping the same agent again returns another
-// tool for it. A nil agent or an empty name is an error. MustWrap is
+// tool for it. A nil agent, an empty name, or handler middleware in
+// ToolOptions is an error. MustWrap is
 // Wrap for wiring that cannot fail.
 func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOption) (*core.ToolDef, error) {
 	if agent == nil {
@@ -151,6 +158,14 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 	for _, o := range opts {
 		if o != nil {
 			o.applyWrap(&cfg)
+		}
+	}
+	for _, o := range cfg.toolOpts {
+		if handlerMiddleware(o) {
+			// Under a session the delegation answers the call instead of
+			// the subagent's handler, so handler middleware below it would
+			// run on the bare path only: refused, never silently skipped.
+			return nil, fmt.Errorf("thread/pool: Wrap %q: ToolOptions carries core.WrapHandler middleware, which a session's delegation never reaches (it replaces the subagent's handler); use core.WrapTools instead", name)
 		}
 	}
 	p.mu.Lock()
@@ -240,10 +255,42 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 	return core.Subagent(name, description, agent, all...), nil
 }
 
+// handlerMiddleware reports whether a tool option given to ToolOptions
+// installs handler middleware (core.WrapHandler), directly or inside a
+// core.ToolOptions bundle. The option types are core's own, unexported:
+// they are compared by identity with what core.WrapHandler and
+// core.ToolOptions return, never by name.
+func handlerMiddleware(o core.ToolOption) bool {
+	if o == nil {
+		return false
+	}
+	v := reflect.ValueOf(o)
+	switch v.Type() {
+	case wrapHandlerType:
+		for i := range v.Len() {
+			if !v.Index(i).IsNil() {
+				return true
+			}
+		}
+	case toolOptionsType:
+		for i := range v.Len() {
+			if inner, ok := v.Index(i).Interface().(core.ToolOption); ok && handlerMiddleware(inner) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var (
+	wrapHandlerType = reflect.TypeOf(core.WrapHandler())
+	toolOptionsType = reflect.TypeOf(core.ToolOptions())
+)
+
 // MustWrap is Wrap for package-level and constructor wiring, where
 // the arguments are the program's own: it panics on the errors Wrap
 // returns — a nil agent, an empty name, a name already wrapping a
-// different agent.
+// different agent, handler middleware in ToolOptions.
 func (p *Pool) MustWrap(name, description string, agent *core.Agent, opts ...WrapOption) *core.ToolDef {
 	t, err := p.Wrap(name, description, agent, opts...)
 	if err != nil {
@@ -310,6 +357,18 @@ func (p *Pool) bare(ctx context.Context, call core.ToolCallPart, next core.ToolC
 		return "", err
 	}
 	sl := &slot{f: p.sem, ctx: ctx, held: true}
+	// A panic out of next (the subagent's handler chain) must still give
+	// the slot back and take the outer run's again: the loop contains it
+	// as the call's failure, and a slot lost to it would be lost for the
+	// pool's life. finish is idempotent; regain runs once, on either way
+	// out.
+	regained := false
+	defer func() {
+		sl.finish()
+		if !regained {
+			_ = above.slot.regain()
+		}
+	}()
 	res, err := next(withRun(ctx, runInfo{depth: above.depth, chain: above.chain, slot: sl}), call)
 	sl.finish()
 	if err != nil && p.closedThis(ctx, caller) {
@@ -319,6 +378,7 @@ func (p *Pool) bare(ctx context.Context, call core.ToolCallPart, next core.ToolC
 		err = &core.ToolError{Code: CodeSubagentCanceled,
 			Message: fmt.Sprintf(canceledMessage, call.Name), Err: err}
 	}
+	regained = true
 	if rerr := above.slot.regain(); rerr != nil && err == nil {
 		return "", rerr
 	}
