@@ -62,7 +62,10 @@ import (
 //   - the child never started its run (queued when the process died):
 //     the receipt settles failed, saying so, its own delegations ended
 //     first.
-//   - the child session is gone: the receipt settles failed.
+//   - the child session is gone: the receipt settles failed — saying
+//     its run never started and nothing ran when the receipt reads
+//     accepted (the acceptance is written before the child is created,
+//     and a crash between the two leaves a receipt with no child).
 //
 // A child settled as over that is itself a parent ends its own
 // unsettled delegations first, depth first, as Cancel and Close end
@@ -82,10 +85,23 @@ import (
 // resolution a crash lost. Last, the pump runs (Decide with no
 // decisions): children whose requests were already decided resume.
 //
+// A cut-off child's recovery runs on a pool goroutine: Recover returns
+// once it is started, not once it has parked or answered. Its receipt
+// then reads unsettled (running, or parked once the recovery parks)
+// and Wait on it blocks until the delegation is at rest — parked at a
+// request for a person, or settled.
+//
 // Call it once per parent session a new process takes over, after the
-// agents are wrapped or registered. A child whose agent the pool does
-// not hold is reported with ErrNoAgent and left for a later call; the
-// rest are recovered. The error is every failure joined. Recover on a
+// agents are wrapped or registered. The same holds in a process whose
+// pool outlived a parent session closed under thread.ErrShutdown: the
+// child turns that close cut off are let go by the pool (their
+// receipts unsettled, no delegate claiming them), and a Recover of the
+// reopened parent recovers them — a handler the cut-off left running
+// is waited for by the child's own recovery. Until then Wait returns
+// such a receipt as it stands, and Cancel recovers it first.
+//
+// A child whose agent the pool does not hold is reported with
+// ErrNoAgent and left for a later call; the rest are recovered. The error is every failure joined. Recover on a
 // session with nothing to recover does nothing; it is safe to call on
 // a live session too — receipts whose children this pool is working
 // are left alone.
@@ -106,6 +122,7 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 	for _, rc := range Receipts(parent) {
 		p.mu.Lock()
 		_, live := p.delegates[rc.ID]
+		live = live || p.creating[rc.Child] > 0
 		p.mu.Unlock()
 		if live {
 			continue
@@ -140,10 +157,22 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 // recoverOne recovers one unsettled receipt no delegate of this pool
 // answers for.
 func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receipt) error {
+	p.mu.Lock()
+	creating := p.creating[rc.Child] > 0
+	p.mu.Unlock()
+	if creating {
+		return nil // a live delegation whose child is being made: not left behind
+	}
 	h, entries, _, err := parent.Storage().Load(ctx, rc.Child)
 	if errors.Is(err, thread.ErrNotFound) {
-		return p.settleFromLedger(ctx, parent, rc, "", Failed,
-			fmt.Sprintf("child session %s is gone", rc.Child), core.Usage{})
+		stop := fmt.Sprintf("child session %s is gone", rc.Child)
+		if rc.State == Accepted {
+			// Its run never started (the running receipt precedes it):
+			// accepted, and the process stopped before the child was
+			// created — or it was deleted before it ran. Nothing ran.
+			stop = fmt.Sprintf(neverCreatedStop, rc.Child)
+		}
+		return p.settleFromLedger(ctx, parent, rc, "", Failed, stop, core.Usage{})
 	}
 	if err != nil {
 		return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, err)
@@ -187,8 +216,22 @@ func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receip
 		if err := p.endSubtree(ctx, parent, rc.Child); err != nil {
 			return err
 		}
+		// The settlements just recorded in the child bill its subtree.
+		usage = reread(ctx, parent.Storage(), rc.Child, usage)
 	}
 	return p.settleFromLedger(ctx, parent, rc, name, state, stop, usage)
+}
+
+// reread is a child's usage as classify reads it after its ledger
+// changed under Recover (its own delegations ended), or was when the
+// child cannot be read again.
+func reread(ctx context.Context, st thread.Storage, childID string, was core.Usage) core.Usage {
+	_, entries, _, err := st.Load(ctx, childID)
+	if err != nil {
+		return was
+	}
+	_, _, usage, _ := classify(entries)
+	return usage
 }
 
 // hasLoose reports whether a session's entries hold a delegation that
@@ -286,7 +329,11 @@ func (p *Pool) endDelegations(ctx context.Context, s *thread.Session) error {
 func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error {
 	_, entries, _, err := s.Storage().Load(ctx, rc.Child)
 	if errors.Is(err, thread.ErrNotFound) {
-		return p.recordEnded(ctx, s, rc, Failed, fmt.Sprintf("child session %s is gone", rc.Child), core.Usage{})
+		stop := fmt.Sprintf("child session %s is gone", rc.Child)
+		if rc.State == Accepted {
+			stop = fmt.Sprintf(neverCreatedStop, rc.Child)
+		}
+		return p.recordEnded(ctx, s, rc, Failed, stop, core.Usage{})
 	}
 	if err != nil {
 		return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, err)
@@ -301,6 +348,7 @@ func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error 
 			if err := p.endSubtree(ctx, s, rc.Child); err != nil {
 				return err
 			}
+			usage = reread(ctx, s.Storage(), rc.Child, usage)
 		}
 		return p.recordEnded(ctx, s, rc, Canceled, cutOffCanceledStop, usage)
 	}
@@ -321,13 +369,23 @@ func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error 
 			return fmt.Errorf("thread/pool: child session %s: %w", rc.Child, err)
 		}
 		state, stop = Canceled, orphanCanceledStop
+		u := child.Usage()
+		usage = u.Turns.Add(u.Summaries).Add(u.Delegated)
 	case hasLoose(entries):
 		if err := p.endSubtree(ctx, s, rc.Child); err != nil {
 			return err
 		}
+		usage = reread(ctx, s.Storage(), rc.Child, usage)
 	}
 	return p.recordEnded(ctx, s, rc, state, stop, usage)
 }
+
+// neverCreatedStop is the stop of a receipt Recover settles whose child
+// session does not exist and whose run never started: the acceptance is
+// written before the child is created, and a crash between the two
+// leaves it so. Model-visible inside SUBAGENT_FAILED when the
+// delegating call is still parked (ADR 0022, amendment 2026-11-05).
+const neverCreatedStop = "child session %s does not exist and its run never started: nothing ran"
 
 // cutOffCanceledStop is the stop of a cut-off child Recover ends
 // because the run that delegated to it was cut off too: it is not known
@@ -378,7 +436,9 @@ func syncDelegation(s *thread.Session, rc Receipt) bool {
 // pending), or over — done with its final text, canceled, capped or
 // failed with the recorded cause, or failed because no turn was ever
 // recorded (the process died with the run in flight or still queued).
-// usage is the session's whole cost, turns and summaries.
+// usage is the session's whole cost, turns and summaries, and what its
+// settled delegations cost (its own Delegated, as Session.Usage sums
+// it): a settlement bills the child's subtree.
 func classify(entries []thread.Entry) (state State, stop string, usage core.Usage, parked bool) {
 	var last *thread.TurnEntry
 	closed := false
@@ -390,6 +450,10 @@ func classify(entries []thread.Entry) (state State, stop string, usage core.Usag
 			usage = usage.Add(e.Usage)
 		case thread.CompactionEntry:
 			usage = usage.Add(e.SummarizerUsage)
+		case thread.PoolReceiptEntry:
+			if e.Receipt != "" && State(e.Status).Settled() {
+				usage = usage.Add(e.Usage)
+			}
 		case thread.ApprovalAuditEntry:
 			// RecoverTurn found the cut-off run had answered and only
 			// its end was lost: it wrote the end, the answer stands.

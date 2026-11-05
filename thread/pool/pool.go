@@ -45,9 +45,13 @@
 // not reach it: its usage is on neither the parent's RunResult.Usage
 // nor StepRecord.SubagentUsage. It is on the receipt, and
 // thread.Session.Usage sums the settled receipts into its Delegated
-// bucket. That is the pool's one exception to the core's roll-up
-// (AGENTS.md rule 13), and a budget that must cover delegated work
-// reads Delegated.
+// bucket. A settlement's usage is the child's whole subtree: its turns,
+// its summaries, and its own Delegated — so the top session's
+// Delegated covers grandchildren too, each counted once. An async
+// grandchild that settles after its parent's own settlement is billed
+// in that parent's Delegated only. That is the pool's one exception to
+// the core's roll-up (AGENTS.md rule 13), and a budget that must cover
+// delegated work reads Delegated.
 //
 // # Lineage
 //
@@ -70,10 +74,14 @@ package pool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/weftbase/weft/core"
@@ -176,9 +184,26 @@ const DefaultMaxDepth = 8
 // quota; a delegation chain's depth is bounded separately (MaxDepth).
 //
 // A Pool is safe for concurrent use. The zero value is not usable;
-// New constructs. One Pool should own a storage's delegations at a
-// time: Recover treats an unsettled receipt no child of this pool
-// runs for as left behind by a process that is gone. The exception is
+// New constructs.
+//
+// A pool writes only through sessions it holds: the parent's receipts
+// and mirrors through the parent Session the application hands it —
+// under that Session's writer lease (thread's rule T1) — and a child's
+// entries through the child Session the pool created or reopened,
+// whose lease it takes with its first write. Two processes over one
+// storage therefore never both write one session: the second's first
+// write fails with thread.ErrLocked and changes nothing (on a storage
+// with a cross-process lease — thread/jsonl, thread/sqlite;
+// thread.Memory is one process's). The lease does not decide which
+// process recovers, and nothing in the pool coordinates processes: a
+// Recover treats an unsettled receipt no child of its own pool runs
+// for as left behind by a process that is gone. Where another live
+// process still runs that child, the reattached run's first write
+// fails with ErrLocked and the receipt is left unsettled — never
+// settled on a guess; where another process holds the parent, Recover's
+// writes on it fail with ErrLocked. So one Pool should own a parent
+// session's delegations at a time — the pool of the process that holds
+// the parent session. The exception is
 // several pools of one process delegating from one parent session:
 // each pool watches the parent, so a decision recorded there pumps
 // them all, and a pool skips — no error, no log, in its pumps (Decide,
@@ -222,6 +247,11 @@ type Pool struct {
 	// session (the bare path), so Close reaches them too.
 	calls    map[uint64]context.CancelFunc
 	nextCall uint64
+	// creating counts, by child session id, the delegations whose
+	// acceptance names a child not yet created and registered: live to
+	// Recover and Cancel, which would otherwise read the receipt as left
+	// behind by a process that is gone.
+	creating map[string]int
 	// waiting holds the abandoned child handlers pumpWhenReturned
 	// already waits on, by their done channel: one waiter per handler,
 	// however many refused pumps ask.
@@ -328,6 +358,7 @@ func New(max int, opts ...Option) *Pool {
 		nameAgents:    map[string]*core.Agent{},
 		calls:         map[uint64]context.CancelFunc{},
 		waiting:       map[<-chan struct{}]bool{},
+		creating:      map[string]int{},
 		nestedEnd:     nestedEndWait,
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -401,11 +432,13 @@ type Receipt struct {
 func (r Receipt) Settled() bool { return r.State.Settled() }
 
 // Submit hands a task to a child session of parent and returns at
-// once (ADR 0022 §2): the child session is created in the parent's
-// storage with a lineage naming the parent and the parent's approval
-// policy (thread.InheritApprovals), the acceptance receipt is durable
-// in the parent session and the delegation has its place in the
-// pool's queue before Submit returns, and the child runs on a
+// once (ADR 0022 §2): the acceptance receipt naming the child is
+// durable in the parent session first, then the child session is
+// created in the parent's storage with a lineage naming the parent and
+// the parent's approval policy (thread.InheritApprovals) — so no child
+// exists that no receipt names, whatever the crash — and the
+// delegation has its place in the pool's queue before Submit returns,
+// and the child runs on a
 // pool-owned context — independent of the submitting caller's
 // cancellation by design (D4), canceled explicitly by Cancel or
 // Close.
@@ -940,25 +973,58 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 		// re-Wraps into existence (ADR 0022 §7).
 		opts = append(opts, thread.WithMeta(map[string]string{metaAgent: name}))
 	}
-	if p.ids != nil {
-		opts = append(opts, thread.IDs(p.ids))
-	}
 	st := parent.Storage()
-	child, err := thread.Create(ctx, st, agent, opts...)
+	// The acceptance names the child before the child exists (R15: no
+	// session with the parent's lineage that no receipt names, whatever
+	// the crash): the id is chosen first — derived from the delegating
+	// call's durable identity (childID) — the receipt written, and only
+	// then the session created. A crash between the two leaves a receipt
+	// whose child does not exist and never ran; Recover settles it
+	// (neverCreatedStop). While the child is being made the pool counts
+	// it live, so a Recover beside it does not settle it so.
+	childID, err := p.childID(ctx, parent, callID)
 	if err != nil {
 		return nil, outcome{}, fmt.Errorf("thread/pool: child session: %w", err)
 	}
+	opts = append(opts, thread.IDs(firstID(childID, p.ids)))
+	p.mu.Lock()
+	p.creating[childID]++
+	p.mu.Unlock()
+	made := false // the count is dropped under the lock that registers the delegate
+	uncount := func() {
+		if p.creating[childID]--; p.creating[childID] <= 0 {
+			delete(p.creating, childID)
+		}
+	}
+	created := func() {
+		p.mu.Lock()
+		if !made {
+			made = true
+			uncount()
+		}
+		p.mu.Unlock()
+	}
+	defer created() // every way out, a panic in the storage included
 	accept, err := parent.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
-		Status: thread.PoolAccepted, Child: child.ID(), Call: callID, Prompt: prompt,
+		Status: thread.PoolAccepted, Child: childID, Call: callID, Prompt: prompt,
 	})
 	if err != nil {
 		// The acceptance is the contract (durable before the caller
-		// holds the receipt); without it the child is an empty session
-		// nothing points at — remove it best-effort and refuse.
-		clean := context.WithoutCancel(ctx)
-		_ = child.Close(clean)
-		_ = thread.Delete(clean, st, child.ID())
+		// holds the receipt): without it nothing is created.
 		return nil, outcome{}, fmt.Errorf("thread/pool: acceptance receipt: %w", err)
+	}
+	child, err := thread.Create(ctx, st, agent, opts...)
+	if err != nil {
+		// Accepted, never created: the receipt settles failed at once —
+		// nothing ran. Unrecorded, Recover settles it the same way.
+		stop := fmt.Sprintf("the child session %s was not created: %v", childID, err)
+		if _, serr := parent.AppendPoolReceipt(context.WithoutCancel(ctx), thread.PoolReceiptEntry{
+			Receipt: accept.ID, Status: thread.PoolFailed, Child: childID, Stop: stop,
+		}); serr != nil {
+			agent.Logger().Error("thread/pool: settlement receipt not recorded; Recover settles it",
+				"receipt", accept.ID, "child", childID, "err", serr)
+		}
+		return nil, outcome{}, fmt.Errorf("thread/pool: child session: %w", err)
 	}
 
 	// The child's run context: pool-owned for an async child (it
@@ -997,6 +1063,8 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 		d.wrapper = callID
 	}
 	p.mu.Lock()
+	made = true // registered below, or concluded: live either way
+	uncount()
 	if p.closed { // Close ran between the check and the registration
 		p.mu.Unlock()
 		cancel()
@@ -1025,6 +1093,75 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 	}
 	defer p.wg.Done()
 	return rec, p.run(runCtx, d, r, first), nil
+}
+
+// childID chooses the session id of a new child of parent (R3: ids
+// derive from durable identity). A wrapped call's child takes an id
+// derived from the parent session and the delegating call's
+// idempotency key — the session id, the assistant message entry that
+// holds the call, and the call id (thread.IdempotencyKey) — so a
+// recovery retry of the call, which runs from the same recorded
+// message, chooses the same id; the n-th delegation of one call
+// takes the next derived id the parent's ledger does not name already
+// and the storage does not hold. A Submit, a call with no key, and a
+// pool given IDs (the tests' determinism knob, which mints every
+// child's id) take a minted id.
+func (p *Pool) childID(ctx context.Context, parent *thread.Session, callID string) (string, error) {
+	if p.ids != nil {
+		return p.ids(), nil
+	}
+	key := ""
+	if c, ok := core.CallFromContext(ctx); ok && callID != "" && c.CallID == callID {
+		key = c.IdempotencyKey
+	}
+	if key == "" {
+		return thread.NewSessionID(), nil
+	}
+	named := map[string]bool{}
+	for _, r := range Receipts(parent) {
+		named[r.Child] = true
+	}
+	for n := 0; n < maxDerivedIDs; n++ {
+		id := derivedChildID(parent.ID(), key, n)
+		if named[id] {
+			continue
+		}
+		_, _, _, err := parent.Storage().Load(ctx, id)
+		switch {
+		case errors.Is(err, thread.ErrNotFound):
+			return id, nil
+		case err != nil:
+			return "", err
+		}
+	}
+	return thread.NewSessionID(), nil
+}
+
+// maxDerivedIDs bounds childID's walk over one call's derived ids.
+const maxDerivedIDs = 64
+
+// derivedChildID is the n-th derived child id of a call: "s_" and 32
+// hex digits of the SHA-256 of the parent id, the call's key and n.
+func derivedChildID(parentID, key string, n int) string {
+	h := sha256.Sum256([]byte(parentID + "\x00" + key + "\x00" + strconv.Itoa(n)))
+	return "s_" + hex.EncodeToString(h[:16])
+}
+
+// firstID is the thread.IDs function a child is created with: id for
+// the session itself (the first id Create mints), then next's ids —
+// the pool's IDs — or the thread module's own for its entries. Safe
+// for concurrent use.
+func firstID(id string, next func() string) func() string {
+	var used atomic.Bool
+	return func() string {
+		if used.CompareAndSwap(false, true) {
+			return id
+		}
+		if next != nil {
+			return next()
+		}
+		return thread.NewEntryID()
+	}
 }
 
 // run drives one run of a delegation's child — its first turn, or a
@@ -1232,6 +1369,7 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 			// (thread.AbandonedHandler): the recovered call waits for it.
 			p.closeChild(context.WithoutCancel(ctx), d)
 		}
+		p.letGo(d, r.idle)
 		return outcome{err: err}
 	}
 	canceled := p.wasCanceled(d)
@@ -1241,6 +1379,46 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 	}
 	p.concludeRun(ctx, ledger, d, stateOf(err), stopOf(err), text, true)
 	return outcome{err: err, canceled: canceled}
+}
+
+// letGo drops a delegation the pool can no longer answer for — its
+// child's run cut off (a shutdown reached it through its parent's
+// close, its own session closed under thread.ErrShutdown) or its child
+// held by another writer — while the pool stays open: its receipt is
+// left unsettled, as the ledger says, and no delegate of this pool
+// claims it any more, so the next Recover of the parent (a reopened
+// parent session included) reads it as left behind and recovers the
+// child on its own ladder (recoverCutOff; a handler the cut-off left
+// running is waited for there), and a Cancel recovers and then cancels
+// it. Kept registered, the delegate would claim the receipt for the
+// pool's life: Recover would skip it as live, Cancel would stop a run
+// that is over, Wait would read a running receipt nothing settles, and
+// Delegated would never bill it. A closed pool keeps it: Close's drain
+// owns its children, and nothing recovers through a closed pool.
+func (p *Pool) letGo(d *delegate, idle chan struct{}) {
+	p.mu.Lock()
+	if p.closed || d.idle != idle || d.settled { // a later run took it over, or it settled after all
+		p.mu.Unlock()
+		return
+	}
+	if p.delegates[d.receipt] == d {
+		delete(p.delegates, d.receipt)
+	}
+	if p.byChild[d.child.ID()] == d {
+		delete(p.byChild, d.child.ID())
+	}
+	for _, f := range d.forwards {
+		f()
+	}
+	d.forwards = nil
+	if n := p.upstreamNestLocked(d); n != nil {
+		n.signal() // a parent waiting on its delegations re-reads them
+	}
+	if d.concluded != nil {
+		close(d.concluded)
+		d.concluded = nil
+	}
+	p.mu.Unlock()
 }
 
 // refusedReplay reports whether a child's run ended because the child
@@ -1500,7 +1678,8 @@ func (p *Pool) resolveParked(ctx context.Context, d *delegate, text string, isEr
 // It is idempotent per receipt: a second settle — a panic after the
 // first, a Cancel racing the run's own end — records nothing, so the
 // parent's Delegated bucket counts the child once. The usage is the
-// child session's whole ledger, every run the delegation made. A
+// child session's whole ledger, every run the delegation made, and its
+// own Delegated — what its settled delegations cost, at any depth. A
 // settlement the parent cannot record is logged, loudly — the receipt
 // then reads unsettled, and Recover settles it from the child.
 func (p *Pool) settle(ctx context.Context, d *delegate, state State, stop string) bool {
@@ -1531,10 +1710,14 @@ func (p *Pool) settle(ctx context.Context, d *delegate, state State, stop string
 		}
 	}()
 
+	// The child's own Delegated rides along: a budget reading the
+	// parent's Delegated covers the whole subtree, each level counted
+	// once — a session's Turns never hold its pool children's usage, and
+	// its Delegated holds only its own receipts'.
 	u := d.child.Usage()
 	_, err := d.parent.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
 		Receipt: d.receipt, Status: string(state), Child: d.child.ID(), Stop: stop,
-		Usage: u.Turns.Add(u.Summaries),
+		Usage: u.Turns.Add(u.Summaries).Add(u.Delegated),
 	})
 	if err != nil {
 		d.agent.Logger().Error("thread/pool: settlement receipt not recorded",
