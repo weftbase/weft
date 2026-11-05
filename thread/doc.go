@@ -63,7 +63,10 @@
 // backend runs. Three ship: Memory, in process; package jsonl, one
 // JSON-lines file per session, readable with jq and backed up with cp;
 // and package sqlite, in its own module so its driver stays out of
-// this one. A backend's Append is atomic against the writer's death,
+// this one. A backend's Append never leaves a gap or a half-entry
+// after the writer's death — sqlite and Memory land a batch whole or
+// not at all, jsonl can keep a prefix of its complete lines, and the
+// session orders its batches so a prefix reads as the fact not done —
 // and what Load returns never aliases what is stored. Optional
 // capabilities are small interfaces found by type assertion: Flusher
 // (the FsyncOnFlush durability cadence), Releaser (the backend's hold

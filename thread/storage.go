@@ -43,11 +43,19 @@ type Storage interface {
 
 	// Append adds entries to a session in arrival order, after the
 	// entries it already holds. A batch is validated whole — every
-	// entry must encode — before anything is written, and is atomic
-	// against the writer's death: after a crash, a later Load returns
-	// all of the batch or none of it, never a prefix that decodes as
-	// fewer entries. What it is not is isolated from a reader in
-	// another process on a file backend: such a reader can catch the
+	// entry must encode — before anything is written. What survives the
+	// writer's death mid-batch is the backend's: a transactional
+	// backend (sqlite, the in-process Memory) returns all of the batch
+	// or none of it; a line-file backend (jsonl) can keep a prefix of
+	// the batch's complete lines — a kill inside a large write, or a
+	// power cut before the data reached the disk — and drops only a
+	// torn final line. Never a reordering, a gap or a half-entry: a
+	// later Load returns a prefix of what was appended, in order. The
+	// session writes its multi-entry batches so a prefix is safe — the
+	// entry that closes a batch's fact (a turn's end, a recovery's
+	// audit) goes last, and a prefix without it reads as the fact not
+	// done (ADR 0032). A file backend is not isolated from a reader in
+	// another process either: such a reader can catch the
 	// write in flight and see a torn final line, which Load drops and
 	// reports (LoadReport.Torn) and Watch waits out. A writer that
 	// finds a torn tail left by a crashed predecessor removes it before

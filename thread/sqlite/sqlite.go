@@ -28,10 +28,13 @@
 // the backend already needs. "Died" is judged on the holder's own host
 // by more than its pid, because pids are reused: the row carries the
 // holder's process token and start time, so a restarted process that
-// wears its predecessor's pid (a container's PID 1) takes its own
+// wears its predecessor's pid in the same PID namespace takes its own
 // sessions back, and an unrelated process wearing a dead holder's pid
-// does not keep them locked. A holder on another host is never judged
-// from here: its row stands until it releases or an operator removes
+// does not keep them locked. The host is the hostname and, on Linux,
+// the PID namespace (hostIdentity): a pid means nothing across
+// namespaces, so a container's restart, which gets a new one, does not
+// judge its predecessor dead either. A holder on another host is never
+// judged from here: its row stands until it releases or an operator removes
 // it (BreakLock). Readers never lock — Load and List always work. Between Sessions sharing one Storage the same rule is the
 // lease (the thread.Leaser capability): the instance remembers which
 // writer has the row it took.
@@ -228,11 +231,29 @@ func instanceID() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sqlite: instance id: %w", err)
 	}
+	return hostIdentity() + "/" + tok, nil
+}
+
+// hostIdentity is the lock's "host": the scope inside which a pid names
+// one process, so inside which a dead holder can be told from a live
+// one. It is the hostname and, on Linux, the PID namespace
+// ("myhost#pid:[4026531836]"): two containers that share a hostname
+// but not a PID namespace are two hosts to the lock, and neither ever
+// judges the other's live holder dead (review R3). A row written
+// before the namespace was part of it (a plain hostname) names an
+// unknown namespace and reads as another host's too — never assumed
+// dead: a session whose writer died under such a version needs
+// BreakLock once. Off Linux, or where /proc does not say, it is the
+// hostname alone.
+func hostIdentity() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown-host"
 	}
-	return host + "/" + tok, nil
+	if ns := pidNamespace(); ns != "" {
+		host += "#" + ns
+	}
+	return host
 }
 
 // randomToken returns 128 random bits as hex.
@@ -1119,6 +1140,10 @@ func (b *backend) acquire(ctx context.Context, tx *sql.Tx, id string) (wrote, er
 	case owner == b.owner:
 		return wrote{acquired: true}, nil // ours — state this instance lost and recovered
 	case host != b.host():
+		// Another host — or another PID namespace on this one, or a row
+		// from before the namespace was recorded (hostIdentity): its
+		// pids are not ours to check, so its holder is never judged
+		// dead here. BreakLock is the way out.
 		return locked()
 	case proc != "" && proc == b.proc:
 		return locked()
@@ -1141,9 +1166,11 @@ func (b *backend) acquire(ctx context.Context, tx *sql.Tx, id string) (wrote, er
 
 // BreakLock removes the writer lock on a session, whoever holds it. It
 // is an operator's action, for the one case the lock cannot decide on
-// its own: a row left by a holder on another host. The lock never
-// judges such a holder dead (acquire's rule), so when that host is
-// gone for good — a container replaced under a new hostname, a
+// its own: a row left by a holder on another host — another hostname,
+// or another PID namespace on this one (a container's restart gets a
+// new one), or a row from before the namespace was recorded. The lock
+// never judges such a holder dead (acquire's rule), so when that host
+// is gone for good — a container replaced or restarted, a
 // database restored from a backup that carried its lock rows — every
 // write to the session fails with thread.ErrLocked until the row is
 // removed. The caller vouches that the holder is gone: nothing here

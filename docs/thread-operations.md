@@ -51,8 +51,20 @@ live, never in what they say.
   record must be durable before its handler starts (ADR 0032).
   (Before, `FsyncOnFlush` was `synchronous=NORMAL` and `Flush` a
   passive checkpoint.)
-- An `Append` batch is atomic against the writer's death: after a
-  crash a load returns all of it or none of it.
+- What survives a writer's death mid-batch: on **sqlite** an `Append`
+  batch is one transaction — a load returns all of it or none of it.
+  On **jsonl** a batch is several lines, and a kill inside a large
+  write, or a power cut before the lines reached the disk, can keep a
+  prefix of its complete lines (the torn last line is dropped and
+  reported, §6) — never a gap, a reordering or a half-entry. The
+  session orders every multi-entry batch so that a prefix is safe: the
+  entry that closes the fact goes last — a turn's entry after the
+  approval and recovery requests its end writes, `RecoverTurn`'s
+  `recover` audit after everything it decided — and a prefix without
+  it reads as the turn cut off, which `RecoverTurn` decides again
+  (ADR 0032). (Before, this page promised all-or-none on jsonl too,
+  and a torn turn end could keep the turn entry without its recovery
+  request.)
 
 ## 3. Backups
 
@@ -69,10 +81,11 @@ SQLite's own online backup (`sqlite3 sessions.db ".backup out.db"`, or
 `VACUUM INTO 'out.db'`), or stop every writer and copy the main file
 together with `-wal` and `-shm`. One more thing travels with a sqlite
 backup: the `session_locks` rows of whichever writers held sessions
-when it was taken. Restored on the same host they belong to a dead
-process and are taken over on first write (one `Warn` line each).
-Restored on a host with a different hostname they are never taken
-over (§4) — clear the table after such a restore.
+when it was taken. Restored on the same host (the same hostname and,
+on Linux, PID namespace) they belong to a dead process and are taken
+over on first write (one `Warn` line each). Restored on another host
+they are never taken over (§4) — clear the table after such a
+restore.
 
 Neither backend has export, import or encryption at rest; encrypt the
 volume.
@@ -102,7 +115,13 @@ naming the session. Readers never lock: `Load`, `List`, `Watch`,
   closed; size your fd limit for the sessions you hold open at once.
 - sqlite: the lock row names its holder by `Storage` instance, host,
   a random per-process token, pid and process start time, and a later
-  writer decides from those whether the holder is dead:
+  writer decides from those whether the holder is dead. "Host" is the
+  scope inside which a pid names one process: the hostname and, on
+  Linux, the PID namespace (`myhost#pid:[4026531836]`, from
+  `/proc/self/ns/pid`; the hostname alone elsewhere, or where `/proc`
+  does not say). Two containers that share a hostname but not a PID
+  namespace cannot see each other's pids, so to the lock they are two
+  hosts:
   - the same process (another `Storage` value in it): alive,
     `ErrLocked`;
   - this process's own pid under another process token — a restarted
@@ -110,8 +129,13 @@ naming the session. Readers never lock: `Load`, `List`, `Watch`,
   - a pid that is not running, or one that is running but started at a
     different time than the row records (the pid was reused): dead,
     taken over;
-  - a holder with a **different hostname**: never judged dead from
-    here, `ErrLocked`. The start time is read from `/proc` on Linux
+  - a holder on a **different host** — another hostname, another PID
+    namespace on this one, or a row written before the namespace was
+    recorded (a plain hostname: its namespace is unknown): never
+    judged dead from here, `ErrLocked`. (Before, a writer in another
+    PID namespace that shared the hostname read a live holder as dead
+    — its pid was not visible, or was its own — and took the session
+    over.) The start time is read from `/proc` on Linux
     and from the kernel on macOS and Windows; on other unixes it is
     unknown, and an unrelated live process wearing a dead holder's pid
     keeps the session locked until it exits.
@@ -148,12 +172,23 @@ Consequences for a deployment:
   or removing the `ToolSource` (an MCP server) that served it makes
   its cut-off call read "cut off before it started" (ADR 0032). Change
   replay classes once the sessions using the tool are settled.
-- **Containers.** A restarted container that keeps its hostname
-  reclaims its sqlite sessions on its own (same pid, new process
-  token). A *replacement* container with a new hostname — the default
-  for a new pod or `docker run` — does not: the old rows read as
-  another host's. Give session writers a stable hostname, or close
-  sessions on shutdown (§5) so no rows are left. Once the old host is
+- **Containers.** A container's PID namespace is part of the lock's
+  host, and a restarted container gets a new one: a sqlite lock row
+  left by a container that died without closing its sessions reads as
+  another host's to its restart, as to a *replacement* container with
+  a new hostname (the default for a new pod or `docker run`), and the
+  session stays `ErrLocked`. Lock rows are left only by a writer that
+  died holding them: close sessions on shutdown (§5) so none are left.
+  A writer that shares the host's PID namespace (`--pid=host`) with a
+  stable hostname reclaims a dead holder's rows on its own, as on a
+  plain host. (Before, a restarted container that kept its hostname
+  reclaimed its rows — same pid, new process token — and so did a
+  second, live container in another PID namespace: the lock could not
+  tell them apart, and the live writer's lock was taken over. A lock
+  that cannot tell them apart now refuses both.) Rows written before
+  this version name a plain hostname and read as another host's too:
+  after the upgrade, a session whose writer died under the old version
+  needs `BreakLock` once. Once the old host is
   known to be gone, `sqlite.BreakLock(ctx, st, session)` removes a
   session's lock row; the same applies to a database restored from a
   backup that carried its lock rows. You vouch that the holder is
@@ -216,7 +251,8 @@ The same drain, but a turn still running at the deadline is recorded
 **cut off** — `TurnEntry.CutOff`, not `Canceled`; `Turn.Wait`'s error
 wraps `ErrShutdown` — and a call that is not `ReplaySafe` whose handler
 the cancellation felled (or that never got a result) stays unanswered,
-without synthetic text. The next process finds the turn
+without synthetic text — the results of its siblings that answered, a
+handler's own failure among them, are kept. The next process finds the turn
 (`s.Ready()`: `ReadyRecover`) and handles it with `s.RecoverTurn(ctx)`
 (§6). A turn whose own context is canceled with
 `cancel(thread.ErrShutdown)` gets the same record.
@@ -414,7 +450,12 @@ partial transcript is in `.Result`), or an error wrapping `ErrNotRun`
 (no model was called), `ErrDropped` (`ClearQueue` removed it),
 `ErrClosed`, `ErrTurnPanicked`, or `ErrNotPersisted` — the run ended
 but its end could not be written; treat that as a storage incident,
-the turn's usage is in no ledger. A turn entry with `late_steps > 0`
+the turn's usage is in no ledger. When the turn had dispatched a call
+whose outcome is unknown, the error also wraps `ErrRecoveryRequired`
+(as it does beside `ErrTurnPanicked`): the session reads the turn cut
+off in this process, as the next one would — `Send` refuses, the sends
+already queued behind it wait (they do not run over the call), and
+`s.RecoverTurn(ctx)` decides the call, then the held sends run. A turn entry with `late_steps > 0`
 means step writes failed and landed late: nothing was lost, and the
 storage was unhealthy for that long.
 

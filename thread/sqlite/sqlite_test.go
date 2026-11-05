@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -453,8 +454,23 @@ func TestMigration0003OnExistingData(t *testing.T) {
 	if err != nil || len(next.Sessions) != 1 || next.Sessions[0].ID != "s_a" {
 		t.Fatalf("second keyset page through the tie: %+v, err %v", next, err)
 	}
-	// The old lock row's dead holder is taken over.
-	if err := st.Append(ctx, "s_b", thread.MessageEntry{ID: "e_1", Created: time.Now().UTC(), Message: core.User("x")}); err != nil {
+	// The old lock row names its host by hostname alone: on Linux the
+	// lock's host identity carries the PID namespace too, and a row
+	// without it names an unknown namespace, whose holder is never
+	// judged dead (review R3) — BreakLock once, then the session is
+	// written. Elsewhere the dead holder is taken over as before.
+	m := thread.MessageEntry{ID: "e_1", Created: time.Now().UTC(), Message: core.User("x")}
+	err = st.Append(ctx, "s_b", m)
+	if runtime.GOOS == "linux" {
+		if !errors.Is(err, thread.ErrLocked) {
+			t.Fatalf("Append over a pre-namespace lock row = %v, want ErrLocked", err)
+		}
+		if err := sqlite.BreakLock(ctx, st, "s_b"); err != nil {
+			t.Fatal(err)
+		}
+		err = st.Append(ctx, "s_b", m)
+	}
+	if err != nil {
 		t.Errorf("Append over a pre-migration lock row whose holder is dead: %v", err)
 	}
 }

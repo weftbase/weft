@@ -136,13 +136,18 @@ type reconciled struct {
 // reconcileLocked asks each call's tool Reconcile, for the calls of
 // unknown outcome that are ReplayNever and have one — the keyed ones
 // retry first, the safe ones need nothing — and returns its answers by
-// call id. It runs with s.mu released (fn is the tool's code, bounded
-// by reconcileTimeout) and only while the writer still holds the
-// session's lock (Fencer): a writer that lost it asks nothing, and the
-// calls go to a person. A crash during it writes nothing, so the next
-// recovery asks again; the tool never runs on its account. Callers
-// hold s.mu; it is released and re-taken.
-func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.ToolCallPart) map[string]reconciled {
+// call id. It runs with s.mu released (fn is the tool's code) and only
+// while the writer still holds the session's lock (Fencer): a writer
+// that lost it asks nothing, and the calls go to a person. The calls
+// are asked in parallel under one shared reconcileTimeout, so N calls
+// hold the recovery the bound, not N times it; a Reconcile that
+// ignores its context is abandoned at the bound and reads as an error.
+// A crash during it writes nothing, so the next recovery asks again;
+// the tool never runs on its account. So does a caller who walks away:
+// when ctx ends while the calls are asked, the error is ctx's and the
+// caller writes nothing (an interrupted ask is not an answer, ADR
+// 0032). Callers hold s.mu; it is released and re-taken.
+func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.ToolCallPart) (map[string]reconciled, error) {
 	type ask struct {
 		call core.ToolCallPart
 		fn   core.ReconcileFunc
@@ -167,38 +172,64 @@ func (s *Session) reconcileLocked(ctx context.Context, run string, calls []core.
 		asks = append(asks, ask{call: c, fn: def.Reconciler(), key: s.callKeyLocked(entry, c.ID)})
 	}
 	if len(asks) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]reconciled, len(asks))
 	if f, ok := s.st.(Fencer); ok {
 		if err := f.Fence(ctx, s.header.ID); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
 			for _, a := range asks {
 				out[a.call.ID] = reconciled{err: fmt.Errorf("not asked: the session's lock is not held: %w", err)}
 			}
-			return out
+			return out, nil
 		}
 	}
 	s.mu.Unlock()
 	defer s.mu.Lock()
-	for _, a := range asks {
-		out[a.call.ID] = runReconcile(ctx, a.fn, a.key)
-	}
-	return out
-}
-
-// runReconcile calls fn under the rung's bound, a panic contained as
-// its error.
-func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r reconciled) {
 	rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
+	type answer struct {
+		id string
+		r  reconciled
+	}
+	answers := make(chan answer, len(asks)) // buffered: an abandoned ask never blocks
+	for _, a := range asks {
+		go func() { answers <- answer{a.call.ID, runReconcile(rctx, a.fn, a.key)} }()
+	}
+	for range asks {
+		select {
+		case an := <-answers:
+			out[an.id] = an.r
+		case <-rctx.Done():
+		}
+		if rctx.Err() != nil {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, a := range asks {
+		if _, ok := out[a.call.ID]; !ok {
+			out[a.call.ID] = reconciled{err: fmt.Errorf("reconcile did not answer within %s: %w", reconcileTimeout, rctx.Err())}
+		}
+	}
+	return out, nil
+}
+
+// runReconcile calls fn under ctx (the rung's shared bound), a panic
+// contained as its error.
+func runReconcile(ctx context.Context, fn core.ReconcileFunc, key string) (r reconciled) {
 	defer func() {
 		if p := recover(); p != nil {
 			r = reconciled{err: fmt.Errorf("reconcile panicked: %v", p)}
 		}
 	}()
-	found, result, err := fn(rctx, key)
-	if err == nil && rctx.Err() != nil {
-		err = rctx.Err()
+	found, result, err := fn(ctx, key)
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
 	}
 	if err != nil {
 		return reconciled{err: err}
@@ -386,14 +417,27 @@ type cutOff struct {
 // the leaf's path — a prompt entry's run id, a resume's "started"
 // audit, a recovery's continuation, an overflow attempt's re-run —
 // whose turn entry is missing or marked CutOff, and which no
-// StepRecover audit has handled. ok is false while this Session runs
-// a turn: that turn is running, not cut off. A file-level fact: a turn
-// another process is running looks the same (Open takes no lock), so
-// a caller acting on it Claims the session first. Callers hold s.mu.
+// StepRecover audit has handled. ok is false while this Session has a
+// turn in flight: that turn is running, not cut off. A runner between
+// items is not running one — the turn it ran has landed, and a turn
+// whose end could not be written (ErrNotPersisted, ErrTurnPanicked)
+// reads as cut off from then on, in this process as after a restart
+// (ADR 0032). A file-level fact: a turn another process is running
+// looks the same (Open takes no lock), so a caller acting on it Claims
+// the session first. Callers hold s.mu.
 func (s *Session) cutOffLocked() (cutOff, bool) {
-	if s.running {
+	if s.busyLocked() {
 		return cutOff{}, false
 	}
+	return s.cutOffFileLocked()
+}
+
+// cutOffFileLocked is cutOffLocked without the in-flight guard: what
+// the file says. The runner asks it about its own item before the item
+// has started anything — a resume before its "started" audit, a queued
+// send before its prompt — where the last run on the path is the one
+// before it. Callers hold s.mu.
+func (s *Session) cutOffFileLocked() (cutOff, bool) {
 	path, err := s.walkLocked(s.leaf)
 	if err != nil {
 		return cutOff{}, false
@@ -446,11 +490,15 @@ func (s *Session) cutOffLocked() (cutOff, bool) {
 	}
 	x.hasTurn = hasTurn
 
-	// The run's last message on the path, and the calls it left.
+	// The run's last message on the path, and the calls it left. A tool
+	// message after a step is skipped: a step cut off with one call
+	// answered and a sibling unanswered (a shutdown keeps the answered
+	// results, ADR 0032) leaves its partial results last, and the
+	// unanswered calls are still the step's own.
 	lastCalls := -1
 	for j := len(path) - 1; j > x.start; j-- {
 		me, ok := path[j].(MessageEntry)
-		if !ok {
+		if !ok || me.Message.Role == core.RoleTool {
 			continue
 		}
 		if me.Message.Role == core.RoleAssistant {
@@ -682,6 +730,14 @@ func (s *Session) recoveryRequiredLocked() bool {
 	return ok && len(s.unknownLocked(x)) > 0
 }
 
+// recoveryRequiredFileLocked is recoveryRequiredLocked read from the
+// file alone (cutOffFileLocked): the runner's own check on its item
+// before the item starts anything. Callers hold s.mu.
+func (s *Session) recoveryRequiredFileLocked() bool {
+	x, ok := s.cutOffFileLocked()
+	return ok && len(s.unknownLocked(x)) > 0
+}
+
 // errRecoveryRequiredLocked is ErrRecoveryRequired naming the session,
 // nil when nothing waits for recovery. Callers hold s.mu.
 func (s *Session) errRecoveryRequiredLocked() error {
@@ -707,8 +763,22 @@ func (s *Session) errRecoveryRequiredLocked() error {
 //
 // Callers hold s.mu.
 func (s *Session) resumeRefusedLocked() error {
-	if err := s.errRecoveryRequiredLocked(); err != nil {
-		return err
+	return s.resumeRefusedAsLocked(s.recoveryRequiredLocked())
+}
+
+// resumeRefusedFileLocked is resumeRefusedLocked for the runner's own
+// resume item, before it starts (runResume): the cut-off check reads
+// the file alone (recoveryRequiredFileLocked), the resume itself being
+// the item in flight. Callers hold s.mu.
+func (s *Session) resumeRefusedFileLocked() error {
+	return s.resumeRefusedAsLocked(s.recoveryRequiredFileLocked())
+}
+
+// resumeRefusedAsLocked is the choke point's body, with the cut-off
+// check's answer given. Callers hold s.mu.
+func (s *Session) resumeRefusedAsLocked(cutOffUnknown bool) error {
+	if cutOffUnknown {
+		return fmt.Errorf("%w: session %s", ErrRecoveryRequired, s.header.ID)
 	}
 	for _, r := range s.pendingLocked() {
 		if r.Recovery {
@@ -770,6 +840,12 @@ func (s *Session) resumeRefusedLocked() error {
 // model asks for in a continuation is held only by the agent's own
 // gates (RequireApproval, ParkSource, middleware).
 //
+// A turn whose end could not be written in this process (ErrNotPersisted,
+// ErrTurnPanicked) after it dispatched a call of unknown outcome is cut
+// off the same way: the runner holds the sends queued behind it, and
+// RecoverTurn — its run, the boundary it parks, or, when it starts
+// nothing, the queue's head at once — takes them on.
+//
 // RecoverTurn is an explicit start, like Resume: it starts its run
 // under OnReady too. It fails with ErrNotPending when no turn was cut
 // off, ErrBusy while a turn runs, ErrClosed on a closed session, and
@@ -797,7 +873,13 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 	// unknown calls whose tool can ask the system of record do.
 	if unknown := s.unknownLocked(x); len(unknown) > 0 {
 		run := x.run
-		rc := s.reconcileLocked(ctx, run, unknown)
+		rc, err := s.reconcileLocked(ctx, run, unknown)
+		if err != nil {
+			// The caller walked away while the system of record was
+			// asked: nothing is written, and the next RecoverTurn asks
+			// again (ADR 0032).
+			return nil, err
+		}
 		// The lock was released: the session must still be as found.
 		if s.running {
 			return nil, fmt.Errorf("%w: session %s", ErrBusy, s.header.ID)
@@ -805,9 +887,20 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 		if y, ok := s.cutOffLocked(); !ok || y.run != run {
 			return nil, fmt.Errorf("%w: the cut-off turn of session %s changed while it was reconciled", ErrNotPending, s.header.ID)
 		}
-		return s.recoverWithLocked(ctx, persist, x, rc)
+		return s.recoveredLocked(s.recoverWithLocked(ctx, persist, x, rc))
 	}
-	return s.recoverWithLocked(ctx, persist, x, nil)
+	return s.recoveredLocked(s.recoverWithLocked(ctx, persist, x, nil))
+}
+
+// recoveredLocked hands RecoverTurn's result on and, when it started no
+// run, restarts the runner at the queue's head: sends the runner held
+// behind the cut-off turn (epilogue) run now, unless a boundary the
+// recovery parked holds them. Callers hold s.mu.
+func (s *Session) recoveredLocked(t *Turn, err error) (*Turn, error) {
+	if err == nil && t == nil {
+		s.kickRunnerLocked()
+	}
+	return t, err
 }
 
 // recoverWithLocked is RecoverTurn's crash matrix over the cut-off run,

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -820,6 +821,19 @@ func (s *Session) epilogue(cur workItem) (next workItem, more bool) {
 		}
 		s.agent.Logger().Debug("thread: settled boundary not resumed", "session", s.header.ID, "err", err)
 	}
+	if len(s.queue) > 0 && !s.boundaryLocked() && s.recoveryRequiredLocked() {
+		// The turn that just landed — or one before it — left a call of
+		// unknown outcome its end could not record (ErrNotPersisted, a
+		// panic in the session's machinery): the file reads it cut off.
+		// The next send would repair that call into a synthetic result
+		// and the model could ask for it again, so the queue is held, as
+		// Send refuses (ErrRecoveryRequired), until RecoverTurn decides it
+		// (its run, or the boundary it parks, takes the queue on).
+		s.agent.Logger().Warn("thread: a cut-off turn left a call of unknown outcome; the queue waits for RecoverTurn",
+			"session", s.header.ID, "queued", len(s.queue))
+		s.exitRunnerLocked()
+		return workItem{}, false
+	}
 	if len(s.queue) > 0 && !s.boundaryLocked() && s.readyHintsLocked() {
 		// Under OnReady the queue is not drained: its head is handed
 		// over, and the owner's Continue starts it.
@@ -963,7 +977,7 @@ func (s *Session) runOneContained(item workItem) {
 				"session", s.header.ID, "run", item.ps.turn.RunID(), "panic", p)
 			// The turn may already be decided (the panic came from
 			// after it); finish refuses to overwrite it.
-			s.land(item, nil, fmt.Errorf("%w: %v", ErrTurnPanicked, p))
+			s.land(item, nil, s.withRecoveryRequired(fmt.Errorf("%w: %v", ErrTurnPanicked, p)))
 		}
 	}()
 	if item.resume {
@@ -984,8 +998,18 @@ func (s *Session) runOne(item workItem) {
 	t := ps.turn
 	persist := context.WithoutCancel(ps.ctx)
 	var promptErr error
+	held := false
 	s.locked(func() {
 		if t.promptWritten() {
+			return
+		}
+		if s.recoveryRequiredFileLocked() {
+			// A cut-off run left a call of unknown outcome (ADR 0032): this
+			// queued send would repair it into a synthetic result. It goes
+			// back to the queue's head, unwritten; the epilogue holds the
+			// queue until RecoverTurn.
+			s.queue = append([]pendingSend{ps}, s.queue...)
+			held = true
 			return
 		}
 		if promptErr = s.appendPromptLocked(persist, t, ps.msg, ps.receipt, ps.settles); promptErr != nil {
@@ -996,6 +1020,9 @@ func (s *Session) runOne(item workItem) {
 		}
 		t.setPromptDone()
 	})
+	if held {
+		return
+	}
 	if promptErr != nil {
 		s.land(item, nil, fmt.Errorf("%w: prompt append: %w", ErrNotRun, promptErr))
 		return
@@ -1085,7 +1112,7 @@ func (s *Session) runResume(item workItem) {
 		// unknown outcome is never run again by a resume (RecoverTurn
 		// decides it first), and an undecided recovery request is
 		// never handed to the core to settle "no decision".
-		if err := s.resumeRefusedLocked(); err != nil {
+		if err := s.resumeRefusedFileLocked(); err != nil {
 			startErr = fmt.Errorf("%w: %w", ErrNotRun, err)
 			return
 		}
@@ -1461,7 +1488,12 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	}
 	// The turn is decided: its Wait returns here. A turn whose end the
 	// storage refused says so (ErrNotPersisted), the run's result
-	// riding beside the error.
+	// riding beside the error — and, when the end it could not write
+	// held a call of unknown outcome, ErrRecoveryRequired: the file
+	// reads the turn cut off, and the queue waits for RecoverTurn.
+	if perr != nil {
+		perr = s.withRecoveryRequired(perr)
+	}
 	s.land(item, res, joinErrs(report, perr))
 	// The trigger's second site (ADR 0020 §2): after the turn, with the
 	// new measurement recorded — and after the turn is decided, so a
@@ -1736,8 +1768,8 @@ type turnEnd struct {
 
 // recordTurnEnd closes the turn: it appends the run's new messages
 // that per-step durability has not already written (normally none —
-// the step observer wrote them as they joined, ADR 0011 §7), then the
-// turn entry, in one atomic batch under a WithoutCancel window — the
+// the step observer wrote them as they joined, ADR 0011 §7), and the
+// turn entry last, in one batch under a WithoutCancel window — the
 // run is over, and its ledger must land whatever happened to the
 // caller's context (ADR 0011 §4). On failure the partial transcript
 // from RunError.Result is kept after core.Repair; a turn whose context
@@ -1748,11 +1780,14 @@ type turnEnd struct {
 // — after the last entry that matches, so a tail that differs from the
 // run's final form leaves the active path (turnEndMessages). The
 // chain, when the turn parked calls, carries the decision chain's
-// entries — requests, audits, chain decisions — into the same Append:
-// the request and the turn are atomic, all or none (ADR 0021 §1). A
-// resume turn's entry reuses the receipt id minted when the resume was
-// armed (it has no prompt entry of its own), and is followed by the
-// audit step that says how the resume ended (ADR 0021 §2).
+// entries — requests, audits, chain decisions — into the same Append,
+// before the turn entry: on a transactional backend the request and
+// the turn land all or none (ADR 0021 §1), and on a backend that can
+// keep a torn batch's prefix (jsonl) a prefix never holds the turn
+// entry without its requests — it reads as the turn cut off (ADR
+// 0032). A resume turn's entry reuses the receipt id minted when the
+// resume was armed (it has no prompt entry of its own), and follows
+// the audit step that says how the resume ended (ADR 0021 §2).
 //
 // The error returned is the persistence failure, wrapping
 // ErrNotPersisted: the batch is in no tree — written nowhere, adopted
@@ -1873,22 +1908,16 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 		entries = append(entries, MessageEntry{ID: id, ParentID: parent, Created: now, Message: cloneMessage(m)})
 		parent = id
 	}
-	var teID string
 	if t.resume {
-		teID = t.id // a resume has no prompt entry; its receipt names its turn entry
-		if !ValidID(teID) {
-			return fail(fmt.Errorf("thread: invalid entry id %q", teID))
+		// A resume has no prompt entry; its receipt names its turn entry.
+		if !ValidID(t.id) {
+			return fail(fmt.Errorf("thread: invalid entry id %q", t.id))
 		}
-		if _, dup := s.byID[teID]; dup {
-			return fail(fmt.Errorf("thread: entry id %q already held by session %s", teID, s.header.ID))
-		}
-	} else {
-		var idErr error
-		if teID, idErr = mint(); idErr != nil {
-			return fail(idErr)
+		if _, dup := s.byID[t.id]; dup {
+			return fail(fmt.Errorf("thread: entry id %q already held by session %s", t.id, s.header.ID))
 		}
 	}
-	te := TurnEntry{ID: teID, ParentID: parent, Created: now, RunID: t.runID, LateSteps: late}
+	te := TurnEntry{Created: now, RunID: t.runID, LateSteps: late}
 	if t.hasPolicy {
 		te.Policy = t.policy.String()
 	}
@@ -1916,28 +1945,17 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	if end.shutdown {
 		// Not abandoned: stopped, and recoverable (RecoverTurn).
 		te.Canceled, te.CutOff = false, true
-		te.Pending = append(te.Pending, unsettled...)
+		te.Pending = appendCallsOnce(te.Pending, unsettled)
 	} else if len(end.unknown) > 0 {
-		te.Pending = append(te.Pending, unsettled...)
+		te.Pending = appendCallsOnce(te.Pending, unsettled)
 	}
-	entries = append(entries, te)
-	parent = te.ID
-	if t.resume {
-		// How the resume ended, on the approval trail itself (ADR 0021
-		// §2): the step that pairs with the "started" entry written
-		// before the run.
-		id, idErr := mint()
-		if idErr != nil {
-			return fail(idErr)
-		}
-		ended := ApprovalAuditEntry{ID: id, ParentID: parent, Created: now,
-			Step: StepResume, Outcome: "completed", RunID: t.runID}
-		if report != nil {
-			ended.Outcome, ended.Detail = "failed", report.Error()
-		}
-		entries = append(entries, ended)
-		parent = id
-	}
+	// The turn entry goes last in the batch (after the steers' receipts,
+	// the chain's entries and a resume's end audit): a backend that
+	// keeps a torn batch's complete prefix lines (jsonl after a crash
+	// mid-write) never holds the turn's end without what it ends with —
+	// a recovery request the chain wrote for a call of unknown outcome
+	// above all. A prefix without it reads as the turn cut off, and
+	// RecoverTurn decides its calls again (ADR 0032).
 	// The delivered steers' receipts join the turn's batch (ADR 0019):
 	// the messages themselves are already in it — the run's transcript
 	// carries them beyond the input — so the receipt is what ties each
@@ -1984,6 +2002,31 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 			}
 		}
 	}
+	if t.resume {
+		// How the resume ended, on the approval trail itself (ADR 0021
+		// §2): the step that pairs with the "started" entry written
+		// before the run, just before the turn entry.
+		id, idErr := mint()
+		if idErr != nil {
+			return fail(idErr)
+		}
+		ended := ApprovalAuditEntry{ID: id, ParentID: parent, Created: now,
+			Step: StepResume, Outcome: "completed", RunID: t.runID}
+		if report != nil {
+			ended.Outcome, ended.Detail = "failed", report.Error()
+		}
+		entries = append(entries, ended)
+		parent = id
+	}
+	te.ID = t.id
+	if !t.resume {
+		var idErr error
+		if te.ID, idErr = mint(); idErr != nil {
+			return fail(idErr)
+		}
+	}
+	te.ParentID = parent
+	entries = append(entries, te)
 	if appendErr := s.st.Append(ctx, s.header.ID, entries...); appendErr != nil {
 		// The batch is in no tree: written nowhere, adopted nowhere.
 		// The steers stay in handed for the settle after this
@@ -2398,7 +2441,12 @@ func (t *Turn) Done() <-chan struct{} { return t.done }
 //   - ErrRecoveryRequired — beside a canceled run's error (an
 //     Interrupt, its own context): the turn left calls that may have
 //     run parked as recovery requests (Session.Pending). Sends queued
-//     behind it wait until a person decides them.
+//     behind it wait until a person decides them. Beside
+//     ErrNotPersisted or ErrTurnPanicked: the turn's end was not
+//     recorded and it left a call that may have run, so the session
+//     reads it cut off (ADR 0032) — Send refuses, and sends already
+//     queued behind it (a steer's follow-up included) wait, until
+//     Session.RecoverTurn decides the call.
 func (t *Turn) Wait() (*core.RunResult, error) {
 	<-t.done
 	t.mu.Lock()
@@ -2561,11 +2609,14 @@ func cloneMessage(m core.Message) core.Message {
 
 // shutdownTranscriptLocked is a shut-down turn's transcript as it is
 // recorded (ADR 0032): in its last step, the result of every call that
-// is not ReplaySafe and came back as an error — the handler felled by
-// the cancellation, its effect unknown — is taken out of the tool
-// message, so the call stays unanswered for RecoverTurn; a call with no
-// result at all stays so too. The calls left unanswered return.
-// Callers hold s.mu.
+// is not ReplaySafe and that the core marked of unknown outcome (the
+// OUTCOME_UNKNOWN code: the handler felled by the cancellation, its
+// effect unknown) is taken out of the tool message, so the call stays
+// unanswered for RecoverTurn; a call with no result at all — the core
+// parked it under ParkUnknown — stays so too. Any other error result is
+// kept: a handler's own failure is its answer (it ran, and said so), and
+// a refusal before the handler (the gate, a middleware) says it never
+// ran. The calls left unanswered return. Callers hold s.mu.
 func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message, []core.ToolCallPart) {
 	ai := -1
 	for i := len(full) - 1; i >= 0 && ai < 0; i-- {
@@ -2587,7 +2638,7 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 	if ai+1 < len(full) && full[ai+1].Role == core.RoleTool {
 		for _, p := range full[ai+1].Content {
 			r, ok := p.(core.ToolResultPart)
-			if ok && risky[r.CallID] && r.IsError {
+			if ok && risky[r.CallID] && r.IsError && strings.HasPrefix(r.Content, core.CodeOutcomeUnknown+":") {
 				continue // felled mid-call: unknown, not failed
 			}
 			if ok {
@@ -2610,6 +2661,40 @@ func (s *Session) shutdownTranscriptLocked(full []core.Message) ([]core.Message,
 		out = append(out, core.Message{Role: core.RoleTool, Content: keptResults})
 	}
 	return out, unsettled
+}
+
+// withRecoveryRequired joins ErrRecoveryRequired to err when the file
+// now reads a cut-off run with a call of unknown outcome — a turn whose
+// end could not be written after it dispatched such a call: its caller
+// learns that RecoverTurn must run before anything queued behind it
+// does.
+func (s *Session) withRecoveryRequired(err error) error {
+	required := false
+	s.locked(func() { required = s.recoveryRequiredFileLocked() })
+	if !required {
+		return err
+	}
+	return fmt.Errorf("%w: session %s: the turn's end was not recorded and it left a call that may have run; RecoverTurn decides it before anything queued runs: %w",
+		ErrRecoveryRequired, s.header.ID, err)
+}
+
+// appendCallsOnce returns pending followed by the calls of more it
+// does not already list (by call id), on a fresh slice: a call the core
+// parked as of unknown outcome is on the run's Pending and among the
+// calls the turn leaves unanswered too, and a turn entry lists it once.
+func appendCallsOnce(pending, more []core.ToolCallPart) []core.ToolCallPart {
+	out := slices.Clone(pending)
+	seen := make(map[string]bool, len(out))
+	for _, c := range out {
+		seen[c.ID] = true
+	}
+	for _, c := range more {
+		if !seen[c.ID] {
+			seen[c.ID] = true
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // startedUnanswered returns the calls of a failed run's last step that

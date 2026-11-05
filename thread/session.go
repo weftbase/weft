@@ -212,6 +212,10 @@ func (o runMetaOption) applySession(c *sessionConfig) {
 // its origin's run metadata, its own over it.
 func WithRunMetadata(kv map[string]string) SessionOption { return runMetaOption(maps.Clone(kv)) }
 
+// reservedKindPrefix marks the custom-entry kinds the format owns
+// (pinKind): Custom refuses them.
+const reservedKindPrefix = "weft/"
+
 // reservedMetaPrefix marks the metadata keys that are the session's
 // identity: written to the header at Create or Fork, never edited by
 // an info entry.
@@ -1459,12 +1463,19 @@ func (s *Session) metaLocked() map[string]string {
 // stores no data key at all; bytes that are not JSON are rejected, the
 // same failure the storage's Append would raise, caught before
 // anything is written. An empty kind is rejected: state nobody can
-// name is not state.
+// name is not state. A kind under the reserved "weft/" prefix is the
+// format's own — Pin writes "weft/pin", which compaction reads — and
+// is rejected with ErrReservedKey, writing nothing: application state
+// never forges a session fact.
 func (s *Session) Custom(ctx context.Context, kind string, data json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if kind == "" {
 		return fmt.Errorf("thread: Custom with empty kind")
+	}
+	if strings.HasPrefix(kind, reservedKindPrefix) {
+		return fmt.Errorf("%w: custom kind %q: the %q prefix is the format's own (Pin writes %q)",
+			ErrReservedKey, kind, reservedKindPrefix, pinKind)
 	}
 	if len(data) > 0 && !json.Valid(data) {
 		return fmt.Errorf("thread: Custom data for kind %q is not JSON", kind)
@@ -1683,9 +1694,15 @@ func (s *Session) writableLocked() error {
 //     hold through Releaser. Its error is Close's result.
 //
 // If ctx ends while Close is waiting, Close gives up: it cancels the
-// running turn (which records as canceled, its unanswered calls
-// carrying the interruption text), ends every queued Turn with
-// ErrClosed, and returns ctx.Err(). The session then stays closed to
+// running turn, ends every queued Turn with ErrClosed, and returns
+// ctx.Err(). How the canceled turn records depends on what it was
+// doing (ADR 0032). A turn that had started no call of unknown outcome
+// records as canceled, its unanswered calls carrying the interruption
+// text. A turn felled under ErrShutdown (ctx's cause), or one whose
+// started calls that are not core.ReplaySafe gave no answer, records
+// as cut off (TurnEntry.CutOff): those calls stay unanswered, with no
+// synthetic text, and Session.RecoverTurn — in this process or the
+// next — decides them. The session then stays closed to
 // new work, and nothing can start another run — but the canceled turn
 // may still be writing its end, so the session is not yet sealed and
 // the storage not yet released. Call Close again to finish: it waits
