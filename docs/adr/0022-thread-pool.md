@@ -686,9 +686,14 @@ hex digits of the SHA-256 of the parent id, the delegating call's
 idempotency key (`thread.IdempotencyKey` — session, assistant message
 entry, call id) and an attempt number, the first one the parent's
 ledger does not name and the storage does not hold. A recovery retry
-of the call runs from the same recorded message, so it chooses the
-same id: the retry the recovery request offers ("retry it with the
-same idempotency key") reaches the same child identity. A `Submit`, a
+of the call runs from the same recorded message, so when the crash
+came before the acceptance receipt — nothing names the first id — it
+chooses the same id: the retry the recovery request offers ("retry it
+with the same idempotency key") reaches the same child identity. When
+an acceptance already names that id, the retry takes the next derived
+one: a second child, beside the first that its receipt still names
+(the delegation's own ledger, not the id, is what keeps the first
+from being lost). A `Submit`, a
 call with no key, and a pool given `IDs` keep a minted id; they are
 still named by their receipt before they exist (the `Submit` key is
 WR-20's). A creation that fails after the acceptance settles the
@@ -701,13 +706,23 @@ a crash in that window leaves an accepted receipt with no child, which
 — model-visible inside `SUBAGENT_FAILED` when the delegating call is
 still parked, and pinned by `TestAcceptedChildNeverCreated`. A receipt
 that read past `accepted` keeps "child session <id> is gone". While a
-child is being made the pool counts it live, so a `Recover` beside the
-delegation does not settle it so, and `Wait` waits for its
-registration. `Children` and `Descendants` list a child whose receipt
-reads accepted and whose file has no complete header yet (being
-created, or torn by a crash inside its creation): the receipt says it
-is this parent's — a fork's copies of receipts are settled, never
-accepted — and the cascade must delete it too.
+child is being made the pool counts it live — until it registers, or,
+when the pool closed meanwhile, until its canceled settlement is
+written — so a `Recover` beside the delegation does not settle it, and
+`Wait` and `Cancel` wait for its registration (`Cancel` then cancels
+it; it used to answer an orphan `StateError` while `Recover` skipped
+the receipt, and the child ran to done). On jsonl, whose `Create` is
+not atomic, a crash inside the child's creation leaves its file with
+no complete header (`ErrCorrupt` on line 1 wrapping
+`io.ErrUnexpectedEOF` — no other corruption reads so): under an
+accepted receipt `Recover` removes that stub and settles the receipt
+with the never-created text above. `Children` and `Descendants` list a
+child whose receipt reads accepted and whose file has no complete
+header (being created on jsonl, or torn by such a crash): the receipt
+says it is this parent's — a fork's copies of receipts are settled,
+never accepted — and the cascade must delete it too. A child being
+created on memory or sqlite (atomic `Create`) has no file yet and is
+not listed, as a deleted one is not.
 
 **A cut-off delegate is let go (L1).** A child whose run a shutdown
 cut off (its parent session closed under `thread.ErrShutdown`) while
@@ -756,7 +771,10 @@ model-visible change left for its own decision.
 
 Tests: `TestCutOffDelegateIsRecoveredInProcess`,
 `TestCutOffDelegateCancelInProcess` (memory, jsonl, sqlite),
-`TestAcceptedChildNeverCreated`, `TestRecoveryRetryReachesTheSameChild`,
+`TestAcceptedChildNeverCreated` (absent, empty and torn child files),
+`TestNoHeaderIsToldApartFromABadHeader` (jsonl),
+`TestCancelWhileTheChildIsCreated`, `TestClosedWhileCreatingSettlesOnce`,
+`TestRecoveryRetryReachesTheSameChild`,
 `TestChildCreationFailureSettlesItsReceipt`,
 `TestChildrenListsAChildBeingCreated`,
 `TestDelegatedCoversGrandchildren`, `TestClassifyBillsTheSubtree`,

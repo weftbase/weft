@@ -403,7 +403,9 @@ func (b *backend) Append(ctx context.Context, id string, entries ...thread.Entry
 // unknown kinds and newer versions are ErrNewerFormat, never skipped,
 // salvage or not; a malformed line is ErrCorrupt naming the line —
 // skipped and reported under Salvage; a torn final line is a crash or
-// a write in flight, dropped and reported in the LoadReport. The
+// a write in flight, dropped and reported in the LoadReport. A file
+// with no complete line at all — not even a header — is ErrCorrupt on
+// line 1 wrapping io.ErrUnexpectedEOF (a crash inside Create). The
 // returned values are fresh: they never alias the file or a previous
 // load.
 func (b *backend) Load(ctx context.Context, id string) (thread.Header, []thread.Entry, *thread.LoadReport, error) {
@@ -464,9 +466,14 @@ func (b *backend) Load(ctx context.Context, id string) (thread.Header, []thread.
 }
 
 // errNoHeader is the failure of a session file without one complete
-// line: line 1 is corrupt, and there is nothing to salvage.
+// line: line 1 is corrupt, and there is nothing to salvage. It wraps
+// io.ErrUnexpectedEOF — the file ended before its header line did —
+// which tells it apart from a complete header line that does not
+// decode: what a crash inside Create leaves (the exclusive open done,
+// the header not yet durable), the one corruption thread/pool reads as
+// a child that was never created.
 func errNoHeader(id string) error {
-	return &thread.CorruptError{Session: id, Line: 1, Err: errors.New("no complete header line")}
+	return &thread.CorruptError{Session: id, Line: 1, Err: fmt.Errorf("no complete header line: %w", io.ErrUnexpectedEOF)}
 }
 
 // List reads headers only — one small shared buffer, bounded to

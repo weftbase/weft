@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -195,6 +196,11 @@ func TestCrashMidCreate(t *testing.T) {
 	var ce *thread.CorruptError
 	if !errors.Is(err, thread.ErrCorrupt) || !errors.As(err, &ce) || ce.Line != 1 {
 		t.Fatalf("Load on a torn header: err = %v, want a CorruptError on line 1", err)
+	}
+	// It reads as a header that never completed (io.ErrUnexpectedEOF),
+	// which thread/pool tells apart from any other corruption.
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("Load on a torn header: err = %v, want it to wrap io.ErrUnexpectedEOF", err)
 	}
 	// And Create cannot silently replace the dead writer's file.
 	h := thread.Header{ID: id, Created: time.Now().UTC()}

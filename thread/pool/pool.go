@@ -278,6 +278,11 @@ type Pool struct {
 	// delegation's parked call is resolved — the window a Wait used to
 	// return in, the parent's resume not yet armed.
 	testHookConcluding func(*delegate)
+	// testHookClosedBeforeStart, when set (by this package's tests
+	// only), runs in submit when the pool closed while the child was
+	// being created, before that delegation's canceled settlement — the
+	// window a Recover used to settle the receipt in too.
+	testHookClosedBeforeStart func()
 	// testHookCanceling, when set (by this package's tests only), runs
 	// in cancelParked with the delegate settling, before the child's
 	// boundary is closed; a non-nil error stands in for that close
@@ -497,6 +502,10 @@ func (p *Pool) Submit(ctx context.Context, parent *thread.Session, agent *core.A
 //     rest with it — is canceled the same way: Cancel waits for the
 //     park to finish (ctx bounds the wait), the park closes the
 //     boundary, and the settlement is recorded before Cancel returns.
+//   - accepted, its child still being created by this pool (the
+//     acceptance is written first): Cancel waits for the delegation to
+//     register — ctx bounds the wait, as Wait's — then cancels it as
+//     queued or running.
 //   - unsettled in the ledger with no child of this pool running for
 //     it — a previous process's: it is recovered first (see Recover)
 //     and then canceled if recovery left it parked.
@@ -591,6 +600,18 @@ func (p *Pool) Cancel(ctx context.Context, parent *thread.Session, receiptID str
 			return fmt.Errorf("%w: %s in session %s", ErrUnknownReceipt, receiptID, parent.ID())
 		case rc.Settled():
 			return &StateError{Receipt: receiptID, State: rc.State}
+		case p.isCreating(rc.Child):
+			// Accepted, its child being created by this pool (the
+			// acceptance comes first): it is about to register, or to
+			// conclude — wait a moment, bounded by ctx, as Wait does,
+			// then cancel what it became.
+			select {
+			case <-time.After(time.Millisecond):
+				attempt = -1 // the loop's increment: not a recovery attempt
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		case attempt > 0:
 			// Recovery ran and left it unsettled without a bridge:
 			// nothing this pool can cancel.
@@ -600,6 +621,14 @@ func (p *Pool) Cancel(ctx context.Context, parent *thread.Session, receiptID str
 			return err
 		}
 	}
+}
+
+// isCreating reports whether a delegation of this pool is creating the
+// child session child now: accepted, not yet registered or concluded.
+func (p *Pool) isCreating(child string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.creating[child] > 0
 }
 
 // Wait blocks until the delegation behind receiptID is at rest in
@@ -633,10 +662,7 @@ func (p *Pool) Wait(ctx context.Context, parent *thread.Session, receiptID strin
 				p.forgetSettled(rc.Child)
 				return rc, nil
 			}
-			p.mu.Lock()
-			creating := p.creating[rc.Child] > 0
-			p.mu.Unlock()
-			if !creating {
+			if !p.isCreating(rc.Child) {
 				return rc, nil
 			}
 			// Accepted, its child being created (the acceptance comes
@@ -833,9 +859,14 @@ func lookup(parent *thread.Session, receiptID string) (Receipt, bool) {
 // order: the child of every receipt in its ledger whose stored header
 // names parent as its lineage. The check is what keeps a fork honest
 // — a Fork copies its origin's receipts, and the children stay the
-// origin's — and a child that has been deleted is left out. Deleting
-// a session deletes none of its children; this is the list to cascade
-// over (Descendants gives the whole subtree).
+// origin's — and a child that has been deleted is left out. A child
+// whose receipt still reads accepted is listed while its file holds no
+// complete header (on jsonl: being created, or torn by a crash inside
+// its creation), so a cascade deletes it too; on a backend whose
+// Create is atomic (memory, sqlite) a child being created has no
+// session yet and is left out, as a deleted one. Deleting a session
+// deletes none of its children; this is the list to cascade over
+// (Descendants gives the whole subtree).
 func Children(ctx context.Context, parent *thread.Session) ([]string, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("thread/pool: Children with no parent session")
@@ -903,11 +934,13 @@ func Descendants(ctx context.Context, parent *thread.Session) ([]string, error) 
 // ledgers accepted. fresh marks the children whose receipt still reads
 // accepted, and verified marks theirs in it as it reads them: the
 // acceptance is written before the child is created, so such a child
-// may be absent (skipped, as a deleted one) or have no complete header
-// yet — being created now, or torn by a crash inside its creation. The
-// receipt is then the record that it is this parent's (a fork's copies
-// of receipts are settled, never accepted), and it is listed with
-// nothing below it, so a cascade deletes it too.
+// may be absent — not created yet, or never: skipped, as a deleted one
+// — or, on a backend whose Create is not atomic (jsonl), have a file
+// with no complete header — being created now, or torn by a crash
+// inside its creation. The receipt is then the record that it is this
+// parent's (a fork's copies of receipts are settled, never accepted),
+// and it is listed with nothing below it, so a cascade deletes it too.
+// Any other unreadable child fails.
 func verified(ctx context.Context, st thread.Storage, parentID string, ids []string, fresh map[string]bool) ([]string, map[string][]string, error) {
 	var out []string
 	below := map[string][]string{}
@@ -916,7 +949,11 @@ func verified(ctx context.Context, st thread.Storage, parentID string, ids []str
 		if errors.Is(err, thread.ErrNotFound) {
 			continue
 		}
-		if errors.Is(err, thread.ErrCorrupt) && fresh[id] {
+		if noHeader(err) && fresh[id] {
+			// Its receipt reads accepted and its file holds no complete
+			// header: a creation in flight, or a crash inside it (jsonl).
+			// Listed with nothing below it, so a cascade deletes it too;
+			// any other corruption fails loud.
 			out = append(out, id)
 			continue
 		}
@@ -1106,14 +1143,27 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 		d.wrapper = callID
 	}
 	p.mu.Lock()
-	made = true // registered below, or concluded: live either way
-	uncount()
+	made = true   // registered below, or concluded: live either way
 	if p.closed { // Close ran between the check and the registration
 		p.mu.Unlock()
 		cancel()
-		p.conclude(context.WithoutCancel(ctx), d, Canceled, "canceled: the pool closed before the child started", "", false)
+		// Counted as being created until the settlement is written: a
+		// Recover beside it skips the receipt instead of settling it a
+		// second time (and billing it twice).
+		func() {
+			defer func() {
+				p.mu.Lock()
+				uncount()
+				p.mu.Unlock()
+			}()
+			if p.testHookClosedBeforeStart != nil {
+				p.testHookClosedBeforeStart()
+			}
+			p.conclude(context.WithoutCancel(ctx), d, Canceled, "canceled: the pool closed before the child started", "", false)
+		}()
 		return nil, outcome{}, ErrClosed
 	}
+	uncount()
 	p.delegates[accept.ID] = d
 	p.byChild[child.ID()] = d
 	// The WaitGroup and the queue are joined under the lock that
@@ -1142,11 +1192,15 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 // derive from durable identity). A wrapped call's child takes an id
 // derived from the parent session and the delegating call's
 // idempotency key — the session id, the assistant message entry that
-// holds the call, and the call id (thread.IdempotencyKey) — so a
-// recovery retry of the call, which runs from the same recorded
-// message, chooses the same id; the n-th delegation of one call
-// takes the next derived id the parent's ledger does not name already
-// and the storage does not hold. A Submit, a call with no key, and a
+// holds the call, and the call id (thread.IdempotencyKey) — and an
+// attempt number: the first derived id the parent's ledger does not
+// name already and the storage does not hold. A recovery retry of the
+// call runs from the same recorded message, so when the crash came
+// before the acceptance receipt (nothing names the first id) it
+// chooses the same id; when an acceptance already names it, the retry
+// takes the next derived id — a new child beside the first, which its
+// receipt still names. The n-th delegation of one call takes the n-th
+// derived id the same way. A Submit, a call with no key, and a
 // pool given IDs (the tests' determinism knob, which mints every
 // child's id) take a minted id.
 func (p *Pool) childID(ctx context.Context, parent *thread.Session, callID string) (string, error) {

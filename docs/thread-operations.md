@@ -633,9 +633,16 @@ not the numbers themselves.
   whose receipt names a child that does not exist ("… does not exist
   and its run never started: nothing ran"): the acceptance receipt is
   written before the child session is created, so a crash between the
-  two leaves a receipt, never a child no receipt names. A wrapped
-  call's child id is derived from the delegating call's idempotency
-  key, so a recovery retry of the call reaches the same child id. The
+  two leaves a receipt, never a child no receipt names (on jsonl a
+  crash inside the child's creation can leave its file with no
+  complete header; `Recover` removes it and settles the receipt the
+  same way). A wrapped call's child id is derived from the delegating
+  call's idempotency key and an attempt number — the first one nothing
+  names yet — so a recovery retry of a call whose crash came before
+  its acceptance receipt reaches the same child id; one whose
+  acceptance was written takes the next derived id, the first child
+  still named by its receipt. A `Cancel` of a delegation whose child
+  is still being created waits for it to register, then cancels it. The
   same applies in a live process whose pool outlived a parent session
   closed under `thread.ErrShutdown`: the child turns that close cut off
   are let go by the pool (before 0.23.0 they stayed claimed — `Recover`
@@ -783,11 +790,16 @@ not the numbers themselves.
   no-op: nil, nothing recorded — and the same signed bytes again
   (`DecideSigned`, same nonce) are applied, not `ErrReplay`, and not
   audited. A different decision on a decided request is `ErrNotPending`;
-  another one under a spent nonce `ErrReplay`. This holds after a
-  `Branch` back to a boundary a resume already applied the decision at:
-  the call reads pending there again, and an identical re-forward —
-  signed or not — runs nothing. A deliberate new decision on that line
-  must differ from the spent one (another `Who`, another reason).
+  another one under a spent nonce `ErrReplay`. After a `Branch` back
+  to a boundary a resume already applied the decision at, the call
+  reads pending there again, and an identical re-forward — signed or
+  not — fails with `thread.ErrDecisionSpent`: nothing recorded, nothing
+  run, and the caller knows the boundary still waits. A deliberate new
+  decision on that line must differ from the spent one (another `Who`,
+  another reason; signed: a fresh `s.Request` challenge). A reconciler
+  that re-forwards decisions treats `ErrDecisionSpent` as "applied
+  elsewhere, not here" — never as a reason to change the decision on
+  its own.
 - **Edits.** `thread.Edit(callID, args).Bind(r)` corrects a parked
   call: the request closes and a revision opens on the edited arguments
   (`Request.RevisionOf`), approved once by the editor — under
@@ -841,7 +853,9 @@ not the numbers themselves.
 - **Signed decisions are bound** to the request entry and the run that
   parked the call, and are single-use: another decision under a
   recorded nonce is `ErrReplay`, across restarts; the same signed
-  decision again is applied (nil, nothing recorded).
+  decision again is applied (nil, nothing recorded) — or
+  `ErrDecisionSpent` after a `Branch` back to the boundary it was
+  applied at.
   A challenge minted before upgrading to this version does not verify
   (the challenge domain moved to v2): request a fresh one.
 - **Expiry is lazy.** `thread.RequestExpiry(d)` gives each request a

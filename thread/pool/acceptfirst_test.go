@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,38 +78,74 @@ func lineageOrphans(t *testing.T, st thread.Storage, dir string, s *thread.Sessi
 }
 
 // The image of a crash between the acceptance and the child's
-// creation: a receipt naming a child that does not exist. Recover
-// settles it failed saying nothing ran — never a guess — and no session
-// carries the parent's lineage that the ledger does not name (WR-25).
+// creation: a receipt naming a child that does not exist — or, on
+// jsonl, whose file the crash left with no complete header (the
+// exclusive open done inside Create, the header not yet durable: an
+// empty file, or a torn first line). Recover settles it failed saying
+// nothing ran — never a guess — removing the stub first; Cancel then
+// reads it settled; no session carries the parent's lineage that the
+// ledger does not name (WR-25). Before the Recover, Children lists the
+// stub (its receipt is the record), and a cascade would delete it.
 func TestAcceptedChildNeverCreated(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	top, child, mkChild := acceptFirstRun(t, dir)
-	cutBefore(t, filepath.Join(dir, top+".jsonl"), after(kind("pool_receipt")))
-	st, err := jsonl.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := thread.Delete(ctx, st, child); err != nil {
-		t.Fatal(err)
-	}
-	p := pool.New(2)
-	defer func() { _ = p.Close(ctx) }()
-	s, err := thread.Open(ctx, st, top, core.New(wefttest.Script(wefttest.Say("parent done")), p.MustWrap("w", "w", mkChild())))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close(ctx) }()
-	if err := p.Recover(ctx, s); err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	rs := pool.Receipts(s)
-	want := fmt.Sprintf("child session %s does not exist and its run never started: nothing ran", child)
-	if len(rs) != 1 || rs[0].State != pool.Failed || rs[0].Stop != want {
-		t.Fatalf("receipts = %+v, want one failed with %q", rs, want)
-	}
-	if n := lineageOrphans(t, st, dir, s); n != 0 {
-		t.Errorf("%d session(s) carry the parent's lineage and no receipt names them", n)
+	for _, tc := range []struct {
+		name string
+		stub []byte // nil: no file at all
+	}{
+		{"absent", nil},
+		{"empty file", []byte{}},
+		{"torn header", []byte(`{"weft":7,"id":"s_`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			top, child, mkChild := acceptFirstRun(t, dir)
+			cutBefore(t, filepath.Join(dir, top+".jsonl"), after(kind("pool_receipt")))
+			st, err := jsonl.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := thread.Delete(ctx, st, child); err != nil {
+				t.Fatal(err)
+			}
+			stub := filepath.Join(dir, child+".jsonl")
+			if tc.stub != nil {
+				if err := os.WriteFile(stub, tc.stub, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := pool.New(2)
+			defer func() { _ = p.Close(ctx) }()
+			s, err := thread.Open(ctx, st, top, core.New(wefttest.Script(wefttest.Say("parent done")), p.MustWrap("w", "w", mkChild())))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close(ctx) }()
+			kids, err := pool.Children(ctx, s)
+			if err != nil {
+				t.Fatalf("Children before Recover: %v", err)
+			}
+			if wantKids := map[bool]int{false: 0, true: 1}[tc.stub != nil]; len(kids) != wantKids {
+				t.Fatalf("Children before Recover = %v, want %d", kids, wantKids)
+			}
+			if err := p.Recover(ctx, s); err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			rs := pool.Receipts(s)
+			want := fmt.Sprintf("child session %s does not exist and its run never started: nothing ran", child)
+			if len(rs) != 1 || rs[0].State != pool.Failed || rs[0].Stop != want {
+				t.Fatalf("receipts = %+v, want one failed with %q", rs, want)
+			}
+			if _, err := os.Stat(stub); !os.IsNotExist(err) {
+				t.Fatalf("the stub is still there after Recover (stat: %v)", err)
+			}
+			var se *pool.StateError
+			if err := p.Cancel(ctx, s, rs[0].ID); !errors.As(err, &se) || se.State != pool.Failed || se.Orphan {
+				t.Fatalf("Cancel of the settled receipt = %v, want its StateError (failed)", err)
+			}
+			if n := lineageOrphans(t, st, dir, s); n != 0 {
+				t.Errorf("%d session(s) carry the parent's lineage and no receipt names them", n)
+			}
+		})
 	}
 }
 

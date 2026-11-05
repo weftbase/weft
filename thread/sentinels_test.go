@@ -371,6 +371,24 @@ func TestSentinelsAreMatchable(t *testing.T) {
 			_, err = p.s.DecideSigned(ctx, thread.SignDecision(secret, challenge, thread.Deny(p.call, "second thoughts")))
 			return err
 		}},
+		{"ErrDecisionSpent/the same decision after a Branch back to its boundary", thread.ErrDecisionSpent, func(t *testing.T) error {
+			ctx := sentinelCtx(t)
+			p := sentinelParked(t)
+			park := p.s.Leaf()
+			d := thread.Approve(p.call).Bind(p.s.Pending()[0])
+			rt, err := p.s.Decide(ctx, d)
+			if err != nil || rt == nil {
+				t.Fatalf("the first Decide = %v, %v", rt, err)
+			}
+			if _, err := rt.WaitContext(ctx); err != nil {
+				t.Fatalf("the resume: %v", err)
+			}
+			if err := p.s.Branch(ctx, park); err != nil {
+				t.Fatalf("Branch: %v", err)
+			}
+			_, err = p.s.Decide(ctx, d)
+			return err
+		}},
 		{"ErrArgsChanged/DecideSigned over another arguments hash", thread.ErrArgsChanged, func(t *testing.T) error {
 			ring, secret := sentinelRing(t)
 			p := sentinelParked(t, thread.WithKeyring(ring), thread.AutoResume(false))
@@ -579,7 +597,7 @@ func TestSentinelsAreMatchable(t *testing.T) {
 		"ErrLocked": thread.ErrLocked, "ErrStale": thread.ErrStale, "ErrCorrupt": thread.ErrCorrupt,
 		"ErrNewerFormat": thread.ErrNewerFormat, "ErrNotPending": thread.ErrNotPending,
 		"ErrUnknownKey": thread.ErrUnknownKey, "ErrBadSignature": thread.ErrBadSignature,
-		"ErrExpired": thread.ErrExpired, "ErrReplay": thread.ErrReplay, "ErrArgsChanged": thread.ErrArgsChanged,
+		"ErrExpired": thread.ErrExpired, "ErrReplay": thread.ErrReplay, "ErrDecisionSpent": thread.ErrDecisionSpent, "ErrArgsChanged": thread.ErrArgsChanged,
 		"ErrSignatureRequired": thread.ErrSignatureRequired, "ErrClosed": thread.ErrClosed,
 		"ErrNotPersisted": thread.ErrNotPersisted, "ErrNotRun": thread.ErrNotRun, "ErrDropped": thread.ErrDropped,
 		"ErrTurnPanicked": thread.ErrTurnPanicked, "ErrCreateOnly": thread.ErrCreateOnly,

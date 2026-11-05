@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/weftbase/weft/core"
@@ -120,11 +121,7 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 		offered[r.Child] = true
 	}
 	for _, rc := range Receipts(parent) {
-		p.mu.Lock()
-		_, live := p.delegates[rc.ID]
-		live = live || p.creating[rc.Child] > 0
-		p.mu.Unlock()
-		if live {
+		if p.working(rc) {
 			continue
 		}
 		if !rc.Settled() {
@@ -154,6 +151,17 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 	return errors.Join(errs...)
 }
 
+// working reports whether this pool answers for rc's delegation now: a
+// registered delegate, or a child it is still creating — counted until
+// its registration, or, when the pool closed meanwhile, until its
+// settlement is written.
+func (p *Pool) working(rc Receipt) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, live := p.delegates[rc.ID]
+	return live || p.creating[rc.Child] > 0
+}
+
 // recoverOne recovers one unsettled receipt no delegate of this pool
 // answers for.
 func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receipt) error {
@@ -164,6 +172,9 @@ func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receip
 		return nil // a live delegation whose child is being made: not left behind
 	}
 	h, entries, _, err := parent.Storage().Load(ctx, rc.Child)
+	if rc.State == Accepted && noHeader(err) {
+		err = neverCreated(ctx, parent.Storage(), rc.Child)
+	}
 	if errors.Is(err, thread.ErrNotFound) {
 		stop := fmt.Sprintf("child session %s is gone", rc.Child)
 		if rc.State == Accepted {
@@ -328,6 +339,9 @@ func (p *Pool) endDelegations(ctx context.Context, s *thread.Session) error {
 // does not run again.
 func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error {
 	_, entries, _, err := s.Storage().Load(ctx, rc.Child)
+	if rc.State == Accepted && noHeader(err) {
+		err = neverCreated(ctx, s.Storage(), rc.Child)
+	}
 	if errors.Is(err, thread.ErrNotFound) {
 		stop := fmt.Sprintf("child session %s is gone", rc.Child)
 		if rc.State == Accepted {
@@ -754,4 +768,29 @@ func finalText(entries []thread.Entry) string {
 		return b.String()
 	}
 	return ""
+}
+
+// noHeader reports whether err is a child session's load failing on a
+// file with no complete header line — line 1 corrupt, the file ending
+// before its header did (jsonl wraps io.ErrUnexpectedEOF): what a crash
+// inside the child's Create leaves, the exclusive open done and the
+// header not yet durable. Any other corruption is not this, and stays
+// an error.
+func noHeader(err error) bool {
+	var ce *thread.CorruptError
+	return errors.As(err, &ce) && ce.Line == 1 && errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// neverCreated settles what a header-less stub under an accepted
+// receipt is: a child whose creation never completed, so it never ran.
+// The stub is removed first (a crash after it reads as absent, and the
+// next Recover settles it the same way); a removal that fails is
+// returned, nothing settled, and the next Recover tries again. It
+// returns ErrNotFound for the caller's never-created path. The caller
+// has checked no delegation of this pool is creating the child.
+func neverCreated(ctx context.Context, st thread.Storage, child string) error {
+	if err := st.Delete(ctx, child); err != nil && !errors.Is(err, thread.ErrNotFound) {
+		return fmt.Errorf("thread/pool: child session %s holds no header (its creation never completed) and could not be removed: %w", child, err)
+	}
+	return fmt.Errorf("%w: child session %s never completed its creation", thread.ErrNotFound, child)
 }

@@ -516,6 +516,7 @@ func (s *Session) abandonLocked(ctx context.Context, prev string, receipts ...st
 		}
 	}
 	s.leaf = prev
+	s.cutOffClear = false // the leaf moved back: the next check reads the file
 	if err != nil {
 		s.agent.Logger().Error("thread: a failed send's drop and leaf move not recorded; the file's leaf stays on the failed entry until the next write, and an undropped accepted receipt without a prompt is restored by a reopen",
 			"session", s.header.ID, "receipts", receipts, "err", err)
@@ -999,7 +1000,9 @@ func (s *Session) runOne(item workItem) {
 	persist := context.WithoutCancel(ps.ctx)
 	var promptErr error
 	held := false
+	tv := snapshotTools(s.agent) // before the lock, as runResume
 	s.locked(func() {
+		s.useToolsLocked(tv)
 		if t.promptWritten() {
 			return
 		}
@@ -1101,7 +1104,12 @@ func (s *Session) runResume(item workItem) {
 		startErr error
 		opts     []core.RunOption
 	)
+	// The agent's tools are read before the lock: the drift check and
+	// the arming's replay classes resolve against this snapshot, and a
+	// ToolSource never runs under s.mu (it may read the session).
+	tv := snapshotTools(s.agent)
 	s.locked(func() {
+		s.useToolsLocked(tv)
 		if !s.boundaryLocked() {
 			startErr = fmt.Errorf("%w: %w: the boundary this resume was armed for is gone (branched away?)", ErrNotRun, ErrNotPending)
 			return
@@ -1987,9 +1995,11 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	handed := s.handed
 	if chain := end.chain; chain != nil {
 		// The chain's entries join the turn's batch: ids and parents
-		// assigned here, in call order, after the turn entry (ADR 0021
-		// §1–§2). Their kinds carry no prompt and no messages; they are
-		// bookkeeping the model never sees.
+		// assigned here, in call order, before the turn entry, which
+		// goes last in the batch (ADR 0021 §1–§2): a torn jsonl prefix
+		// then reads as the turn cut off, never as a turn without its
+		// requests. Their kinds carry no prompt and no messages; they
+		// are bookkeeping the model never sees.
 		for _, e := range chain.entries {
 			id, idErr := mint()
 			if idErr != nil {

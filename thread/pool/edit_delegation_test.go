@@ -116,10 +116,10 @@ func editOpenDelegation(t *testing.T, st thread.Storage) {
 		}
 	}
 	recoverTurn()
-	if err := p.Recover(ctx, s2); err != nil {
-		t.Fatalf("pool Recover = %v", err)
-	}
 
+	// Before the pool takes the cut-off child up, the delegation is open
+	// and d1 is offered as the parent's own request: no approval, no
+	// edit — through the pool or the session — and nothing written.
 	pend := s2.Pending()
 	for _, r := range pend {
 		if r.CallID == "d1" && r.Recovery {
@@ -130,7 +130,8 @@ func editOpenDelegation(t *testing.T, st thread.Storage) {
 		t.Fatalf("Pending = %+v, want d1 alone, its delegation open", pend)
 	}
 	before := len(s2.Entries())
-	if err := p.Decide(ctx, s2, bound(s2, thread.Approve("d1"))); !errors.Is(err, thread.ErrStillRunning) {
+	ap := bound(s2, thread.Approve("d1"))
+	if err := p.Decide(ctx, s2, ap); !errors.Is(err, thread.ErrStillRunning) {
 		t.Fatalf("approve d1 while its delegation is open = %v, want ErrStillRunning", err)
 	}
 	ed := bound(s2, thread.Edit("d1", []byte(`{"Prompt":"go again"}`)))
@@ -142,6 +143,20 @@ func editOpenDelegation(t *testing.T, st thread.Storage) {
 	}
 	if got := len(s2.Entries()); got != before {
 		t.Fatalf("the refused decisions wrote %d entries", got-before)
+	}
+
+	// The pool takes the cut-off child up (asynchronously) and mirrors
+	// its running call: d1 now completes through its child, and a
+	// decision of its own is ErrDelegated.
+	if err := p.Recover(ctx, s2); err != nil {
+		t.Fatalf("pool Recover = %v", err)
+	}
+	waitMirror(t, s2)
+	if _, err := s2.Decide(ctx, ap); !errors.Is(err, thread.ErrDelegated) {
+		t.Fatalf("approve d1 once its child is mirrored = %v, want ErrDelegated", err)
+	}
+	if _, err := s2.Decide(ctx, ed); !errors.Is(err, thread.ErrDelegated) {
+		t.Fatalf("edit d1 once its child is mirrored = %v, want ErrDelegated", err)
 	}
 	close(release)
 	released = true
