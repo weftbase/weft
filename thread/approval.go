@@ -1049,7 +1049,7 @@ func (s *Session) settleResumeLocked(t *Turn) {
 	}
 }
 
-// validOutcome reports whether o is one of the four decision outcomes.
+// validOutcome reports whether o is one of the five decision outcomes.
 func validOutcome(o Outcome) bool {
 	switch o {
 	case OutcomeApprove, OutcomeDeny, OutcomeResolve, OutcomeResolveError, OutcomeEdit:

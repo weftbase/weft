@@ -1690,7 +1690,9 @@ func AfterDispatch(fn AfterDispatchFunc) RunOption { return core.AfterDispatch(f
 // RunResult.Pending with no result (weft.tool.pending.source
 // outcome_unknown), and the run ends at that boundary after its step,
 // the other calls' results kept — for a caller that resolves it by a
-// ladder (weft/thread: a keyed retry, the tool's Reconcile, a person).
+// ladder (weft/thread: a keyed retry or a person; the tool's Reconcile
+// is asked only by RecoverTurn after a crash or a shutdown, never for
+// a call parked in a live turn, whose handler may still be running).
 // A Subagent's child run does not inherit it.
 func ParkUnknown() RunOption { return core.ParkUnknown() }
 
@@ -2138,15 +2140,20 @@ type ReconcileFunc = core.ReconcileFunc
 // Reconcile gives the tool a way to settle a call whose outcome is
 // unknown by asking the system that knows (ADR 0032, the second rung of
 // the recovery ladder): fn looks the call up by its Call.IdempotencyKey.
-// weft/thread asks it — for a ReplayNever call that a crash, a
-// shutdown, a timeout or an interrupt left without an answer, while the
-// session's lock is held, under a 30 s bound — and acts on the answer:
+// weft/thread asks it only from Session.RecoverTurn — for a ReplayNever
+// call of unknown outcome in a turn a crash or a shutdown cut off,
+// while the writer still holds the session's lock, under a 30 s bound
+// — and acts on the answer:
 // found, the result is recorded as the call's and the tool does not
 // run; not found, the call runs again under the same key; an error or
-// a timeout leaves the call to a person (a recovery request). A
-// ReplayKeyed call is retried before it is reconciled; a ReplaySafe one
-// never needs it. weft holds no store: fn is the tool's. A nil fn
-// removes it.
+// a timeout leaves the call to a person (a recovery request). It is
+// never asked in a live process: a call a Timeout or a cancel leaves
+// without an answer during a turn (ParkUnknown) goes to a keyed retry
+// or a person, and a handler this process abandoned that may still be
+// running is never reconciled — the system of record could answer
+// "missing" for an effect about to land. A ReplayKeyed call is retried
+// before it is reconciled; a ReplaySafe one never needs it. weft holds
+// no store: fn is the tool's. A nil fn removes it.
 func Reconcile(fn ReconcileFunc) ToolOption { return core.Reconcile(fn) }
 
 // Call identifies the tool invocation a handler is serving. Retrieve it

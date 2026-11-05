@@ -159,7 +159,7 @@ var (
 	// ErrBadSignature is returned by DecideSigned when the signed
 	// decision does not verify against the session's keyring and the
 	// pending request: a MAC mismatch, an unknown key id, an outcome
-	// that is none of the four, a session other than this one, an
+	// that is none of the five, a session other than this one, an
 	// empty nonce or one this session never issued for the request,
 	// or an expiry or a tool that is not the request's.
 	ErrBadSignature = errors.New("thread: decision signature does not verify")

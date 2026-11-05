@@ -755,7 +755,9 @@ func (parkUnknownOption) applyRun(c *runConfig) { c.parkUnknown = true }
 // RunResult.Pending with no result (weft.tool.pending.source
 // outcome_unknown), and the run ends at that boundary after its step,
 // the other calls' results kept — for a caller that resolves it by a
-// ladder (weft/thread: a keyed retry, the tool's Reconcile, a person).
+// ladder (weft/thread: a keyed retry or a person; the tool's Reconcile
+// is asked only by RecoverTurn after a crash or a shutdown, never for
+// a call parked in a live turn, whose handler may still be running).
 // A Subagent's child run does not inherit it.
 func ParkUnknown() RunOption { return parkUnknownOption{} }
 

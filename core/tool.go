@@ -823,15 +823,20 @@ func (o reconcileOption) applyTool(t *ToolDef) { t.reconcile = o.fn }
 // Reconcile gives the tool a way to settle a call whose outcome is
 // unknown by asking the system that knows (ADR 0032, the second rung of
 // the recovery ladder): fn looks the call up by its Call.IdempotencyKey.
-// weft/thread asks it — for a ReplayNever call that a crash, a
-// shutdown, a timeout or an interrupt left without an answer, while the
-// session's lock is held, under a 30 s bound — and acts on the answer:
+// weft/thread asks it only from Session.RecoverTurn — for a ReplayNever
+// call of unknown outcome in a turn a crash or a shutdown cut off,
+// while the writer still holds the session's lock, under a 30 s bound
+// — and acts on the answer:
 // found, the result is recorded as the call's and the tool does not
 // run; not found, the call runs again under the same key; an error or
-// a timeout leaves the call to a person (a recovery request). A
-// ReplayKeyed call is retried before it is reconciled; a ReplaySafe one
-// never needs it. weft holds no store: fn is the tool's. A nil fn
-// removes it.
+// a timeout leaves the call to a person (a recovery request). It is
+// never asked in a live process: a call a Timeout or a cancel leaves
+// without an answer during a turn (ParkUnknown) goes to a keyed retry
+// or a person, and a handler this process abandoned that may still be
+// running is never reconciled — the system of record could answer
+// "missing" for an effect about to land. A ReplayKeyed call is retried
+// before it is reconciled; a ReplaySafe one never needs it. weft holds
+// no store: fn is the tool's. A nil fn removes it.
 func Reconcile(fn ReconcileFunc) ToolOption { return reconcileOption{fn} }
 
 // Reconciler returns the tool's Reconcile function, nil when it has

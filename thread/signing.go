@@ -531,8 +531,9 @@ const maxSignedRefusals = 16
 //
 //   - the MAC, compared in constant time over the canonical encoding
 //     of every claimed field, under the key sd.KeyID names; an
-//     outcome that is none of the four; a session other than this
-//     one; an empty nonce — ErrBadSignature. A key the ring does not
+//     outcome that is none of the five (approve, deny, resolve,
+//     resolve_error, edit); a session other than this one; an empty
+//     nonce — ErrBadSignature. A key the ring does not
 //     hold fails the same way, with the same words: DecideSigned
 //     never says which key ids exist.
 //   - a nonce a recorded decision already answered — ErrReplay,
