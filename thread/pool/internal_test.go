@@ -1010,3 +1010,77 @@ func (m stubModel) Stream(ctx context.Context, _ core.ModelRequest) iter.Seq2[co
 		yield(core.ModelFinish{Reason: core.StopEndTurn, Usage: core.Usage{InputTokens: 10, OutputTokens: 5}}, nil)
 	}
 }
+
+// A delegation whose pool closed while its child was being created
+// settles canceled once: a Recover that got past its open check before
+// the Close, reaching the receipt in the window before that settlement
+// is written, skips it (the delegation still counts as being created,
+// working) instead of settling it too — two settlements, the child
+// billed twice in Delegated. The hook runs Recover's per-receipt step
+// in that window.
+func TestClosedWhileCreatingSettlesOnce(t *testing.T) {
+	ctx := context.Background()
+	st := &blockChildCreate{Storage: thread.Memory(), entered: make(chan struct{}), release: make(chan struct{})}
+	p := New(2)
+	child := core.New(wefttest.Script(wefttest.Say("child done")))
+	parent, err := thread.Create(ctx, st, core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "w", ID: "d1", Args: wefttest.Args(struct{ Prompt string }{"go"})}),
+		wefttest.Say("parent done")), p.MustWrap("w", "w", child)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Close(ctx) }()
+	var recovered error
+	p.testHookClosedBeforeStart = func() {
+		for _, rc := range Receipts(parent) {
+			if !rc.Settled() && !p.working(rc) {
+				recovered = p.recoverOne(ctx, parent, rc)
+			}
+		}
+	}
+	turn, err := parent.Send(ctx, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-st.entered
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := p.Close(cctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(st.release) // the creation completes into a closed pool
+	_, _ = turn.Wait()
+	if recovered != nil {
+		t.Fatalf("Recover's step in the window: %v", recovered)
+	}
+	rs := Receipts(parent)
+	if len(rs) != 1 || rs[0].State != Canceled {
+		t.Fatalf("receipts = %+v, want one canceled", rs)
+	}
+	n := 0
+	for _, e := range parent.Entries() {
+		if pr, ok := e.(thread.PoolReceiptEntry); ok && pr.Receipt == rs[0].ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d settlement receipts for %s, want 1", n, rs[0].ID)
+	}
+}
+
+// blockChildCreate blocks the creation of any session with a lineage
+// until release is closed.
+type blockChildCreate struct {
+	thread.Storage
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockChildCreate) Create(ctx context.Context, h thread.Header) error {
+	if h.Lineage != nil {
+		s.once.Do(func() { close(s.entered) })
+		<-s.release
+	}
+	return s.Storage.Create(ctx, h)
+}

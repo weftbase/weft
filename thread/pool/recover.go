@@ -121,11 +121,7 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 		offered[r.Child] = true
 	}
 	for _, rc := range Receipts(parent) {
-		p.mu.Lock()
-		_, live := p.delegates[rc.ID]
-		live = live || p.creating[rc.Child] > 0
-		p.mu.Unlock()
-		if live {
+		if p.working(rc) {
 			continue
 		}
 		if !rc.Settled() {
@@ -153,6 +149,17 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// working reports whether this pool answers for rc's delegation now: a
+// registered delegate, or a child it is still creating — counted until
+// its registration, or, when the pool closed meanwhile, until its
+// settlement is written.
+func (p *Pool) working(rc Receipt) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, live := p.delegates[rc.ID]
+	return live || p.creating[rc.Child] > 0
 }
 
 // recoverOne recovers one unsettled receipt no delegate of this pool

@@ -633,9 +633,16 @@ not the numbers themselves.
   whose receipt names a child that does not exist ("… does not exist
   and its run never started: nothing ran"): the acceptance receipt is
   written before the child session is created, so a crash between the
-  two leaves a receipt, never a child no receipt names. A wrapped
-  call's child id is derived from the delegating call's idempotency
-  key, so a recovery retry of the call reaches the same child id. The
+  two leaves a receipt, never a child no receipt names (on jsonl a
+  crash inside the child's creation can leave its file with no
+  complete header; `Recover` removes it and settles the receipt the
+  same way). A wrapped call's child id is derived from the delegating
+  call's idempotency key and an attempt number — the first one nothing
+  names yet — so a recovery retry of a call whose crash came before
+  its acceptance receipt reaches the same child id; one whose
+  acceptance was written takes the next derived id, the first child
+  still named by its receipt. A `Cancel` of a delegation whose child
+  is still being created waits for it to register, then cancels it. The
   same applies in a live process whose pool outlived a parent session
   closed under `thread.ErrShutdown`: the child turns that close cut off
   are let go by the pool (before 0.23.0 they stayed claimed — `Recover`
