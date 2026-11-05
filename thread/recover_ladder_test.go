@@ -3,8 +3,10 @@ package thread_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,61 +23,158 @@ import (
 func TestAbandonedHandlerIsNotReconciledAndRerun(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
-			var mu sync.Mutex
-			invoked, effects := 0, 0
-			release := make(chan struct{})
-			finished := make(chan struct{})
-			wire := core.Tool("wire", "Wire money.", func(context.Context, struct{}) (string, error) {
-				mu.Lock()
-				invoked++
-				n := invoked
-				mu.Unlock()
-				if n == 1 {
-					<-release // ignores its context: still running after the timeout
-					defer close(finished)
+			st := b.open(t)
+			// The Timeout spans the dispatch gate too, and on a loaded
+			// machine the gate's durable record can outlast it: the
+			// call then never started — the model reads that it timed
+			// out (TestTimeoutInTheDispatchGateStartsNothing) and there
+			// is no abandoned handler to test. Another session tries
+			// again.
+			for attempt := 1; !abandonedIsNotRerun(t, st); attempt++ {
+				if attempt == 10 {
+					t.Fatal("the call timed out in the dispatch gate 10 times running")
 				}
-				mu.Lock()
-				effects++
-				mu.Unlock()
-				return "wired", nil
-			}, core.Timeout(20*time.Millisecond), core.Reconcile(func(context.Context, string) (bool, string, error) {
-				mu.Lock()
-				defer mu.Unlock()
-				return effects > 0, "wired", nil
-			}))
-			s, err := thread.Create(bg, b.open(t), core.New(wefttest.Script(
-				wefttest.ToolCalls(wefttest.Call{Name: "wire", ID: "w1", Args: `{}`}),
-				wefttest.Say("done"),
-			), wire))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = s.Close(bg) }()
-			turn, err := s.Send(bg, core.User("wire it"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, _ = turn.Wait()
-			_ = s.WaitIdle(bg)
-			close(release)
-			<-finished
-			mu.Lock()
-			defer mu.Unlock()
-			if invoked != 1 || effects != 1 {
-				t.Fatalf("the handler ran %d times, %d effects; want once", invoked, effects)
-			}
-			if p := s.Pending(); len(p) != 1 || !p[0].Recovery {
-				t.Fatalf("Pending = %+v, want the call waiting for a person", p)
 			}
 		})
 	}
 }
 
-// P1-2: a ReplayKeyed call whose Timeout is shorter than its provider
-// is not retried for ever: the session's automatic retries are bounded
-// (with backoff), then the call goes to a person. The count is on file:
-// after a restart and a person's retry that times out again, the call
-// goes straight back to a person. Both backends.
+// abandonedIsNotRerun runs P1-1 in a new session of st; false when the
+// call's Timeout passed before its handler started.
+func abandonedIsNotRerun(t *testing.T, st thread.Storage) bool {
+	t.Helper()
+	var mu sync.Mutex
+	invoked, effects := 0, 0
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	wire := core.Tool("wire", "Wire money.", func(context.Context, struct{}) (string, error) {
+		mu.Lock()
+		invoked++
+		n := invoked
+		mu.Unlock()
+		if n == 1 {
+			<-release // ignores its context: still running after the timeout
+			defer close(finished)
+		}
+		mu.Lock()
+		effects++
+		mu.Unlock()
+		return "wired", nil
+	}, core.Timeout(20*time.Millisecond), core.Reconcile(func(context.Context, string) (bool, string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return effects > 0, "wired", nil
+	}))
+	s, err := thread.Create(bg, st, core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "wire", ID: "w1", Args: `{}`}),
+		wefttest.Say("done"),
+	), wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, err := s.Send(bg, core.User("wire it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ := turn.Wait()
+	_ = s.WaitIdle(bg)
+	if res != nil && toolResult(res, "w1") == `tool "wire" timed out after 20ms` && len(s.Pending()) == 0 {
+		return false // timed out in the gate: never started, never will
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler never ran to its end")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if invoked != 1 || effects != 1 {
+		t.Fatalf("the handler ran %d times, %d effects; want once", invoked, effects)
+	}
+	if p := s.Pending(); len(p) != 1 || !p[0].Recovery {
+		t.Fatalf("Pending = %+v, want the call waiting for a person", p)
+	}
+	return true
+}
+
+// slowDispatchStore holds the dispatch gate's record of call until
+// hold closes: storage slower than the call's Timeout.
+type slowDispatchStore struct {
+	thread.Storage
+	call string
+	hold <-chan struct{}
+}
+
+func (s *slowDispatchStore) Append(ctx context.Context, session string, entries ...thread.Entry) error {
+	for _, e := range entries {
+		if a, ok := e.(thread.ApprovalAuditEntry); ok && a.Step == thread.StepDispatch && a.CallID == s.call {
+			<-s.hold
+		}
+	}
+	return s.Storage.Append(ctx, session, entries...)
+}
+
+// A call whose Timeout passes while the dispatch gate is still
+// recording it (storage slower than the deadline) was not started: the
+// model reads that it timed out, no request parks, and its handler
+// never starts afterwards — the gate letting it through late must not
+// start an effect the turn has answered as not having happened.
+func TestTimeoutInTheDispatchGateStartsNothing(t *testing.T) {
+	var invoked atomic.Int32
+	answered := make(chan struct{})
+	wire := core.Tool("wire", "Wire money.", func(context.Context, struct{}) (string, error) {
+		invoked.Add(1)
+		return "wired", nil
+	}, core.Timeout(20*time.Millisecond))
+	st := &slowDispatchStore{Storage: thread.Memory(), call: "w1", hold: answered}
+	s, err := thread.Create(bg, st, core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "wire", ID: "w1", Args: `{}`}),
+		wefttest.Say("done"),
+	), wire, core.Tap(func(_ context.Context, ev core.Event) {
+		if f, ok := ev.(core.ToolFinish); ok && f.CallID == "w1" {
+			close(answered) // the loop has answered the call: the gate goes on
+		}
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close(bg) }()
+	turn, err := s.Send(bg, core.User("wire it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := turn.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.WaitIdle(bg)
+	if got := toolResult(res, "w1"); got != `tool "wire" timed out after 20ms` {
+		t.Fatalf("the model read %q", got)
+	}
+	if p := s.Pending(); len(p) != 0 {
+		t.Fatalf("Pending = %+v", p)
+	}
+	// A late start would follow the gate at once; give it ample time.
+	time.Sleep(200 * time.Millisecond)
+	if n := invoked.Load(); n != 0 {
+		t.Fatalf("the handler started %d times after the turn answered the call as timed out", n)
+	}
+}
+
+// P1-2: a ReplayKeyed call whose outcome is never known — a Timeout
+// shorter than its provider, an answer lost every time — is not retried
+// for ever: the session's automatic retries are bounded (with backoff),
+// then the call goes to a person. The count is on file: after a restart
+// and a person's retry that loses its answer again, the call goes
+// straight back to a person. Both backends.
+//
+// The handler says it lost its answer (core.ErrOutcomeUnknown) rather
+// than outliving a short Timeout: a Timeout spans the dispatch gate
+// too, and one that passes while the gate is still recording the call
+// (a loaded machine) ends a call that never started — answered as
+// timed out, not retried (TestTimeoutInTheDispatchGateStartsNothing).
 func TestKeyedRetriesAreBounded(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
@@ -88,9 +187,8 @@ func TestKeyedRetriesAreBounded(t *testing.T) {
 					invoked++
 					at = append(at, time.Now())
 					mu.Unlock()
-					<-ctx.Done()
-					return "", ctx.Err()
-				}, core.Replay(core.ReplayKeyed), core.Timeout(10*time.Millisecond))
+					return "", fmt.Errorf("%w: the carrier's answer was lost", core.ErrOutcomeUnknown)
+				}, core.Replay(core.ReplayKeyed))
 			}
 			st := b.open(t)
 			s, err := thread.Create(bg, st, core.New(wefttest.Script(

@@ -6,6 +6,12 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+### Fixed
+
+- core: a call whose `Timeout` passes (or whose run is canceled) while it is still in the chain before its handler — a slow `BeforeDispatch` gate, such as `weft/thread`'s durable dispatch record on loaded storage — never starts its handler afterwards. The loop answered such a call `tool "X" timed out after d` (or canceled), as not started, but the chain's goroutine carried on and ran the handler once the gate let it through: an effect the model had been told did not happen, beside no recovery request in a thread session (the handler was not started when the loop looked, so the call was not of unknown outcome). Whether the handler started is now decided once, under one lock, against the loop giving up: started first, the call is of unknown outcome as before; given up on first, the handler never runs. `AfterDispatch` is still called for a call the gate passed.
+
 ## 0.22.0 — 2026-11-05
 
 ### Added

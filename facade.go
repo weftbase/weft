@@ -1654,9 +1654,12 @@ type DispatchFunc = core.DispatchFunc
 // weft/thread's gate refuses a call that is not ReplaySafe unless the
 // step entry holding it is durable, so a crash never leaves a side
 // effect the session file does not show was issued. A middleware that
-// calls next more than once passes the gate once per attempt. Neither
-// a Subagent's child run nor a CallTool from inside the handler
-// inherits it. The last option wins.
+// calls next more than once passes the gate once per attempt. The
+// gate runs inside the call's Timeout: a call whose Timeout passes (or
+// whose run is canceled) before the gate returns is answered as timed
+// out (canceled), and its handler never starts, even when the gate
+// then lets it through. Neither a Subagent's child run nor a CallTool
+// from inside the handler inherits it. The last option wins.
 func BeforeDispatch(fn DispatchFunc) RunOption { return core.BeforeDispatch(fn) }
 
 // AfterDispatchFunc is the hook AfterDispatch installs: called once the
@@ -1671,8 +1674,10 @@ type AfterDispatchFunc = core.AfterDispatchFunc
 // panicked. It is called also for a handler the loop abandoned at its
 // Timeout or at the run's cancellation, when that handler finally
 // returns, so a caller can tell whether a call it may retry is still
-// running (weft/thread waits for it before a keyed retry). A handler
-// that never returns never calls it. A CallTool from inside the handler
+// running (weft/thread waits for it before a keyed retry). A call the
+// gate let through after the loop had given up on it (BeforeDispatch)
+// calls it at once: its handler never starts. A handler that never
+// returns never calls it. A CallTool from inside the handler
 // inherits it; a Subagent's child run does not. The last option wins.
 func AfterDispatch(fn AfterDispatchFunc) RunOption { return core.AfterDispatch(fn) }
 

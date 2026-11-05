@@ -212,6 +212,63 @@ func TestTimeoutIsAnUnknownOutcome(t *testing.T) {
 	}
 }
 
+// A call whose Timeout passes while it is still in the dispatch gate
+// was not started: the loop answers it "timed out" (under ParkUnknown
+// too: nothing to park), and the handler never starts afterwards, even
+// when the gate then lets it through — a late start would be an effect
+// the model was told did not happen. AfterDispatch is still told, the
+// gate having passed it.
+func TestTimeoutInTheGateNeverStartsTheHandler(t *testing.T) {
+	for _, park := range []bool{false, true} {
+		var ran atomic.Int32
+		pay := core.Tool("pay", "Pay.", func(context.Context, struct{}) (string, error) {
+			ran.Add(1)
+			return "paid", nil
+		}, core.Timeout(10*time.Millisecond))
+		gaveUp := make(chan struct{})
+		after := make(chan struct{})
+		opts := []core.RunOption{
+			core.Prompt("go"),
+			// The gate lets the call through only once the loop has
+			// answered it: a storage append slower than the Timeout.
+			core.BeforeDispatch(func(context.Context, core.Call, *core.ToolDef) error {
+				<-gaveUp
+				return nil
+			}),
+			core.AfterDispatch(func(context.Context, core.Call, *core.ToolDef) { close(after) }),
+		}
+		if park {
+			opts = append(opts, core.ParkUnknown())
+		}
+		agent := core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{}`}),
+			wefttest.Say("next"),
+		), pay, core.Tap(func(_ context.Context, ev core.Event) {
+			if f, ok := ev.(core.ToolFinish); ok && f.CallID == "c1" {
+				close(gaveUp)
+			}
+		}))
+		res, err := agent.Generate(context.Background(), opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-after:
+		case <-time.After(5 * time.Second):
+			t.Fatal("AfterDispatch was never told")
+		}
+		if n := ran.Load(); n != 0 {
+			t.Fatalf("park %v: the handler started %d times after the loop answered the call", park, n)
+		}
+		if len(res.Pending) != 0 {
+			t.Fatalf("park %v: pending %+v", park, res.Pending)
+		}
+		if r := res.Steps[0].Results[0]; !r.IsError || r.Content != `tool "pay" timed out after 10ms` {
+			t.Fatalf("park %v: result = %+v", park, r)
+		}
+	}
+}
+
 // AfterDispatch is told when a started handler returns — also one the
 // loop abandoned at its Timeout, when it finally returns after the run
 // ended — never for a call the gate refused or a parked call, and a

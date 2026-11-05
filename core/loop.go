@@ -1929,7 +1929,14 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 				panic(p)
 			}
 		}()
-		mark.enter()
+		if !mark.enter() {
+			// The loop gave up on the call (its Timeout passed, or the
+			// run was canceled) while it was still on its way here — in
+			// a slow gate, say — and answered it: it never starts now,
+			// or the model would have been told a plain failure for an
+			// effect that happened.
+			return "", fmt.Errorf("%w: tool %q: the loop gave up on the call before its handler started", ErrNotDispatched, call.Name)
+		}
 		var out string
 		var err error
 		if handler != nil {
@@ -2242,6 +2249,10 @@ type handlerMark struct {
 	// and the dispatch gate, and its handler was called — it may have
 	// taken effect.
 	entered bool
+	// abandoned: the loop gave up on the call (its Timeout, or the
+	// run's cancellation under it) before the handler was entered; it
+	// never is (enter refuses).
+	abandoned bool
 	// wantStack, when set, is asked once a panic is recovered: true
 	// under the development detail level with content on, and the
 	// containment keeps the panicking goroutine's stack (the
@@ -2264,10 +2275,29 @@ func (m *handlerMark) handlerPanicked() bool {
 	return m.panicked
 }
 
-func (m *handlerMark) enter() {
+// enter marks the handler entered, unless the loop has abandoned the
+// call first (abandon): false then, and the handler must not run.
+func (m *handlerMark) enter() bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.abandoned {
+		return false
+	}
 	m.entered = true
-	m.mu.Unlock()
+	return true
+}
+
+// abandon is the loop giving up on the call: its Timeout passed, or
+// the run was canceled under it. Decided
+// under the same lock as enter, so the two never disagree: a handler
+// entered by now may have taken effect (outcome unknown), and one not
+// entered by now never is — the timeout the loop answers stays true.
+func (m *handlerMark) abandon() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.entered {
+		m.abandoned = true
+	}
 }
 
 func (m *handlerMark) wasEntered() bool {
@@ -2390,6 +2420,12 @@ func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, ti
 		}
 		return o.out, o.fail
 	case <-tctx.Done():
+		// Whether the handler started is settled now, for good: one
+		// still in the chain — a slow middleware, a slow gate — never
+		// starts after this answer.
+		if mark != nil {
+			mark.abandon()
+		}
 		if err := ctx.Err(); err != nil {
 			return "", readToolError(err)
 		}
