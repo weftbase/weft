@@ -43,8 +43,13 @@ var ErrNoOutput = errors.New("weft: run ended without a structured output")
 // mode may use it later behind the same API. Output panics if Out is
 // not a struct (or a pointer to one), for the reason Tool does.
 func Output[Out any]() Option {
+	// ReplaySafe: submitting the answer has no effect beyond the
+	// transcript, so a layer's failure after it is a plain, repairable
+	// failure — never OUTCOME_UNKNOWN, never a ParkUnknown park — and
+	// mw.RepairJSON may close its truncated arguments.
 	tool := Tool(outputToolName, outputToolDescription,
-		func(_ context.Context, _ Out) (string, error) { return "recorded", nil })
+		func(_ context.Context, _ Out) (string, error) { return "recorded", nil },
+		Replay(ReplaySafe))
 	// Tool recorded this frame as the source; the manifest should name
 	// Output's caller, where the schema type is chosen.
 	if file, line, fn := callerSource(); file != "" {

@@ -7880,3 +7880,262 @@ func TestServeCallAppliesRunPolicy(t *testing.T) {
 		t.Errorf("gated: %v", err)
 	}
 }
+
+// TestServeCallKeylessInnerCallsCarryNoKey: a served call whose client
+// sent no key gives the calls its handler dispatches with CallTool no
+// key either — never one derived from "", which would be the same
+// constant for every distinct keyless request (a deduplicating
+// downstream would drop the second payment). A keyed served call still
+// derives distinct, stable inner keys.
+func TestServeCallKeylessInnerCallsCarryNoKey(t *testing.T) {
+	var mu sync.Mutex
+	var keys []string
+	var agt *core.Agent
+	ledger := core.Tool("ledger", "Ledger.", func(ctx context.Context, _ struct{}) (string, error) {
+		c, _ := core.CallFromContext(ctx)
+		mu.Lock()
+		keys = append(keys, c.IdempotencyKey)
+		mu.Unlock()
+		return "ok", nil
+	})
+	pay := core.Tool("pay", "Pay.", func(ctx context.Context, _ struct{}) (string, error) {
+		return agt.CallTool(ctx, core.ToolCallPart{ID: "l", Name: "ledger", Args: []byte(`{}`)})
+	})
+	agt = core.New(wefttest.Script(), core.Name("a"), pay, ledger)
+	serve := func(id, key string) {
+		t.Helper()
+		if _, err := agt.ServeCall(context.Background(), core.ToolCallPart{ID: id, Name: "pay", Args: []byte(`{}`)}, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serve("mcp_s_1", "")
+	serve("mcp_s_2", "")
+	if len(keys) != 2 || keys[0] != "" || keys[1] != "" {
+		t.Errorf("keyless served calls' inner keys = %q, want both empty", keys)
+	}
+	keys = nil
+	serve("k1", "K1")
+	serve("k1", "K1")
+	serve("k2", "K2")
+	if len(keys) != 3 || keys[0] == "" || keys[0] != keys[1] || keys[0] == keys[2] {
+		t.Errorf("keyed served calls' inner keys = %q, want stable per key and distinct across keys", keys)
+	}
+}
+
+// TestServeCallContainsToolSourcePanic: a ToolSource that panics fails
+// the served call with an error naming the panic — weft/mcp's Serve
+// runs under a go-sdk that recovers nothing, so a panic out of
+// ServeCall would end the server process.
+func TestServeCallContainsToolSourcePanic(t *testing.T) {
+	static := core.Tool("s", "S.", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	agt := core.New(wefttest.Script(), core.Name("a"), static,
+		core.ToolSource(func() []*core.ToolDef { panic("registry down") }))
+	var p any
+	var err error
+	func() {
+		defer func() { p = recover() }()
+		_, err = agt.ServeCall(context.Background(), core.ToolCallPart{ID: "x", Name: "s", Args: []byte(`{}`)}, "k")
+	}()
+	if p != nil {
+		t.Fatalf("ServeCall panicked out: %v", p)
+	}
+	if err == nil || !strings.Contains(err.Error(), "tool source panicked: registry down") {
+		t.Errorf("err = %v, want the tool source's panic named", err)
+	}
+}
+
+// TestServeCallMiddlewareParkAfterHandler: a middleware that parks a
+// served call (ErrApprovalRequired) after the handler of a tool that is
+// not ReplaySafe ran and answered reads as the unknown outcome it is,
+// as in a run — never "requires approval", which says the call did not
+// run. A park before the handler still reports ErrApprovalRequired.
+func TestServeCallMiddlewareParkAfterHandler(t *testing.T) {
+	var ran atomic.Int32
+	pay := core.Tool("pay", "Pay.", func(context.Context, struct{}) (string, error) {
+		ran.Add(1)
+		return "paid", nil
+	})
+	after := core.WrapTools(func(next core.ToolCaller) core.ToolCaller {
+		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+			if _, err := next(ctx, call); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("%w: review after the fact", core.ErrApprovalRequired)
+		}
+	})
+	agt := core.New(wefttest.Script(), core.Name("a"), after, pay)
+	_, err := agt.ServeCall(context.Background(), core.ToolCallPart{ID: "c", Name: "pay", Args: []byte(`{}`)}, "")
+	if ran.Load() != 1 {
+		t.Fatalf("handler ran %d times, want 1", ran.Load())
+	}
+	if !errors.Is(err, core.ErrOutcomeUnknown) || errors.Is(err, core.ErrApprovalRequired) && !strings.HasPrefix(err.Error(), core.CodeOutcomeUnknown) {
+		t.Errorf("park after the handler answered: %v, want OUTCOME_UNKNOWN", err)
+	}
+	if !strings.HasPrefix(err.Error(), core.CodeOutcomeUnknown+`: tool "pay" answered, but a layer around it failed after`) {
+		t.Errorf("text = %q", err.Error())
+	}
+	before := core.WrapTools(func(next core.ToolCaller) core.ToolCaller {
+		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+			return "", fmt.Errorf("%w: review first", core.ErrApprovalRequired)
+		}
+	})
+	agt = core.New(wefttest.Script(), core.Name("a"), before, pay)
+	if _, err := agt.ServeCall(context.Background(), core.ToolCallPart{ID: "c", Name: "pay", Args: []byte(`{}`)}, ""); !errors.Is(err, core.ErrApprovalRequired) || errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Errorf("park before the handler: %v, want ErrApprovalRequired", err)
+	}
+}
+
+// TestRetryingMiddlewareOutcome: a WrapTools middleware that calls next
+// more than once is judged on every entry of the handler, not the last
+// (ADR 0032's 2026-11-05 amendment): a first attempt that failed and a
+// second still running when the layer gives up is unknown (the second
+// may take effect), and so is a first attempt that answered with no
+// error and a second that failed (the first took effect). Every attempt
+// failing on its own is the plain failure, its words kept.
+func TestRetryingMiddlewareOutcome(t *testing.T) {
+	run := func(t *testing.T, handler func(n int, ctx context.Context) (string, error), mw core.ToolMiddleware) string {
+		t.Helper()
+		var mu sync.Mutex
+		attempts := 0
+		pay := core.Tool("pay", "Pay.", func(ctx context.Context, _ struct{}) (string, error) {
+			mu.Lock()
+			attempts++
+			n := attempts
+			mu.Unlock()
+			return handler(n, ctx)
+		})
+		agt := core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{}`}),
+			wefttest.Say("done"),
+		), core.WrapTools(mw), pay)
+		res, err := agt.Generate(context.Background(), core.Prompt("go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Steps[0].Results[0].Content
+	}
+	t.Run("failed then still running", func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+		retry := func(next core.ToolCaller) core.ToolCaller {
+			return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+				if _, err := next(ctx, call); err == nil {
+					return "ok", nil
+				}
+				done := make(chan struct{})
+				go func() { _, _ = next(ctx, call); close(done) }()
+				select {
+				case <-done:
+					return "ok", nil
+				case <-time.After(30 * time.Millisecond):
+					return "", errors.New("retry middleware: attempt 2 took too long")
+				}
+			}
+		}
+		got := run(t, func(n int, ctx context.Context) (string, error) {
+			if n == 1 {
+				return "", errors.New("transient")
+			}
+			<-release
+			return "paid", nil
+		}, retry)
+		want := core.CodeOutcomeUnknown + `: tool "pay" had not answered when a layer around it failed (retry middleware: attempt 2 took too long); it may still complete; outcome unknown`
+		if got != want {
+			t.Errorf("result = %q, want %q", got, want)
+		}
+	})
+	retryOnce := func(next core.ToolCaller) core.ToolCaller {
+		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+			_, _ = next(ctx, call)
+			return next(ctx, call)
+		}
+	}
+	t.Run("answered then failed", func(t *testing.T) {
+		got := run(t, func(n int, _ context.Context) (string, error) {
+			if n == 1 {
+				return "paid", nil
+			}
+			return "", errors.New("declined")
+		}, retryOnce)
+		want := core.CodeOutcomeUnknown + `: tool "pay" answered, but a layer around it failed after (declined); it may have taken effect; outcome unknown`
+		if got != want {
+			t.Errorf("result = %q, want %q", got, want)
+		}
+	})
+	t.Run("every attempt failed", func(t *testing.T) {
+		got := run(t, func(n int, _ context.Context) (string, error) {
+			return "", fmt.Errorf("declined %d", n)
+		}, retryOnce)
+		if got != "declined 2" {
+			t.Errorf("result = %q, want the handler's own words", got)
+		}
+	})
+}
+
+// TestOutputToolIsReplaySafe: the Output tool (submit_output) has no
+// effect beyond the transcript, so it is ReplaySafe: a WrapTools
+// middleware failing after its handler answered is a plain failure the
+// model repairs — never OUTCOME_UNKNOWN, never a ParkUnknown park — and
+// the manifest records replay_policy safe.
+func TestOutputToolIsReplaySafe(t *testing.T) {
+	type V struct {
+		OK bool `json:"ok"`
+	}
+	var failed atomic.Bool
+	post := func(next core.ToolCaller) core.ToolCaller {
+		return func(ctx context.Context, call core.ToolCallPart) (string, error) {
+			out, err := next(ctx, call)
+			if err == nil && call.Name == "submit_output" && failed.CompareAndSwap(false, true) {
+				return "", errors.New("audit sink down")
+			}
+			return out, err
+		}
+	}
+	newAgent := func() *core.Agent {
+		return core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "submit_output", ID: "o1", Args: `{"ok":true}`}),
+			wefttest.ToolCalls(wefttest.Call{Name: "submit_output", ID: "o2", Args: `{"ok":true}`}),
+		), core.Name("a"), core.Output[V](), core.WrapTools(post))
+	}
+	if p := newAgent().Tools()[0].ReplayPolicy(); p != core.ReplaySafe {
+		t.Errorf("submit_output replay policy = %q, want safe", p)
+	}
+	for _, opts := range [][]core.RunOption{nil, {core.ParkUnknown()}} {
+		failed.Store(false)
+		agt := newAgent()
+		v, res, err := core.GenerateAs[V](context.Background(), agt, append(opts, core.Prompt("go"))...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Pending) != 0 {
+			t.Fatalf("the effect-free Output answer parked: %+v", res.Pending)
+		}
+		if got := res.Steps[0].Results[0].Content; got != "audit sink down" {
+			t.Errorf("first submit's result = %q, want the plain failure", got)
+		}
+		if !v.OK {
+			t.Errorf("the repaired submit was not taken: %+v", v)
+		}
+	}
+}
+
+// TestToolDefTimeout: ToolDef.Timeout reports the tool's own Timeout,
+// telling "none set" (the agent's applies) from the deliberate
+// Timeout(0) lift — what weft/mcp's default call bound reads.
+func TestToolDefTimeout(t *testing.T) {
+	fn := func(context.Context, struct{}) (string, error) { return "", nil }
+	for _, c := range []struct {
+		opts []core.ToolOption
+		d    time.Duration
+		ok   bool
+	}{
+		{nil, 0, false},
+		{[]core.ToolOption{core.Timeout(0)}, 0, true},
+		{[]core.ToolOption{core.Timeout(5 * time.Second)}, 5 * time.Second, true},
+		{[]core.ToolOption{core.Timeout(-1)}, 0, false}, // ignored, as before
+	} {
+		if d, ok := core.Tool("t", "T.", fn, c.opts...).Timeout(); d != c.d || ok != c.ok {
+			t.Errorf("%v: Timeout() = %v, %v; want %v, %v", c.opts, d, ok, c.d, c.ok)
+		}
+	}
+}

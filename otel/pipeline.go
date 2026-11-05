@@ -626,6 +626,9 @@ type destRuntime struct {
 	// disabled signal leaves unused is still the Sink's to close.
 	sinkSpan sdktrace.SpanExporter
 	sinkLog  sdklog.Exporter
+	// sinkGates bound the Sink's exports, one per signal it serves;
+	// closeSink settles them before the exporters' Shutdown.
+	sinkGates []*sinkGate
 	// logExp is the exporter the log batch processor exports through
 	// (nil for a Sink, whose simple processor exports synchronously) —
 	// kept so a test can pin the chain's shape (the raw byte split)
@@ -649,8 +652,20 @@ func (rt *destRuntime) release(ctx context.Context) {
 // closeSink shuts a Sink's exporters down, once each. The simple
 // processors' Shutdown reaches only the sinkSpanExporter and
 // sinkLogExporter wrappers (a no-op), so the Sink's own exporters close
-// here, last: the store outlives every flush.
+// here, last: the store outlives every flush. An abandoned export still
+// inside Export is waited for first (sinkGate.settle); when it does not
+// return in time the exporters are left open — never shut down under a
+// running Export — and the error says so.
 func (rt *destRuntime) closeSink(ctx context.Context) error {
+	if rt.sinkSpan == nil && rt.sinkLog == nil {
+		return nil
+	}
+	for _, g := range rt.sinkGates {
+		if e := g.settle(ctx); e != nil {
+			rt.sinkSpan, rt.sinkLog = nil, nil
+			return fmt.Errorf("otel: sink %q: an abandoned export was still running at shutdown (%w); its exporters were not shut down, never under a running export", rt.name, e)
+		}
+	}
 	var err error
 	if rt.sinkSpan != nil {
 		err = errors.Join(err, rt.sinkSpan.Shutdown(ctx))
@@ -698,11 +713,15 @@ func buildDest(ctx context.Context, d dest, cfg config) (_ *destRuntime, err err
 		}
 		rt.sinkSpan, rt.sinkLog = se, le
 		if d.traces && se != nil {
-			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, sinkSpanExporter{exp: se, gate: newSinkGate(d.timeout, drops)})))
+			g := newSinkGate(d.timeout, drops)
+			rt.sinkGates = append(rt.sinkGates, g)
+			rt.spanProc = sdktrace.NewSimpleSpanProcessor(detailFor(d, cfg, unmarkUnlessAppLogs(d, sinkSpanExporter{exp: se, gate: g})))
 		}
 		if d.logs && le != nil {
+			g := newSinkGate(d.timeout, drops)
+			rt.sinkGates = append(rt.sinkGates, g)
 			rt.logProc = &destProc{
-				name: d.name, inner: sdklog.NewSimpleProcessor(sinkLogExporter{exp: le, gate: newSinkGate(d.timeout, drops)}),
+				name: d.name, inner: sdklog.NewSimpleProcessor(sinkLogExporter{exp: le, gate: g}),
 				content: content, contentC: contentCfg, noDeltas: d.noDeltas, drops: drops,
 				raw: cfg.rawBodies && d.rawOn(), appLogs: d.appLogsOn(),
 			}

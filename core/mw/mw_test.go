@@ -768,3 +768,21 @@ func TestRetryAndFallbackAttemptsGetTheirOwnRequest(t *testing.T) {
 		})
 	}
 }
+
+// RepairJSON closes truncated submit_output arguments: the Output tool
+// has no effect beyond the transcript, so it is ReplaySafe and its cut
+// arguments are repaired like a lookup's.
+func TestRepairJSONClosesSubmitOutput(t *testing.T) {
+	type V struct {
+		City string `json:"city"`
+	}
+	model := wefttest.Script(wefttest.ToolCalls(wefttest.Call{Name: "submit_output", Args: `{"city":"Par`}))
+	v, _, err := core.GenerateAs[V](context.Background(),
+		core.New(model, core.Output[V](), core.WrapModel(mw.RepairJSON())), core.Prompt("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.City != "Par" {
+		t.Errorf("submitted %+v, want the cut arguments closed", v)
+	}
+}

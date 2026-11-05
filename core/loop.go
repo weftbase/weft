@@ -1824,7 +1824,12 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 			// Keyed from the outer call and its position, and gated like
 			// the loop's own calls: a retry of the outer call that
 			// dispatches in the same order reuses the same keys.
-			inner.IdempotencyKey = innerKey(in.outer.IdempotencyKey, in.n.Add(1))
+			// An outer call with no key (a served request whose client
+			// sent none) gives its inner calls none: a key derived from
+			// "" would be one constant shared by every keyless request.
+			if n := in.n.Add(1); in.outer.IdempotencyKey != "" {
+				inner.IdempotencyKey = innerKey(in.outer.IdempotencyKey, n)
+			}
 			if in.gate != nil {
 				ctx = withDispatch(ctx, in.gate)
 			}
@@ -1842,7 +1847,9 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 			if in.gate != nil {
 				return "", fmt.Errorf("%w: tool %q was dispatched from a tool middleware of call %q, before that call's handler started; under a dispatch gate an inner call is dispatched only from inside the handler", ErrNotDispatched, call.Name, outer.CallID)
 			}
-			inner.IdempotencyKey = middlewareKey(in.outer.IdempotencyKey, in.n.Add(1))
+			if n := in.n.Add(1); in.outer.IdempotencyKey != "" {
+				inner.IdempotencyKey = middlewareKey(in.outer.IdempotencyKey, n)
+			}
 		}
 		ctx = withCall(ctx, inner)
 	}
@@ -2341,7 +2348,11 @@ func invokeChain(ctx context.Context, fn ToolCaller, call ToolCallPart, mark *ha
 // The base may run on several goroutines at once — a middleware that
 // calls next twice concurrently (hedging), or one that abandons next on
 // a deadline of its own while the handler returns late — so every field
-// is written and read under mu; the last write wins.
+// is written and read under mu. The panic value and the error are the
+// last written; whether some entry is still running (inFlight) and
+// whether some entry answered with no error (answeredNil) are kept
+// across every entry, so a middleware that retries next reads the
+// whole of what its attempts did, not the last attempt alone.
 type handlerMark struct {
 	mu       sync.Mutex
 	panicked bool
@@ -2353,10 +2364,16 @@ type handlerMark struct {
 	// err is the error the handler last returned (nil: none, or it
 	// never returned).
 	err error
-	// answered: the handler returned (with err) — it did not panic and
-	// is not still running. A call whose handler answered with no error
-	// took effect, whatever a layer around it did after (outcomeUnknown).
-	answered bool
+	// answered: some entry of the handler returned (with err) — it did
+	// not panic. answeredNil: some entry returned no error — that entry
+	// took effect, whatever a layer around it, or a later entry, did
+	// after (outcomeUnknown). lostAnswer: some entry returned an error
+	// matching ErrOutcomeUnknown.
+	answered, answeredNil, lostAnswer bool
+	// inFlight counts the entries of the handler that have started and
+	// neither returned nor panicked yet: a layer that fails while one
+	// still runs leaves an effect that may yet happen.
+	inFlight int
 	// entered: the call passed every middleware, the approval check
 	// and the dispatch gate, and its handler was called — it may have
 	// taken effect.
@@ -2376,6 +2393,9 @@ type handlerMark struct {
 func (m *handlerMark) note(p any) {
 	m.mu.Lock()
 	m.panicked, m.value = true, p
+	if m.inFlight > 0 {
+		m.inFlight--
+	}
 	m.mu.Unlock()
 }
 
@@ -2396,6 +2416,7 @@ func (m *handlerMark) enter() bool {
 		return false
 	}
 	m.entered = true
+	m.inFlight++
 	return true
 }
 
@@ -2425,17 +2446,30 @@ func (m *handlerMark) park(by string) {
 }
 
 func (m *handlerMark) returning(err error) {
+	// Read outside the lock: Is is the error's own code, and a panic in
+	// it reads as no match (errIsContained).
+	lost := err != nil && errIsContained(err, ErrOutcomeUnknown)
 	m.mu.Lock()
 	m.err, m.answered = err, true
+	if err == nil {
+		m.answeredNil = true
+	}
+	m.lostAnswer = m.lostAnswer || lost
+	if m.inFlight > 0 {
+		m.inFlight--
+	}
 	m.mu.Unlock()
 }
 
-// answer reports whether the handler returned (not panicked, not still
-// running) and the error it last returned.
-func (m *handlerMark) answer() (answered bool, err error) {
+// effect is what the handler's entries leave behind, across all of
+// them: running, some entry is still running (it may yet take effect);
+// tookEffect, some entry answered with no error; lost, some entry said
+// it lost its answer (ErrOutcomeUnknown); answered, some entry returned
+// at all.
+func (m *handlerMark) effect() (running, tookEffect, lost, answered bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.answered, m.err
+	return m.inFlight > 0, m.answeredNil, m.lostAnswer, m.answered
 }
 
 // panicValue is the value the handler last panicked with.
@@ -2614,7 +2648,11 @@ func capResultN(s string, resultCap int) (string, int) {
 // AfterDispatch hook) then failed: the effect happened, the answer never
 // reached the model. A failure the handler returned while the run was
 // live is its own answer and keeps its words, whatever a middleware
-// made of it after.
+// made of it after. A layer that entered the handler more than once (a
+// middleware retrying next) is judged on every entry: unknown while
+// any entry still runs, or when any entry answered with no error or
+// lost its answer — a plain failure only when every entry returned an
+// error of its own.
 func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail toolFailure, mark *handlerMark, timeout time.Duration) (string, bool) {
 	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
 		return "", false
@@ -2639,15 +2677,19 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 	if errors.Is(fail.err, ErrOutcomeUnknown) {
 		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, fail.text), true
 	}
-	answered, herr := mark.answer()
+	// Read across every entry of the handler, not the last one: a
+	// middleware that retries next may give up on a second attempt still
+	// running after a first that failed, or fail after a first attempt
+	// that answered.
+	running, tookEffect, lost, answered := mark.effect()
 	switch {
-	case !answered:
+	case running || !answered:
 		// A layer around the handler (a middleware's own deadline, say)
 		// gave up on it while it still ran.
 		return fmt.Sprintf("%s: tool %q had not answered when a layer around it failed (%s); it may still complete; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
-	case herr == nil:
+	case tookEffect:
 		return fmt.Sprintf("%s: tool %q answered, but a layer around it failed after (%s); it may have taken effect; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
-	case errIsContained(herr, ErrOutcomeUnknown):
+	case lost:
 		// The handler said it lost its answer; a middleware masked that.
 		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, failText(fail)), true
 	}
@@ -2657,15 +2699,16 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 // ranPastHandler reports whether a call parked by a layer around its
 // handler (ErrApprovalRequired from a middleware) had already run it: a
 // tool that is not ReplaySafe whose handler started and did not answer
-// with an error of its own. Such a call is not parked — approving it
+// with an error of its own (any entry of it still running, or any
+// answering with no error — handlerMark.effect). Such a call is not parked — approving it
 // would run the effect again — but read as of unknown outcome. A
 // handler's own ErrApprovalRequired still parks its call.
 func ranPastHandler(def *ToolDef, mark *handlerMark) bool {
 	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
 		return false
 	}
-	answered, herr := mark.answer()
-	return !answered || herr == nil
+	running, tookEffect, _, answered := mark.effect()
+	return running || tookEffect || !answered
 }
 
 // failText is the failure's text, read contained when the settled

@@ -58,7 +58,11 @@ var ErrToolError = errors.New("mcp: tool returned an error")
 // whose ctx carries none (no Timeout on the tool or the agent, no
 // deadline on the run) is bounded at one minute: past it the call
 // reads as a lost answer (an unknown outcome, below). A Timeout through
-// Policy or the agent, or any deadline on ctx, replaces the default. A
+// Policy replaces the default whatever its value — Policy(core.Timeout(0))
+// is the deliberate lift: the call runs with no deadline, as core runs
+// any tool whose Timeout is 0 — and so does an agent's Timeout (a
+// positive one: the agent's Timeout(0) is no default at all, and leaves
+// the minute in place) or any deadline on ctx. A
 // server all of whose tools were
 // skipped imports nothing to carry the skips: ImportError.Option
 // records them on the agent.
@@ -203,8 +207,14 @@ func Tools(ctx context.Context, sess *sdk.ClientSession, opts ...Option) ([]*cor
 			toolOpts = append(toolOpts, core.Sequential())
 		}
 		toolOpts = append(toolOpts, cfg.policy...)
+		ownTimeout := new(bool)
 		tool := core.RawTool(k.name, t.Description, k.schema,
-			callHandler(sess, t.Name, cfg.callerMeta), toolOpts...)
+			callHandlerBounded(sess, t.Name, cfg.callerMeta, ownTimeout), toolOpts...)
+		// A Timeout through Policy — Timeout(0), the deliberate lift,
+		// included — replaces the default bound: the tool runs under
+		// exactly what its caller asked for. Read once, before the tool
+		// is handed out (a ToolDef's options are fixed at construction).
+		_, *ownTimeout = tool.Timeout()
 		if t.OutputSchema != nil {
 			if raw, err := fromSDK(t.OutputSchema); err == nil {
 				if outSchema, err := core.ParseSchema(raw); err == nil {
@@ -380,11 +390,19 @@ func Policy(opts ...core.ToolOption) Option { return policyOption(opts) }
 // tools/call requires an object. Under CallerMeta, params._meta carries
 // the caller: the tool span's trace context and the weft call (meta.go).
 func callHandler(sess *sdk.ClientSession, remoteName string, sendCaller bool) func(context.Context, json.RawMessage) (string, error) {
+	return callHandlerBounded(sess, remoteName, sendCaller, new(bool))
+}
+
+// callHandlerBounded is callHandler; *ownTimeout true leaves out the
+// default bound — the tool carries a Timeout of its own (Policy), the
+// deliberate Timeout(0) lift included. It is set once, after the tool
+// is built and before any call.
+func callHandlerBounded(sess *sdk.ClientSession, remoteName string, sendCaller bool, ownTimeout *bool) func(context.Context, json.RawMessage) (string, error) {
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
-		if _, bounded := ctx.Deadline(); !bounded {
+		if _, bounded := ctx.Deadline(); !*ownTimeout && !bounded {
 			// A server that never answers must not hold a run for ever
-			// (WR-17): with no Timeout and no run deadline, the call
-			// is bounded by default.
+			// (WR-17): with no Timeout on the tool, none on the agent
+			// and no run deadline, the call is bounded by default.
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
 			defer cancel()

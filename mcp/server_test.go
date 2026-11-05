@@ -637,3 +637,33 @@ func TestServeAppliesToolPolicy(t *testing.T) {
 		t.Errorf("big: %v %q", isErr, got)
 	}
 }
+
+// A panicking ToolSource never takes the server down: the go-sdk
+// recovers no handler panic, so Serve's tool answers with an isError
+// result naming the panic and the session keeps serving.
+func TestServeContainsAToolSourcePanic(t *testing.T) {
+	static := core.Tool("s", "S.", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	var boom bool
+	agt := core.New(wefttest.Script(), core.Name("a"), static,
+		core.ToolSource(func() []*core.ToolDef {
+			if boom {
+				panic("registry down")
+			}
+			return []*core.ToolDef{static}
+		}))
+	s := sdk.NewServer(&sdk.Implementation{Name: "srv", Version: "0"}, nil)
+	Serve(s, agt, "Agent.")
+	sess := newSession(t, s)
+	boom = true
+	res, err := sess.CallTool(context.Background(), &sdk.CallToolParams{Name: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Content[0].(*sdk.TextContent).Text, "tool source panicked: registry down") {
+		t.Fatalf("result = %+v, want an isError result naming the panic", res)
+	}
+	boom = false
+	if res, err := sess.CallTool(context.Background(), &sdk.CallToolParams{Name: "s"}); err != nil || res.IsError {
+		t.Fatalf("the session after the panic: %+v %v", res, err)
+	}
+}

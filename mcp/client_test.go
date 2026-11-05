@@ -1106,3 +1106,54 @@ func TestToolsCallBoundedByDefault(t *testing.T) {
 		t.Errorf("result %q", r.Content)
 	}
 }
+
+// WR-17's default bound holds only when no Timeout was asked for: a
+// Policy(core.Timeout(0)) lift is deliberate — "this call may run long"
+// — and the call runs with no deadline, as core runs any tool whose
+// Timeout is 0, even under an agent-wide Timeout. Without the lift the
+// agent-wide Timeout is the bound.
+func TestToolsTimeoutZeroLiftIsUnbounded(t *testing.T) {
+	old := defaultCallTimeout
+	defaultCallTimeout = 50 * time.Millisecond
+	defer func() { defaultCallTimeout = old }()
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "slow", false, func(ctx context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "done"}}}, nil
+		})
+	})
+	defer stop()
+	run := func(opts ...Option) string {
+		t.Helper()
+		tools, err := Tools(context.Background(), sess, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent := core.New(wefttest.Script(
+			wefttest.ToolCalls(wefttest.Call{Name: "slow", ID: "c1", Args: `{}`}),
+			wefttest.Say("ok"),
+		), core.Timeout(10*time.Second), tools[0])
+		res, err := agent.Generate(context.Background(), core.Prompt("go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Steps[0].Results[0].Content
+	}
+	if got := run(Policy(core.Timeout(0))); got != "done" {
+		t.Errorf("Timeout(0) lift: result %q, want the call to run to its answer", got)
+	}
+	if got := run(); got != "done" {
+		t.Errorf("agent-wide Timeout: result %q, want it (not the default) to bound the call", got)
+	}
+	// With nothing set anywhere, the default still holds.
+	tools, err := Tools(context.Background(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools[0].Invoke(context.Background(), json.RawMessage(`{}`)); !errors.Is(err, core.ErrOutcomeUnknown) {
+		t.Errorf("no Timeout anywhere: %v, want the default bound's lost answer", err)
+	}
+}

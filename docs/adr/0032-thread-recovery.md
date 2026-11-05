@@ -693,6 +693,21 @@ A handler's own failure keeps its words whatever a middleware made of it
 answer"; a handler that panicked with a middleware recovering it reads
 the panic text. A `ReplaySafe` tool keeps the old texts.
 
+A layer that enters the handler more than once — a middleware retrying
+`next`, or hedging — is judged on every entry, not the last: the call is
+of unknown outcome while any entry still runs, or when any entry
+answered with no error (it took effect, whatever a later attempt said)
+or lost its answer; it keeps the handler's words only when every entry
+returned an error of its own. The same reading decides whether a
+middleware's park ran past the handler, in a run and under
+`Agent.ServeCall` alike (there a park after the handler ran is that
+unknown outcome, never "requires approval": the call ran). The `Output`
+tool (`submit_output`) is `ReplaySafe` — submitting the answer has no
+effect beyond the transcript — so a layer's failure after it is a plain
+failure the model repairs, never a `ParkUnknown` park, and
+`mw.RepairJSON` closes its cut arguments; the manifest records it
+`replay_policy: safe`.
+
 **A settled call never starts later.** Once a call's chain has returned, the loop settles the call and refuses its handler from then on (the 0.22.1 lock, `handlerMark.abandon`): a middleware that let go of `next` before the handler started cannot have it start behind an answer that says it never ran. Pinned by `TestToolMarkConcurrentCallers/abandoning`.
 
 **An answer at the deadline is kept (C9).** A handler that answered as
@@ -732,7 +747,9 @@ Tests: `TestLayerFailureAfterTheHandlerIsAnUnknownOutcome`,
 `TestAwaitAnswerPrefersTheAnswerAtTheDeadline`,
 `TestEditedCallParkedAgainReportsTheTranscriptsCall`,
 `TestEditedResultIsCapped`, `TestParkSourcePanicParksEveryCall`,
-`TestParkSourcePanicLetsTheAnswerThrough` (core), `TestRepairJSON`,
+`TestParkSourcePanicLetsTheAnswerThrough`, `TestRetryingMiddlewareOutcome`,
+`TestServeCallMiddlewareParkAfterHandler`, `TestOutputToolIsReplaySafe`
+(core), `TestRepairJSON`, `TestRepairJSONClosesSubmitOutput`,
 `TestRetryMaxTotalBoundsTheCall` (core/mw),
 `TestEditedCallUnknownInALiveTurnKeepsTheEdit` (thread).
 
