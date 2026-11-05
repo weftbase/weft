@@ -340,6 +340,12 @@ type Session struct {
 	// navigation), or "" while the session holds no entries — the next
 	// entry is then the root.
 	leaf string
+	// tools is the agent's tool set as the last entry point read it
+	// (snapshotTools), outside the lock — what every locked read of a
+	// tool (toolLocked) resolves against, so the agent's ToolSource is
+	// never called while s.mu is held. nil until an entry point took
+	// one: toolLocked then reads the static set.
+	tools *toolView
 	// orphans are the entries accepted under Salvage whose parent the
 	// file does not hold (a skipped line took it): each is the root of
 	// what survives of its line, and the one place a path may end

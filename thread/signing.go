@@ -575,11 +575,22 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	from := len(s.order)
-	t, err := s.decideSignedLocked(ctx, sd)
-	revs, fn := s.openedRevisionsLocked(from), s.cfg.onRequest
-	s.mu.Unlock()
+	tv := snapshotTools(s.agent) // before the lock, as Decide
+	var (
+		revs []Request
+		fn   func(Request)
+	)
+	t, err := func() (*Turn, error) {
+		// Deferred: a panic inside — the caller's IDs or Clock — never
+		// leaves the session locked.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.useToolsLocked(tv)
+		from := len(s.order)
+		t, err := s.decideSignedLocked(ctx, sd)
+		revs, fn = s.openedRevisionsLocked(from), s.cfg.onRequest
+		return t, err
+	}()
 	s.notifyRequests(fn, revs)
 	return t, err
 }

@@ -999,7 +999,9 @@ func (s *Session) runOne(item workItem) {
 	persist := context.WithoutCancel(ps.ctx)
 	var promptErr error
 	held := false
+	tv := snapshotTools(s.agent) // before the lock, as runResume
 	s.locked(func() {
+		s.useToolsLocked(tv)
 		if t.promptWritten() {
 			return
 		}
@@ -1101,7 +1103,12 @@ func (s *Session) runResume(item workItem) {
 		startErr error
 		opts     []core.RunOption
 	)
+	// The agent's tools are read before the lock: the drift check and
+	// the arming's replay classes resolve against this snapshot, and a
+	// ToolSource never runs under s.mu (it may read the session).
+	tv := snapshotTools(s.agent)
 	s.locked(func() {
+		s.useToolsLocked(tv)
 		if !s.boundaryLocked() {
 			startErr = fmt.Errorf("%w: %w: the boundary this resume was armed for is gone (branched away?)", ErrNotRun, ErrNotPending)
 			return

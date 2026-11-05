@@ -265,8 +265,10 @@ func (s *Session) ReplayDecisions(ctx context.Context, ds ...ApprovalDecisionEnt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	tv := snapshotTools(s.agent) // before the lock: an Always approval's grant binds the tool's schema
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.useToolsLocked(tv)
 	if s.header.Lineage == nil {
 		return nil, fmt.Errorf("thread: ReplayDecisions on session %s, which is not a pool child", s.header.ID)
 	}

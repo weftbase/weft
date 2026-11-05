@@ -530,11 +530,18 @@ func hasToolCall(m core.Message) bool {
 }
 
 // toolLocked returns the agent's tool by name — a ToolSource's tools
-// resolved like the static ones (currentTool) — nil when it has none (a
-// tool since removed): such a call is treated as core.ReplayNever.
-// Callers hold s.mu.
+// resolved like the static ones, from the snapshot the entry point took
+// before it locked (Session.tools; the source is never called under
+// s.mu) — nil when it has none (a tool since removed): such a call is
+// treated as core.ReplayNever. Before any entry point took a snapshot
+// it reads the static set alone, the cautious reading for a source's
+// tool; the paths that act on the answer — a turn or resume starting,
+// RecoverTurn, Decide — take their own first. Callers hold s.mu.
 func (s *Session) toolLocked(name string) *core.ToolDef {
-	return currentTool(s.agent, name)
+	if s.tools == nil {
+		return staticTools(s.agent).tool(name)
+	}
+	return s.tools.tool(name)
 }
 
 // replayOfLocked is a call's replay class, ReplayNever for a tool the
@@ -856,8 +863,13 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The agent's tools are read once, before the lock: the replay
+	// classes, reconcilers and schemas the ladder reads come from this
+	// snapshot, and a ToolSource never runs under s.mu.
+	tv := snapshotTools(s.agent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.useToolsLocked(tv)
 	if err := s.admitLocked(); err != nil {
 		return nil, err
 	}
@@ -880,7 +892,9 @@ func (s *Session) RecoverTurn(ctx context.Context) (*Turn, error) {
 			// again (ADR 0032).
 			return nil, err
 		}
-		// The lock was released: the session must still be as found.
+		// The lock was released: the session must still be as found,
+		// and the ladder decides on the tools it asked under.
+		s.useToolsLocked(tv)
 		if s.running {
 			return nil, fmt.Errorf("%w: session %s", ErrBusy, s.header.ID)
 		}
@@ -1038,7 +1052,7 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 	policy := s.replayAtDispatchLocked(c, run)
 	req := ApprovalRequestEntry{
 		CallID: c.ID, Tool: c.Name, Args: slices.Clone(args), ArgsSHA256: hashArgs(args),
-		RunID: run, Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),
+		RunID: run, Run: settings.Clone(), SchemaSHA256: schemaHashOf(def),
 		Quorum: quorum, Recovery: true,
 	}
 	switch {
@@ -1053,12 +1067,12 @@ func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, 
 		// park rule, a middleware — a person decides it, as any call.
 		req.Recovery, req.Reason = false, reasonNotStarted
 		if def != nil && def.RequiresApproval() {
-			req.Reason = parkingReason(s, c.Name)
+			req.Reason = parkingReason(def)
 		}
 		return []Entry{req}
 	case start == startUnknowable && def != nil && def.RequiresApproval():
 		// Its tool parks it before it starts: it never ran.
-		req.Recovery, req.Reason = false, parkingReason(s, c.Name)
+		req.Recovery, req.Reason = false, parkingReason(def)
 		return []Entry{req}
 	case handlerRunning(run, c.ID):
 		// Its handler, abandoned by a run a Close cut off, still runs

@@ -537,11 +537,26 @@ func (s *Session) Decide(ctx context.Context, ds ...Decision) (*Turn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	from := len(s.order)
-	t, err := s.decideUnsignedLocked(ctx, ds)
-	revs, fn := s.openedRevisionsLocked(from), s.cfg.onRequest
-	s.mu.Unlock()
+	// The agent's tools are read before the lock (an Always approval's
+	// grant binds the tool's schema; the arming reads replay classes):
+	// a ToolSource never runs under s.mu.
+	tv := snapshotTools(s.agent)
+	var (
+		revs []Request
+		fn   func(Request)
+	)
+	t, err := func() (*Turn, error) {
+		// Deferred: a panic inside — the caller's IDs or Clock — never
+		// leaves the session locked.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.useToolsLocked(tv)
+		from := len(s.order)
+		t, err := s.decideUnsignedLocked(ctx, ds)
+		revs, fn = s.openedRevisionsLocked(from), s.cfg.onRequest
+		return t, err
+	}()
+	// OnRequest fires once Decide has let go of the session.
 	s.notifyRequests(fn, revs)
 	return t, err
 }
@@ -840,7 +855,7 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		all := append(before, e)
 		held[d.CallID] = all
 		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
-			g := alwaysGrant(s.agent, req.Tool, req.Args, e)
+			g := alwaysGrant(schemaHashOf(s.toolLocked(req.Tool)), req.Tool, req.Args, e)
 			g.ID, g.ParentID, g.Created = s.mintIDLocked(), parent, now
 			entries = append(entries, g)
 			parent = g.ID
@@ -1234,7 +1249,11 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	// delegation again in a second child session, a denial would
 	// abandon a child that is still parked.
 	var wrappers map[string]string
-	s.locked(func() { wrappers = s.approvalWalkLocked().wrappers })
+	tv := snapshotTools(s.agent) // the recovery entries below read it; never the source under s.mu
+	s.locked(func() {
+		s.useToolsLocked(tv)
+		wrappers = s.approvalWalkLocked().wrappers
+	})
 	// The calls whose handler started and gave no answer
 	// (core.ParkUnknown): the outcome is unknown, and the recovery
 	// ladder decides it (ADR 0032) — a keyed retry (bounded), or a
@@ -1328,7 +1347,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			req := Request{
 				Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 				Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
-				RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
+				RunID: t.runID, Reason: parkingReason(currentTool(s.agent, c.Name)), Expiry: expiry,
 			}
 			s.locked(func() { s.requestKeyLocked(&req) })
 			d, decided, outcome := s.consultApprover(ctx, req)
@@ -1362,7 +1381,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 					// approval; the decision keeps the wish (Always)
 					// and the approval that completes the quorum mints
 					// the grant.
-					steps = append(steps, alwaysGrant(s.agent, c.Name, c.Args, de))
+					steps = append(steps, alwaysGrant(toolSchemaHash(s.agent, c.Name), c.Name, c.Args, de))
 				}
 			}
 		}
@@ -1373,7 +1392,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		args := slices.Clone(c.Args)
 		cr.entries = append(cr.entries, ApprovalRequestEntry{
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
-			RunID: t.runID, Reason: parkingReason(s, c.Name), Expiry: expiry,
+			RunID: t.runID, Reason: parkingReason(currentTool(s.agent, c.Name)), Expiry: expiry,
 			Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),
 			Quorum: s.parkQuorum(),
 		})
@@ -1451,8 +1470,8 @@ func (s *Session) consultApprover(ctx context.Context, r Request) (Decision, boo
 // tool's own RequireApproval mark when it has one, the tool chain's
 // deferral otherwise, and the unknown-tool text a tool source that
 // changed shape leaves.
-func parkingReason(s *Session, tool string) string {
-	if def := currentTool(s.agent, tool); def != nil {
+func parkingReason(def *core.ToolDef) string {
+	if def != nil {
 		if def.RequiresApproval() {
 			return "tool requires approval"
 		}
@@ -1466,19 +1485,75 @@ func parkingReason(s *Session, tool string) string {
 // not only the static set Agent.Tools reports — or nil when a holds
 // none of that name, or its source's snapshot is malformed (it resolves
 // nothing then: no step could run against it either). The source is
-// the agent's code; it is called on the caller's goroutine, under
-// whatever lock the caller holds.
+// the agent's code, called on the caller's goroutine: never call this
+// with s.mu held — a source may read the session, or wait on the
+// network. Locked code reads the entry point's snapshot (toolLocked).
 func currentTool(a *core.Agent, name string) *core.ToolDef {
+	return snapshotTools(a).tool(name)
+}
+
+// toolView is one reading of an agent's tools — a ToolSource's
+// included — taken outside the session lock by the entry point that
+// will need it (Decide, DecideSigned, Grant, ReplayDecisions,
+// RecoverTurn, a turn or a resume as it starts) and handed to the
+// locked code through Session.tools. A malformed source snapshot
+// resolves nothing, as no step could run against it either.
+type toolView struct {
+	defs map[string]*core.ToolDef
+}
+
+// snapshotTools reads a's tools once. It calls the agent's ToolSource:
+// callers must not hold s.mu.
+func snapshotTools(a *core.Agent) *toolView {
+	v := &toolView{defs: map[string]*core.ToolDef{}}
 	tools, err := a.CurrentTools()
 	if err != nil {
-		return nil
+		return v
 	}
 	for _, def := range tools {
-		if def.Name == name {
-			return def
+		if _, dup := v.defs[def.Name]; !dup {
+			v.defs[def.Name] = def
 		}
 	}
-	return nil
+	return v
+}
+
+// staticTools is the agent's static tool set (Agent.Tools) as a view:
+// no ToolSource call, safe under the lock. A source's tools resolve to
+// nothing in it — the cautious reading (ReplayNever, not parked by its
+// own RequireApproval) for the predicates that may run before any
+// entry point took a snapshot.
+func staticTools(a *core.Agent) *toolView {
+	v := &toolView{defs: map[string]*core.ToolDef{}}
+	for _, def := range a.Tools() {
+		if _, dup := v.defs[def.Name]; !dup {
+			v.defs[def.Name] = def
+		}
+	}
+	return v
+}
+
+// tool is the view's tool named name, nil when it holds none.
+func (v *toolView) tool(name string) *core.ToolDef {
+	if v == nil {
+		return nil
+	}
+	return v.defs[name]
+}
+
+// schemaHash is the hex SHA-256 of the input schema of the view's tool
+// named name, as JSON — "" when it holds no tool of that name.
+func (v *toolView) schemaHash(name string) string {
+	return schemaHashOf(v.tool(name))
+}
+
+// useToolsLocked installs the snapshot an entry point took before it
+// locked (snapshotTools): the locked reads that follow resolve tools
+// against it. Callers hold s.mu.
+func (s *Session) useToolsLocked(v *toolView) {
+	if v != nil {
+		s.tools = v
+	}
 }
 
 // fireOnRequest delivers the chain's parked requests to the OnRequest
@@ -1638,7 +1713,7 @@ func (s *Session) driftLocked(r ApprovalRequestEntry) string {
 	if r.SchemaSHA256 == "" {
 		return ""
 	}
-	switch now := toolSchemaHash(s.agent, r.Tool); now {
+	switch now := schemaHashOf(s.toolLocked(r.Tool)); now {
 	case r.SchemaSHA256:
 		return ""
 	case "":
@@ -1651,9 +1726,16 @@ func (s *Session) driftLocked(r ApprovalRequestEntry) string {
 // toolSchemaHash is the hex SHA-256 of the input schema of a's tool
 // named name, as JSON — "" when a holds no tool of that name. A
 // ToolSource's tools are resolved like the static ones (currentTool),
-// so a call parked under a source is checked for drift too.
+// so a call parked under a source is checked for drift too. It calls
+// the source: never with s.mu held (locked code hashes
+// s.toolLocked's def with schemaHashOf).
 func toolSchemaHash(a *core.Agent, name string) string {
-	def := currentTool(a, name)
+	return schemaHashOf(currentTool(a, name))
+}
+
+// schemaHashOf is the hex SHA-256 of def's input schema, as JSON — ""
+// for no tool.
+func schemaHashOf(def *core.ToolDef) string {
 	if def == nil {
 		return ""
 	}

@@ -178,11 +178,14 @@ func (s *Session) Grant(ctx context.Context, g Grant) error {
 	if g.Tool == "" {
 		return fmt.Errorf("thread: Grant with no tool name")
 	}
+	// The schema is read before the lock: the agent's ToolSource never
+	// runs under it.
+	schema := toolSchemaHash(s.agent, g.Tool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
 		return GrantEntry{ID: id, ParentID: parent, Created: created, Grant: g, Via: viaUser,
-			SchemaSHA256: toolSchemaHash(s.agent, g.Tool)}
+			SchemaSHA256: schema}
 	})
 }
 
@@ -223,10 +226,11 @@ func exactArgsGrant(tool string, args json.RawMessage) Grant {
 // alwaysGrant is the grant an ApproveAlways decision d mints over a
 // call to tool with args: the exact-args grant, its grantor the
 // approval that minted it — d's Who, the signing key id when a
-// signature named no one — d's door, and the tool's schema now
-// (toolSchemaHash over a).
-func alwaysGrant(a *core.Agent, tool string, args json.RawMessage, d ApprovalDecisionEntry) GrantEntry {
-	g := GrantEntry{Grant: exactArgsGrant(tool, args), Via: d.Via, SchemaSHA256: toolSchemaHash(a, tool)}
+// signature named no one — d's door, and schema, the tool's input
+// schema hash now (read outside the lock, or from the entry point's
+// snapshot: toolLocked).
+func alwaysGrant(schema, tool string, args json.RawMessage, d ApprovalDecisionEntry) GrantEntry {
+	g := GrantEntry{Grant: exactArgsGrant(tool, args), Via: d.Via, SchemaSHA256: schema}
 	g.Who = d.Who
 	if g.Who == "" {
 		g.Who = d.KeyID
