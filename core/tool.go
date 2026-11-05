@@ -826,7 +826,9 @@ func (o reconcileOption) applyTool(t *ToolDef) { t.reconcile = o.fn }
 // weft/thread asks it only from Session.RecoverTurn — for a ReplayNever
 // call of unknown outcome in a turn a crash or a shutdown cut off,
 // while the writer still holds the session's lock, under a 30 s bound
-// — and acts on the answer:
+// — and acts on the answer. Several cut-off calls are asked at once,
+// each on its own goroutine under that one shared bound, so fn may be
+// called concurrently (for different keys) and must be safe for it:
 // found, the result is recorded as the call's and the tool does not
 // run; not found, the call runs again under the same key; an error or
 // a timeout leaves the call to a person (a recovery request). It is

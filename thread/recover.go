@@ -825,7 +825,10 @@ func (s *Session) resumeRefusedAsLocked(cutOffUnknown bool) error {
 //     step), to run again with its same IdempotencyKey; a
 //     core.ReplayNever one asks its tool's
 //     Reconcile, else waits for a person to approve (retry, same key)
-//     or deny (skip) it. A ReplaySafe call beside them is not run
+//     or deny (skip) it. Several such calls are asked at once, under
+//     one shared 30 s bound: a Reconcile may be called concurrently,
+//     for different keys, and must be safe for it; one that ignores
+//     its context is abandoned at the bound and reads as an error. A ReplaySafe call beside them is not run
 //     again: its result says so, and the model may ask again. In a
 //     step written before dispatch records, where whether a call was
 //     parked is not knowable, nothing runs on the session's own say:

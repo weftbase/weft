@@ -1994,9 +1994,11 @@ func (s *Session) recordTurnEnd(ctx context.Context, t *Turn, end turnEnd) error
 	handed := s.handed
 	if chain := end.chain; chain != nil {
 		// The chain's entries join the turn's batch: ids and parents
-		// assigned here, in call order, after the turn entry (ADR 0021
-		// §1–§2). Their kinds carry no prompt and no messages; they are
-		// bookkeeping the model never sees.
+		// assigned here, in call order, before the turn entry, which
+		// goes last in the batch (ADR 0021 §1–§2): a torn jsonl prefix
+		// then reads as the turn cut off, never as a turn without its
+		// requests. Their kinds carry no prompt and no messages; they
+		// are bookkeeping the model never sees.
 		for _, e := range chain.entries {
 			id, idErr := mint()
 			if idErr != nil {
