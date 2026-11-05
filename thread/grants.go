@@ -165,6 +165,15 @@ type SharedGrant struct {
 // grantor and Via "user", the door, as Decide does. The tool name must not be empty:
 // a grant that matches every tool is a policy this shape does not
 // have.
+//
+// The grant is bound to the tool's input schema as the session's agent
+// resolves it now (a ToolSource's tools included; GrantEntry.
+// SchemaSHA256): once the tool changes its input, the grant no longer
+// matches and the call parks for a new decision — the drift rule a
+// parked call's approval follows. A grant for a tool the agent does
+// not hold at the mint records no schema and matches on name and
+// arguments alone, as does a grant recorded before the binding existed.
+// An ApproveAlways grant is bound the same way.
 func (s *Session) Grant(ctx context.Context, g Grant) error {
 	if g.Tool == "" {
 		return fmt.Errorf("thread: Grant with no tool name")
@@ -172,7 +181,8 @@ func (s *Session) Grant(ctx context.Context, g Grant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
-		return GrantEntry{ID: id, ParentID: parent, Created: created, Grant: g, Via: viaUser}
+		return GrantEntry{ID: id, ParentID: parent, Created: created, Grant: g, Via: viaUser,
+			SchemaSHA256: toolSchemaHash(s.agent, g.Tool)}
 	})
 }
 
@@ -180,6 +190,13 @@ func (s *Session) Grant(ctx context.Context, g Grant) error {
 // revocation is an append — the grant entry stays, the walk reads the
 // revocation after it. grantID must name a grant entry the session
 // holds; a shared grant's revocation is its store's own operation.
+//
+// A revocation also withdraws the approvals the grant already made for
+// calls still waiting at an open boundary (a sibling call parked for a
+// person): the resume re-validates them when it starts, and such a
+// call is not run — it reads the core's "DENIED: no decision", and the
+// resume's audit entry (StepResume, outcome "grant_revoked") names the
+// grant.
 func (s *Session) Revoke(ctx context.Context, grantID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,9 +223,10 @@ func exactArgsGrant(tool string, args json.RawMessage) Grant {
 // alwaysGrant is the grant an ApproveAlways decision d mints over a
 // call to tool with args: the exact-args grant, its grantor the
 // approval that minted it — d's Who, the signing key id when a
-// signature named no one — and d's door.
-func alwaysGrant(tool string, args json.RawMessage, d ApprovalDecisionEntry) GrantEntry {
-	g := GrantEntry{Grant: exactArgsGrant(tool, args), Via: d.Via}
+// signature named no one — d's door, and the tool's schema now
+// (toolSchemaHash over a).
+func alwaysGrant(a *core.Agent, tool string, args json.RawMessage, d ApprovalDecisionEntry) GrantEntry {
+	g := GrantEntry{Grant: exactArgsGrant(tool, args), Via: d.Via, SchemaSHA256: toolSchemaHash(a, tool)}
 	g.Who = d.Who
 	if g.Who == "" {
 		g.Who = d.KeyID
@@ -250,10 +268,22 @@ func (s *Session) matchGrant(ctx context.Context, c core.ToolCallPart, chainUses
 	s.mu.Lock()
 	live := s.liveGrantsLocked(now, chainUses)
 	s.mu.Unlock()
+	schema, hashed := "", false
 	for _, g := range live {
-		if grantMatches(g.Grant, c) {
-			return grantDecision(g.Grant), grantRef{id: g.ID}, true
+		if !grantMatches(g.Grant, c) {
+			continue
 		}
+		if g.SchemaSHA256 != "" {
+			// Schema-bound (WR-26): the grant was for the tool as it was
+			// at the mint; a tool that changed its input since is not it.
+			if !hashed {
+				schema, hashed = toolSchemaHash(s.agent, c.Name), true
+			}
+			if schema != g.SchemaSHA256 {
+				continue
+			}
+		}
+		return grantDecision(g.Grant), grantRef{id: g.ID}, true
 	}
 	if s.cfg.grantStore != nil {
 		shared, err := s.cfg.grantStore.Grants(ctx)
@@ -338,6 +368,35 @@ func (s *Session) liveGrantsLocked(now time.Time, pending map[string]int) []Gran
 		out = append(out, g)
 	}
 	return out
+}
+
+// revokedGrantLocked names the session grant whose approval among ds
+// was revoked since it matched — "" when none was: a grant's approval
+// is the decision right after its StepGrant audit entry (the chain
+// writes the two together), and a revocation entry for that grant
+// anywhere in the file withdraws it. The resume re-validates through
+// it (ADR 0021 §4, WR-26): a revoke between the chain and the resume
+// leaves the call unrun. A shared grant's revocation is its store's;
+// the session cannot see it. Callers hold s.mu.
+func (s *Session) revokedGrantLocked(ds []ApprovalDecisionEntry) string {
+	var grants []string
+	for _, d := range ds {
+		if d.Outcome != OutcomeApprove || d.ID == "" {
+			continue
+		}
+		if a, ok := s.precedingLocked(d.ID).(ApprovalAuditEntry); ok && a.Step == StepGrant && a.CallID == d.CallID && !a.GrantShared && a.GrantID != "" {
+			grants = append(grants, a.GrantID)
+		}
+	}
+	if len(grants) == 0 {
+		return ""
+	}
+	for _, e := range s.order {
+		if r, ok := e.(GrantRevokedEntry); ok && slices.Contains(grants, r.GrantID) {
+			return r.GrantID
+		}
+	}
+	return ""
 }
 
 // grantMatches reports whether the call satisfies the grant: the tool

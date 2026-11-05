@@ -436,9 +436,11 @@ func (s *Session) RequiresSigned() bool {
 // id, and everything a signer needs to vouch for a decision over
 // exactly this request (ADR 0021 §3). The challenge is bound to the
 // request entry — this occurrence of the call, not its call id — and
-// is single-use: DecideSigned records the nonce, and a replay of the
-// same signature fails with ErrReplay, across restarts, because
-// recorded nonces are entries. Request writes nothing for a live
+// is single-use: DecideSigned records the nonce, and another decision
+// presented under a recorded nonce fails with ErrReplay, across
+// restarts, because recorded nonces are entries. The same signed
+// decision delivered again is applied — DecideSigned returns (nil,
+// nil) and records nothing. Request writes nothing for a live
 // request; it may be called any number of times, each call minting
 // another valid challenge for the same request.
 //
@@ -525,6 +527,10 @@ const maxSignedRefusals = 16
 // same signature is detectable from the file — and resumes when the
 // boundary completes (AutoResume, like Decide). The decision is
 // recorded with Via "signed"; its identity under Quorum is the key.
+// It honours WithApprovedBy as Decide does: the class ctx carries is
+// recorded on the decision entry (ApprovalDecisionEntry.ApprovedBy)
+// and reported on the calls the resume it arms approves. An Edit's
+// revision left pending fires OnRequest, as through Decide.
 //
 // No decision is recorded until every check passes. The checks, in
 // order, and the error each fails with (ADR 0021 §3):
@@ -537,7 +543,12 @@ const maxSignedRefusals = 16
 //     hold fails the same way, with the same words: DecideSigned
 //     never says which key ids exist.
 //   - a nonce a recorded decision already answered — ErrReplay,
-//     whatever became of the call since.
+//     whatever became of the call since — unless the signed decision
+//     is that recorded one again (same nonce, key, outcome and every
+//     signed field): a redelivery is applied, (nil, nil), nothing
+//     recorded and nothing audited — also after a Branch back to the
+//     boundary a resume applied it at, where Decide answers an
+//     identical unsigned decision the same way.
 //   - the request past its own expiry — ErrExpired. The session
 //     enforces the request's expiry, not the one the signature
 //     states: the lapsed request is denied on the spot with the
@@ -565,7 +576,17 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 		return nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	from := len(s.order)
+	t, err := s.decideSignedLocked(ctx, sd)
+	revs, fn := s.openedRevisionsLocked(from), s.cfg.onRequest
+	s.mu.Unlock()
+	s.notifyRequests(fn, revs)
+	return t, err
+}
+
+// decideSignedLocked is DecideSigned's body under the session lock.
+// Callers hold s.mu.
+func (s *Session) decideSignedLocked(ctx context.Context, sd SignedDecision) (*Turn, error) {
 	if s.cfg.keyring == nil {
 		return nil, fmt.Errorf("thread: DecideSigned needs a keyring")
 	}
@@ -588,7 +609,7 @@ func (s *Session) DecideSigned(ctx context.Context, sd SignedDecision) (*Turn, e
 			RequestID: sd.RequestID, ArgsSHA256: sd.ArgsSHA256, // verified above
 			EditedArgs: sd.EditedArgs, Cosigners: sd.Cosigners,
 		}
-		v.err = s.recordDecisionsLocked(ctx, []recordedDecision{{Decision: d, nonce: sd.Nonce, keyID: sd.KeyID}}, true)
+		v.err = s.recordDecisionsLocked(ctx, []recordedDecision{{Decision: d, nonce: sd.Nonce, keyID: sd.KeyID, approvedBy: approvedByOf(ctx)}}, true)
 		if v.err == nil {
 			return s.armSettledLocked(ctx)
 		}
