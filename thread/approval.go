@@ -497,14 +497,17 @@ func (s *Session) offeredPendingLocked() []Request {
 // content, Who, arguments, Always, edit and cosigners — is applied:
 // nothing is recorded, nothing runs, and no error is returned. That
 // holds while the decision is in force (under Quorum, one approval
-// short), once the request is decided, and after a Branch back to a
-// boundary a resume already applied it at — the call reads pending
+// short) and once the request is decided. After a Branch back to a
+// boundary a resume already applied it at, the call reads pending
 // there again, and the same decision forwarded again (a platform's
-// retry, a reconciler) does not run it a second time; DecideSigned
-// answers a signed redelivery the same way. A deliberate new decision
-// on that line must differ from the spent one: another Who, or another
-// reason. A decision a Fork copied is the origin's and repeats nothing
-// in the fork.
+// retry, a reconciler) fails with ErrDecisionSpent: nothing is
+// recorded and the call does not run a second time, and the caller
+// learns the boundary still waits. A deliberate new decision on that
+// line differs from the spent one: another Who, or another reason.
+// DecideSigned answers a signed redelivery the same way. An identical
+// decision recorded on another line that no resume applied ran
+// nothing, and is recorded here like any other. A decision a Fork
+// copied is the origin's and repeats nothing in the fork.
 //
 // An Edit is refused (ErrInvalidDecision) for a dangling call no
 // request entry names — Pending's synthetic "r_…" request — and, like
@@ -515,6 +518,9 @@ func (s *Session) offeredPendingLocked() []Request {
 // When the batch opens a revision (an Edit) that stays pending — under
 // Quorum it still needs approvers — OnRequest fires for it after the
 // decision is durable, once Decide has let go of the session.
+//
+// The agent's tools (a ToolSource's included) are read once, before
+// the session lock is taken: a source may read the session.
 //
 // The approval class ctx carries (WithApprovedBy) is recorded on each
 // decision entry (ApprovalDecisionEntry.ApprovedBy).
@@ -694,24 +700,35 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	// no-op, not an error, when it names the request it decided and
 	// matches what was recorded for it. Without a request id a retry
 	// is ambiguous and never takes this path.
+	walk := s.approvalWalkLocked()
 	kept := batch[:0:0]
 	for _, d := range batch {
 		req, ok := byCall[d.CallID]
-		if (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d, false) {
+		if (!ok || d.RequestID != req.ID) && s.alreadyDecidedLocked(d) {
 			continue
 		}
-		if ok && d.RequestID == req.ID && d.RequestID != "" && s.alreadyDecidedLocked(d, true) {
-			// Still pending, and the same decision is on file for this
-			// very request: in force (under Quorum, one approval short),
-			// or spent by a resume a Branch has since left (the call
-			// reads pending again). Either way it is the same forward
-			// again — it counts nothing, records nothing and runs
-			// nothing, as DecideSigned answers a signed redelivery from
-			// its nonce scan (R7). A deliberate new decision after a
-			// Branch differs from the spent one (another Who or reason).
+		if ok && d.RequestID == req.ID && d.RequestID != "" {
+			switch s.priorDecisionLocked(d, walk) {
+			case priorInForce:
+				// Still pending, and the same decision is in force for
+				// this very request (under Quorum, one approval short):
+				// the same forward again — it counts nothing, records
+				// nothing and runs nothing (R7).
+				continue
+			case priorSpent:
+				// The same decision was applied by a resume on another
+				// line, which a Branch has since left: the call reads
+				// pending here again. Recording it would run the call a
+				// second time on a retry; swallowing it would leave the
+				// caller unable to tell applied from ignored, and the
+				// boundary waiting. Refused, nothing recorded: a
+				// deliberate decision on this line differs from the
+				// spent one (another Who, or reason).
+				return fmt.Errorf("%w: call %q (request %s): this exact decision was already applied on another line; decide again with a new decision (another Who or reason) to run it on this one",
+					ErrDecisionSpent, d.CallID, req.ID)
+			}
 			// A decision a Fork copied is the origin's, never this
 			// session's: it does not make a fork's decision a repeat.
-			continue
 		}
 		kept = append(kept, d)
 	}
@@ -719,7 +736,6 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		return nil // every decision was already recorded
 	}
 	batch = kept
-	walk := s.approvalWalkLocked()
 	seen := make(map[string]bool, len(batch))
 	for _, d := range batch {
 		if !validOutcome(d.Kind) {
@@ -1923,6 +1939,11 @@ type approvalWalk struct {
 	// the call is named as Wrapper by a mirrored child request (ADR
 	// 0022 §7).
 	wrappers map[string]string
+	// spent holds the decision entries a resume applied on another line
+	// of the tree (its "started" audit lists them and is not on this
+	// path): not in force here, and never repeated by an identical
+	// decision (ErrDecisionSpent).
+	spent map[string]bool
 }
 
 // occurrence returns the run that names a call's current occurrence —
@@ -1973,6 +1994,7 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 		onPath[idOf(e)] = true
 	}
 	spent := map[string]bool{}
+	w.spent = spent
 	for _, e := range s.order {
 		a, ok := e.(ApprovalAuditEntry)
 		if !ok || a.Step != StepResume || onPath[a.ID] {
@@ -2595,28 +2617,59 @@ func recoveryDecisionErr(req Request, d Decision) error {
 // alreadyDecidedLocked reports whether d repeats a decision already
 // recorded for the request it names: same request, outcome, reason,
 // content, decider, shown arguments, standing wish and signing key. A
-// decision naming no request never repeats one (G4). Callers hold s.mu.
-//
-// With own, a decision a Fork copied from its origin (at or before the
-// fork point in append order) is not counted: it was the origin's.
-func (s *Session) alreadyDecidedLocked(d recordedDecision, own bool) bool {
+// decision naming no request never repeats one (G4). It answers for a
+// request that is no longer the pending one; a pending request's
+// repeats are priorDecisionLocked's. Callers hold s.mu.
+func (s *Session) alreadyDecidedLocked(d recordedDecision) bool {
 	if d.RequestID == "" {
 		return false
 	}
-	inherited := -1
-	if own {
-		inherited = s.inheritedIndexLocked()
-	}
-	for i, e := range s.order {
+	for _, e := range s.order {
 		de, ok := e.(ApprovalDecisionEntry)
-		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID || i <= inherited {
-			continue
-		}
-		if sameDecision(de, d) {
+		if ok && de.RequestID == d.RequestID && de.CallID == d.CallID && sameDecision(de, d) {
 			return true
 		}
 	}
 	return false
+}
+
+// priorDecision is what an identical decision already on file is to a
+// pending request (priorDecisionLocked).
+type priorDecision int
+
+const (
+	priorNone    priorDecision = iota // none on file, or only one never applied off this line
+	priorInForce                      // in force on this line
+	priorSpent                        // applied by a resume on another line
+)
+
+// priorDecisionLocked looks for d — bound to the pending request it
+// answers — among the session's own decision entries (a Fork's
+// inherited ones excluded): in force on the leaf's line (walk's
+// decisions), spent by a resume on another line (walk.spent), or
+// neither. An identical decision recorded on another line that no
+// resume applied ran nothing, and repeats nothing here. Callers hold
+// s.mu.
+func (s *Session) priorDecisionLocked(d recordedDecision, walk approvalWalk) priorDecision {
+	inherited := s.inheritedIndexLocked()
+	inForce := map[string]bool{}
+	for _, de := range walk.decisions[d.CallID] {
+		inForce[de.ID] = true
+	}
+	out := priorNone
+	for i, e := range s.order {
+		de, ok := e.(ApprovalDecisionEntry)
+		if !ok || de.RequestID != d.RequestID || de.CallID != d.CallID || i <= inherited || !sameDecision(de, d) {
+			continue
+		}
+		if inForce[de.ID] {
+			return priorInForce
+		}
+		if walk.spent[de.ID] {
+			out = priorSpent
+		}
+	}
+	return out
 }
 
 // sameDecision reports whether a recorded decision entry is d again:

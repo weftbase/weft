@@ -317,89 +317,123 @@ func TestRecoverResolvesAToolSourceToolsClass(t *testing.T) {
 	}
 }
 
-// A5 (R7, R14): after a Branch back to a decided boundary, the same
-// decision forwarded again — unsigned or signed — is applied: it
-// records nothing and runs nothing. A deliberate new decision differs
-// (here another Who) and runs the call.
-func TestReforwardAfterBranchIsApplied(t *testing.T) {
+// A5 (R7, R14): after a Branch back to a decided boundary — to the
+// decision itself, or to the park before it — the same decision
+// forwarded again, unsigned or signed, is ErrDecisionSpent: it records
+// nothing and runs nothing, and the caller learns the boundary still
+// waits instead of reading it applied. A deliberate new decision
+// differs (another Who; signed, a fresh challenge) and runs the call,
+// and a Send queued behind the boundary runs after it.
+func TestReforwardAfterBranchIsSpent(t *testing.T) {
 	for _, signed := range []bool{false, true} {
-		name := map[bool]string{false: "unsigned", true: "signed"}[signed]
-		t.Run(name, func(t *testing.T) {
-			ring := matrixRing(t)
-			pay := &payTool{}
-			s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
-				wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{"to":"bob","amount":9}`}),
-				wefttest.Say("done"), wefttest.Say("done again"),
-			), pay.def()), thread.WithKeyring(ring))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = s.Close(bg) }()
-			turn, _ := s.Send(bg, core.User("pay"))
-			if _, err := turn.Wait(); err != nil {
-				t.Fatal(err)
-			}
-			r := pendingCall(t, s, "c1")
-			d := thread.Approve("c1").Bind(r)
-			d.Who = "ops"
-			var sd thread.SignedDecision
-			if signed {
-				ch, err := s.Request("c1")
+		for _, to := range []string{"decision", "park"} {
+			name := map[bool]string{false: "unsigned", true: "signed"}[signed] + "/" + to
+			t.Run(name, func(t *testing.T) {
+				ring := matrixRing(t)
+				pay := &payTool{}
+				s, err := thread.Create(bg, thread.Memory(), core.New(wefttest.Script(
+					wefttest.ToolCalls(wefttest.Call{Name: "pay", ID: "c1", Args: `{"to":"bob","amount":9}`}),
+					wefttest.Say("done"), wefttest.Say("done again"), wefttest.Say("next"),
+				), pay.def()), thread.WithKeyring(ring))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if sd, err = ring.Sign(ch, d); err != nil {
+				defer func() { _ = s.Close(bg) }()
+				turn, _ := s.Send(bg, core.User("pay"))
+				if _, err := turn.Wait(); err != nil {
 					t.Fatal(err)
 				}
-			}
-			decide := func() (*thread.Turn, error) {
+				parkLeaf := s.Leaf()
+				r := pendingCall(t, s, "c1")
+				d := thread.Approve("c1").Bind(r)
+				d.Who = "ops"
+				sign := func(d thread.Decision) thread.SignedDecision {
+					ch, err := s.Request("c1")
+					if err != nil {
+						t.Fatal(err)
+					}
+					sd, err := ring.Sign(ch, d)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return sd
+				}
+				var sd thread.SignedDecision
 				if signed {
-					return s.DecideSigned(bg, sd)
+					sd = sign(d)
 				}
-				return s.Decide(bg, d)
-			}
-			rt, err := decide()
-			if err != nil || rt == nil {
-				t.Fatalf("decide = %v, %v", rt, err)
-			}
-			if _, err := rt.Wait(); err != nil {
-				t.Fatal(err)
-			}
-			var decID string
-			for _, e := range s.Entries() {
-				if de, ok := e.(thread.ApprovalDecisionEntry); ok && de.CallID == "c1" {
-					decID = de.ID
+				decide := func() (*thread.Turn, error) {
+					if signed {
+						return s.DecideSigned(bg, sd)
+					}
+					return s.Decide(bg, d)
 				}
-			}
-			if err := s.Branch(bg, decID); err != nil {
-				t.Fatal(err)
-			}
-			if len(s.Pending()) != 1 {
-				t.Fatalf("pending after the Branch: %+v", s.Pending())
-			}
-			before := len(s.Entries())
-			if rt, err := decide(); err != nil || rt != nil {
-				t.Fatalf("the re-forward = %v, %v; want applied (nil, nil)", rt, err)
-			}
-			if got := len(s.Entries()); got != before {
-				t.Fatalf("the re-forward wrote %d entries", got-before)
-			}
-			if args, _ := pay.ran(); len(args) != 1 {
-				t.Fatalf("pay ran %d times after the re-forward, want once", len(args))
-			}
-			again := thread.Approve("c1").Bind(pendingCall(t, s, "c1"))
-			again.Who = "ops-2"
-			rt, err = s.Decide(bg, again)
-			if err != nil || rt == nil {
-				t.Fatalf("a new decision = %v, %v", rt, err)
-			}
-			if _, err := rt.Wait(); err != nil {
-				t.Fatal(err)
-			}
-			if args, _ := pay.ran(); len(args) != 2 {
-				t.Fatalf("pay ran %d times after a deliberate new decision, want twice", len(args))
-			}
-		})
+				rt, err := decide()
+				if err != nil || rt == nil {
+					t.Fatalf("decide = %v, %v", rt, err)
+				}
+				if _, err := rt.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				// While the decision stands (the resume ran on this line)
+				// the same forward is applied.
+				if rt, err := decide(); err != nil || rt != nil {
+					t.Fatalf("a re-forward on the resumed line = %v, %v; want applied (nil, nil)", rt, err)
+				}
+				target := parkLeaf
+				if to == "decision" {
+					for _, e := range s.Entries() {
+						if de, ok := e.(thread.ApprovalDecisionEntry); ok && de.CallID == "c1" {
+							target = de.ID
+						}
+					}
+				}
+				if err := s.Branch(bg, target); err != nil {
+					t.Fatal(err)
+				}
+				if len(s.Pending()) != 1 {
+					t.Fatalf("pending after the Branch: %+v", s.Pending())
+				}
+				before := len(s.Entries())
+				if rt, err := decide(); !errors.Is(err, thread.ErrDecisionSpent) || rt != nil {
+					t.Fatalf("the re-forward after the Branch = %v, %v; want ErrDecisionSpent", rt, err)
+				}
+				if got := len(s.Entries()); got != before {
+					t.Fatalf("the refused re-forward wrote %d entries", got-before)
+				}
+				if args, _ := pay.ran(); len(args) != 1 {
+					t.Fatalf("pay ran %d times after the re-forward, want once", len(args))
+				}
+				if len(s.Pending()) != 1 {
+					t.Fatalf("pending after the refused re-forward: %+v", s.Pending())
+				}
+				again := thread.Approve("c1").Bind(pendingCall(t, s, "c1"))
+				again.Who = "ops-2"
+				if signed {
+					rt, err = s.DecideSigned(bg, sign(again))
+				} else {
+					rt, err = s.Decide(bg, again)
+				}
+				if err != nil || rt == nil {
+					t.Fatalf("a new decision = %v, %v", rt, err)
+				}
+				if _, err := rt.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				if args, _ := pay.ran(); len(args) != 2 {
+					t.Fatalf("pay ran %d times after a deliberate new decision, want twice", len(args))
+				}
+				q, err := s.Send(bg, core.User("next"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+				defer cancel()
+				if _, err := q.WaitContext(ctx); err != nil {
+					t.Fatalf("the Send after the new decision: %v", err)
+				}
+			})
+		}
 	}
 }
 

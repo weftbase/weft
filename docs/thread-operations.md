@@ -783,11 +783,16 @@ not the numbers themselves.
   no-op: nil, nothing recorded — and the same signed bytes again
   (`DecideSigned`, same nonce) are applied, not `ErrReplay`, and not
   audited. A different decision on a decided request is `ErrNotPending`;
-  another one under a spent nonce `ErrReplay`. This holds after a
-  `Branch` back to a boundary a resume already applied the decision at:
-  the call reads pending there again, and an identical re-forward —
-  signed or not — runs nothing. A deliberate new decision on that line
-  must differ from the spent one (another `Who`, another reason).
+  another one under a spent nonce `ErrReplay`. After a `Branch` back
+  to a boundary a resume already applied the decision at, the call
+  reads pending there again, and an identical re-forward — signed or
+  not — fails with `thread.ErrDecisionSpent`: nothing recorded, nothing
+  run, and the caller knows the boundary still waits. A deliberate new
+  decision on that line must differ from the spent one (another `Who`,
+  another reason; signed: a fresh `s.Request` challenge). A reconciler
+  that re-forwards decisions treats `ErrDecisionSpent` as "applied
+  elsewhere, not here" — never as a reason to change the decision on
+  its own.
 - **Edits.** `thread.Edit(callID, args).Bind(r)` corrects a parked
   call: the request closes and a revision opens on the edited arguments
   (`Request.RevisionOf`), approved once by the editor — under
@@ -841,7 +846,9 @@ not the numbers themselves.
 - **Signed decisions are bound** to the request entry and the run that
   parked the call, and are single-use: another decision under a
   recorded nonce is `ErrReplay`, across restarts; the same signed
-  decision again is applied (nil, nothing recorded).
+  decision again is applied (nil, nothing recorded) — or
+  `ErrDecisionSpent` after a `Branch` back to the boundary it was
+  applied at.
   A challenge minted before upgrading to this version does not verify
   (the challenge domain moved to v2): request a fresh one.
 - **Expiry is lazy.** `thread.RequestExpiry(d)` gives each request a

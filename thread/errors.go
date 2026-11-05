@@ -176,6 +176,17 @@ var (
 	// restarts.
 	ErrReplay = errors.New("thread: decision signature replayed")
 
+	// ErrDecisionSpent is returned by Decide and DecideSigned for a
+	// decision bound to a pending request that repeats exactly one a
+	// resume already applied on another line of the tree — the call
+	// reads pending again after a Branch back to its boundary. The
+	// decision is not recorded and nothing runs: a retry of the first
+	// decision (a reconciler, a redelivery) never runs the call a
+	// second time. To run it on this line, decide again with a new
+	// decision — another Who or reason; for a signed one, a fresh
+	// challenge (Session.Request).
+	ErrDecisionSpent = errors.New("thread: this exact decision was already applied on another line")
+
 	// ErrArgsChanged is returned by DecideSigned when the signed
 	// arguments hash is not the pending request's, and by Decide when a
 	// Decision's ArgsSHA256 is not: the decider decided over different
