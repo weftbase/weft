@@ -237,7 +237,9 @@ var (
 	// ErrReservedKey is returned by SetInfo for a metadata key under
 	// the reserved "weft." prefix: those keys are the session's
 	// identity (weft.public_id), set once in the header at Create —
-	// WithMeta, PublicID — and never edited afterwards.
+	// WithMeta, PublicID — and never edited afterwards. Custom returns
+	// it for a kind under the reserved "weft/" prefix, the format's own
+	// entries (weft/pin, …), writing nothing.
 	ErrReservedKey = errors.New("thread: metadata key is reserved")
 )
 
