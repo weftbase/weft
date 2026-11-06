@@ -333,6 +333,16 @@ func (o onlyToolsOption) applyRun(c *runConfig) {
 // The narrowing holds for an Agent.CallTool from inside the run's tool
 // handlers too: a narrowed-away tool is unknown there (ErrNoSuchTool),
 // as it is to the loop. A Subagent's child run does not inherit it.
+//
+// On an agent built with Output[T] the submit_output tool is one of the
+// registered tools: OnlyTools narrows it away unless it is named
+// (OnlyTools("lookup", "submit_output")), and the run can then not end
+// on a valid output. ParkAllExcept, by contrast, never parks it. A call
+// to a narrowed-away tool still passes through the agent's WrapTools
+// middleware before it is answered as unknown (the chain runs for
+// unknown tools, so Allow and Audit see the attempt): an mw.Allow that
+// refuses the name answers `DENIED: tool "x" is not allowed` first, and
+// the model reads that instead of NO_SUCH_TOOL.
 func OnlyTools(names ...string) RunOption { return onlyToolsOption{names} }
 
 type useModelOption struct{ m Model }

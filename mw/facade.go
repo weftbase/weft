@@ -178,7 +178,10 @@ func IsContextOverflow(err error) bool { return coremw.IsContextOverflow(err) }
 // deferred decision. Outside the loop (Agent.CallTool with a bare
 // ctx) the Call is built from the call part alone. A nil permit allows
 // every call — the middleware is a pass-through, so a policy that is
-// configured off composes without a branch at the call site.
+// configured off composes without a branch at the call site. Allow sees
+// calls to unknown tools too — one a run's core.OnlyTools narrowed away
+// among them — so a permit that refuses the name answers DENIED before
+// the loop would answer NO_SUCH_TOOL.
 func Allow(permit func(weft.Call) bool) weft.ToolMiddleware { return coremw.Allow(permit) }
 
 // Audit logs one line per tool call at Info level on the given logger

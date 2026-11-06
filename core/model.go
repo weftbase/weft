@@ -278,7 +278,11 @@ type ModelToolCall struct {
 // calls arrive whole (Google) simply yield none. Index is the
 // provider's fragment key where one exists (OpenAI's delta index);
 // Name is the best-known name so far — for many providers only the
-// first fragment of a call carries it.
+// first fragment of a call carries it, so an adapter remembers it per
+// call and sets it on every delta it yields (the first-party adapters
+// do): the loop forwards Name as given on each ToolArgsDelta, and a
+// consumer that follows one tool's arguments — OutputDecoder, keyed on
+// submit_output — ignores a delta whose Name is empty.
 type ModelToolCallDelta struct {
 	Index int
 	Name  string

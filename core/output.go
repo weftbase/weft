@@ -244,7 +244,10 @@ func NewOutputDecoder[Out any]() *OutputDecoder[Out] {
 // changed. A second submit_output call within the step starts the
 // buffer over — Result follows the last call, the OutputOf rule;
 // concatenating two distinct calls' arguments could only ever produce
-// bytes that do not decode.
+// bytes that do not decode. Deltas are matched by their Name: an
+// adapter must set it on every ModelToolCallDelta of a call, not only
+// the first (the first-party adapters do); a delta with no name is
+// skipped, and the partials stall until the whole call arrives.
 func (d *OutputDecoder[Out]) Feed(ev Event) (partial Out, ok bool) {
 	d.changed = false
 	switch e := ev.(type) {

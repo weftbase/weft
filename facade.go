@@ -1211,7 +1211,11 @@ type ModelToolCall = core.ModelToolCall
 // calls arrive whole (Google) simply yield none. Index is the
 // provider's fragment key where one exists (OpenAI's delta index);
 // Name is the best-known name so far — for many providers only the
-// first fragment of a call carries it.
+// first fragment of a call carries it, so an adapter remembers it per
+// call and sets it on every delta it yields (the first-party adapters
+// do): the loop forwards Name as given on each ToolArgsDelta, and a
+// consumer that follows one tool's arguments — OutputDecoder, keyed on
+// submit_output — ignores a delta whose Name is empty.
 type ModelToolCallDelta = core.ModelToolCallDelta
 
 // ModelFinish closes a step with its stop reason and token usage.
@@ -1522,6 +1526,16 @@ func KeptSteps(n int) RunOption { return core.KeptSteps(n) }
 // The narrowing holds for an Agent.CallTool from inside the run's tool
 // handlers too: a narrowed-away tool is unknown there (ErrNoSuchTool),
 // as it is to the loop. A Subagent's child run does not inherit it.
+//
+// On an agent built with Output[T] the submit_output tool is one of the
+// registered tools: OnlyTools narrows it away unless it is named
+// (OnlyTools("lookup", "submit_output")), and the run can then not end
+// on a valid output. ParkAllExcept, by contrast, never parks it. A call
+// to a narrowed-away tool still passes through the agent's WrapTools
+// middleware before it is answered as unknown (the chain runs for
+// unknown tools, so Allow and Audit see the attempt): an mw.Allow that
+// refuses the name answers `DENIED: tool "x" is not allowed` first, and
+// the model reads that instead of NO_SUCH_TOOL.
 func OnlyTools(names ...string) RunOption { return core.OnlyTools(names...) }
 
 // UseModel replaces the agent's model for this run, rebuilding the
