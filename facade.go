@@ -2005,10 +2005,13 @@ func RawTool(name, description string, schema *Schema, fn func(ctx context.Conte
 // the timeout analogue of MaxResultBytes(0); on the agent it is the
 // default for every tool without its own, and non-positive values are
 // ignored there. The handler's ctx carries the deadline; when it expires
-// the loop records an error result ("tool X timed out after 10s") the
-// model sees and moves on, abandoning the handler's goroutine —
-// handlers must honour ctx to release their resources. Without any
-// Timeout only the run's ctx bounds a call.
+// the loop records an error result the model sees and moves on,
+// abandoning the handler's goroutine — handlers must honour ctx to
+// release their resources. The result reads "tool X timed out after
+// 10s" for a ReplaySafe tool or a handler that never started; any other
+// tool's handler may still complete, so its call reads "OUTCOME_UNKNOWN:
+// tool "X" did not answer within 10s; …" (ADR 0032) — or parks, under
+// ParkUnknown. Without any Timeout only the run's ctx bounds a call.
 func Timeout(d time.Duration) PolicyOption { return core.Timeout(d) }
 
 // StrictInput rejects tool arguments that carry fields the input struct

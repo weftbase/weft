@@ -663,7 +663,10 @@ sends only the new names; for one release `mcp.Serve` reads a caller
 under the old name when the new one is absent, and the old names stay
 exported as `mcp.LegacyMetaCaller` / `mcp.LegacyMetaIdempotencyKey` for
 servers that deduplicate during the transition. The rest of the
-decision is unchanged.
+decision is unchanged. *(Editor's note: "only the new names" is
+superseded for the idempotency key — 0.24.0 sends it under both names;
+see the amendment "weft/mcp: a closed client sends nothing; keys both
+ways" below. The caller link is sent under the new name alone.)*
 
 ## Amendment (2026-11-05 — an answer lost in a layer, and other guesses)
 

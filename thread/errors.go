@@ -49,7 +49,11 @@ var (
 	// the number of entry lines, not a comparison of contents. Nothing
 	// is written and the Session's tree is unchanged. Terminal for the
 	// Session value: Open the session again to write from what it now
-	// holds.
+	// holds — and Close the stale Session first. A write that fails
+	// ErrStale still took the writer lease (and the backend's lock:
+	// jsonl's flock, sqlite's lock row), and the Session holds it until
+	// its Close, so a fresh Session's writes fail with ErrLocked until
+	// then. Only Claim gives the lease back on ErrStale.
 	ErrStale = errors.New("thread: session changed since it was opened")
 
 	// ErrCorrupt wraps the failures a backend reports for stored data

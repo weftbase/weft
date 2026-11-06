@@ -1,13 +1,12 @@
 // Package sqlite is the thread's second durable backend: every session
-// in one SQLite file on the CGO-free modernc.org/sqlite driver — the
-// store's choice (store/sqlite, Crush's before it), reused so one
-// dependency serves both modules — with WAL and embedded migrations.
+// in one SQLite file on the CGO-free modernc.org/sqlite driver (Crush's
+// choice before it) with WAL and embedded migrations.
 // An Append that returned survives the process dying; whether it also
 // survives a power cut is the fsync policy's choice (see Open: the
 // default fsyncs every commit).
-// It is its own module because the driver would otherwise leak into
-// thread's go.mod (ADR 0011 §1: "own module only if its driver would
-// leak into thread" — it would; thread stays root-and-stdlib only).
+// It is a package of the framework module (ADR 0027), not a module of
+// its own: the driver is linked only into a program that imports this
+// package, never through package thread, which imports no driver.
 //
 // A session's bytes are the same lines jsonl writes — the header line,
 // then one entry line per row, the thread wire verbatim (ADR 0011 §2,

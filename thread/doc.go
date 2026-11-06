@@ -62,8 +62,8 @@
 // Delete — and package threadtest is the conformance table every
 // backend runs. Three ship: Memory, in process; package jsonl, one
 // JSON-lines file per session, readable with jq and backed up with cp;
-// and package sqlite, in its own module so its driver stays out of
-// this one. A backend's Append never leaves a gap or a half-entry
+// and package sqlite, one SQLite file for every session — a separate
+// package, so its driver is linked only into programs that import it. A backend's Append never leaves a gap or a half-entry
 // after the writer's death — sqlite and Memory land a batch whole or
 // not at all, jsonl can keep a prefix of its complete lines, and the
 // session orders its batches so a prefix reads as the fact not done —
@@ -163,7 +163,8 @@
 //     a Session work while another writer holds the session.
 //   - A Session that has fallen behind does not write: when the stored
 //     session holds entries it never loaded, its write fails with
-//     ErrStale. Open the session again.
+//     ErrStale. Close it (it holds the writer lease until Close) and
+//     open the session again.
 //   - One run at a time; concurrent Sends are accepted in the order
 //     they take the lock and follow their busy policy. Branch, Compact,
 //     ApplyCompaction and Uncompact are between-turns operations and
@@ -185,7 +186,8 @@
 //     ended or the other writer has closed.
 //   - Reopen: ErrStale (the session moved on behind this Session) and
 //     ErrClosed (this Session's Close has run). The Session value is
-//     done writing; Open the session again.
+//     done writing; Open the session again — after closing a stale
+//     one, which holds the writer lease until its Close.
 //   - Terminal for the stored data as this build reads it: ErrCorrupt
 //     (carried by *CorruptError, naming the line and the entry) and
 //     ErrNewerFormat (written by a newer weft). Retrying changes

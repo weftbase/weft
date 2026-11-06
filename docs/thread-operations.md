@@ -150,7 +150,12 @@ names itself: it takes the session's lease with its first write
 opens and reads normally and every write it makes fails with
 `ErrLocked`, changing nothing. A Session that was opened before
 another writer appended — and so would attach to a leaf the session
-has moved past — fails its write with `thread.ErrStale` instead.
+has moved past — fails its write with `thread.ErrStale` instead. That
+write still took the lease (and the backend's lock: jsonl's `flock`,
+sqlite's lock row), and the stale Session keeps it until its `Close`:
+close the stale Session before opening a fresh one, or the fresh one's
+writes fail `ErrLocked`. (`s.Claim` alone gives the lease back on
+`ErrStale`.)
 
 Consequences for a deployment:
 
@@ -435,7 +440,7 @@ Match with `errors.Is`.
 |---|---|---|---|
 | `ErrBusy` | retry | a turn is running (a `Reject`-policy `Send`, `Branch`, `Compact`, `ApplyCompaction`, `Uncompact`) | wait for the turn (`turn.Wait`, `s.WaitIdle`) and call again, or send under `Queue` |
 | `ErrLocked` | retry | another writer holds the session — another process, another `Storage` value, or another `Session` that has not closed | retry after that writer closes; if it is dead on sqlite see §4 |
-| `ErrStale` | reopen | the stored session moved on behind this Session | `thread.Open` it again and redo the write |
+| `ErrStale` | reopen | the stored session moved on behind this Session | `Close` the stale Session (it holds the lease until then), `thread.Open` it again and redo the write |
 | `ErrClosed` | reopen | this Session's `Close` has run | `thread.Open` it again |
 | `ErrNotFound` | terminal for the call | no such session (or it was deleted under an open Session) | — |
 | `ErrExists` | terminal for the call | `Create` over an existing id | pick another id |

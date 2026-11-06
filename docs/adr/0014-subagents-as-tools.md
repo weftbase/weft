@@ -110,6 +110,11 @@ next ctx check. The rendered result is the ordinary
 `tool "x" timed out after d` string — the handler's `SUBAGENT_FAILED`
 is discarded because its cause chain carries `DeadlineExceeded`, which
 `invokeWithTimeout` recognizes; no new string for either case.
+*(Editor's note: since ADR 0032 that string holds only for a Subagent
+annotated `Replay(ReplaySafe)`; an unannotated Subagent past its
+`Timeout` reads `OUTCOME_UNKNOWN: tool "x" did not answer within d; it
+may still complete; outcome unknown` — the child may still finish its
+work. See the 2026-11-06 note below.)*
 
 **The late-event rule** (amending ADR 0004): *no `Nested` event for a
 call is delivered after that call's `ToolFinish`, and no usage is
@@ -217,3 +222,16 @@ shape, so the attributes now say what the usage and the id already
 did. `TestRunLinkSubagentVsCaller` pins it; the record contract's §2
 documents both links.
 
+## Note (2026-11-06 — a Subagent past its Timeout has an unknown outcome; ADR 0032)
+
+The "Cancellation and timeouts" paragraph's rendered string predates
+ADR 0032. A `Subagent` is a tool like any other there: unannotated it
+counts as `ReplayNever`, so when its `Timeout` passes (or the run is
+canceled under it) after the handler started, the call reads
+`OUTCOME_UNKNOWN: …` (or parks under `ParkUnknown`) — the abandoned
+child keeps running until its next ctx check and may complete its
+effects. Only a Subagent annotated `Replay(ReplaySafe)` keeps the
+`tool "x" timed out after d` text. A Subagent cannot be `ReplayKeyed`
+(`Subagent` panics: its child's calls carry run-scoped keys). An
+abandoned child's usage is not counted (ADR 0032, 2026-11-05
+amendment, C10).

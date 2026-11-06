@@ -4,6 +4,12 @@ Date: 2026-10-07. Status: accepted. Supersedes the module layout of
 ADR 0005 (one module per adapter, tagged independently) and the
 per-module release process built on it.
 
+*(Editor's note: the paths and package list below are as of 0.9.0. Since
+0.21 the module path is `github.com/weftbase/weft` (core
+`github.com/weftbase/weft/core`), and `studio`, `obsdb`, `runtime` and
+`scope` moved to github.com/weftbase/weftbase — see the 2026-11-06
+amendment at the end.)*
+
 ## Context
 
 Through v0.8.0 the import path `github.com/weftgo/weft` was the agent
@@ -81,3 +87,23 @@ is a property worth keeping. It cost two things:
 - The thread API, storage format and the observability modules are
   not frozen by this decision; ADR 0024's programme and the thread
   review's freeze criteria stand.
+
+## Amendment (2026-11-06 — editor's note: the 0.21 rename and split)
+
+The decision — one framework module, `core` the loop alone, both
+tagged together — stands. Two facts above changed in 0.21.0
+(`MIGRATION-0.21.md`):
+
+- **The module path.** `github.com/weftgo/weft` is now
+  `github.com/weftbase/weft`, and `github.com/weftgo/weft/core` is
+  `github.com/weftbase/weft/core`; the facades' generate lines and the
+  instrumentation scope names followed.
+- **The platform left.** `studio` (+ `cmd`, the web source),
+  `obsdb` (+ `sqlite`, `clickhouse`), `runtime`, `scope`, `exporter`
+  and the CLI moved, with their history, to their own repository and
+  module, github.com/weftbase/weftbase, which imports weft and is never
+  imported by it (`make layering` fails otherwise). The framework
+  module holds the loop's facades, the adapters, `mcp`, `mw`,
+  `wefttest`, `thread` and `otel`. The `studio/web` consequence and
+  "ADR 0024's programme" now concern that repository (ADR 0024's
+  stub says which of its decisions still bind weft).

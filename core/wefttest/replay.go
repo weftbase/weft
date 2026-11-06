@@ -36,7 +36,7 @@ var ErrNoFixture = errors.New("wefttest: no replay fixture for this request")
 //
 //	func model(t *testing.T) core.Model {
 //	    if os.Getenv("WEFT_RECORD") != "" { // the suite's own switch; wefttest never reads it
-//	        return wefttest.Record(t, "testdata/replay", openai.New(os.Getenv("OPENAI_API_KEY"), "gpt-5"))
+//	        return wefttest.Record(t, "testdata/replay", openai.Model("gpt-5"))
 //	    }
 //	    return wefttest.Replay(t, "testdata/replay")
 //	}

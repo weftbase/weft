@@ -6,7 +6,7 @@ import (
 )
 
 // Storage is a session backend: Memory in process, jsonl on disk,
-// sqlite in one database file (its own module) — all running the
+// sqlite in one database file (package thread/sqlite) — all running the
 // threadtest conformance table.
 // Implementations must be safe for concurrent use: one writer per
 // session is the policy (ADR 0011 §5), and readers may read at any

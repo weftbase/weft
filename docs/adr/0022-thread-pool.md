@@ -80,6 +80,10 @@
    call's result (sync); for an async delegation the application
    delivers it — the settled receipt is what a later turn or caller
    reads, not context.
+   *(Editor's note: amendment §F adds a `parked` status — `accepted →
+   running ⇄ parked → done | failed | canceled | capped`; a child
+   waiting on an approval reads `parked`, not `running`, and a resume
+   records `running` again.)*
 
 5. **Budgets (D3).** The parent session's `Usage` gains a third
    bucket, `Delegated`, summed from settled receipts' usage — every

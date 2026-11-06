@@ -1,5 +1,10 @@
 # ADR 0017 — Testing conventions: replay, wefttest growth, the fuzz gate
 
+*(Editor's note: two ADR files carry the number 0017 — this one and
+`0017-record-replay.md`, which holds this ADR's 2026-09-26 amendment
+(the five-digit sequence pad) on its own. They are not renumbered;
+cite this file as ADR 0017.)*
+
 - Status: decided (2026-09-19, TODO §9.2/§9.3/§9.4; 9.1 closed 2026-09-10);
   amended 2026-09-22 (the replay key gains `ToolChoice`, TODO §2a.1 —
   the note at the end)
@@ -91,7 +96,9 @@ their own directories (`TestX/sub` → `dir/TestX/sub/`).
 
 ### The file
 
-`dir/<t.Name()>/<seq:03d>-<hash:016x>.json`, `seq` 1-based in
+`dir/<t.Name()>/<seq:03d>-<hash:016x>.json` *(editor's note: the pad
+is five digits since the 2026-09-26 amendment in `0017-record-replay.md`
+— `00001-<hash>.json`; core/wefttest writes `%05d`)*, `seq` 1-based in
 conversation order (so a listing reads in order and identical requests
 never collide); pretty-printed JSON (`MarshalIndent` + trailing
 newline), `0o644`, directories `0o755`, like `Golden`. Shape:
@@ -189,6 +196,13 @@ already run under `-race` in `test`) fails on any crasher and uploads
 input as a regression seed. Standing rule (AGENTS.md): a new message
 part or event type adds a fuzz seed.
 
+*(Editor's note, 2026-11-06: the count above is history. Since ADR 0027
+the loop lives in `core`, and `make fuzz` runs core's six targets
+(`core/fuzz_test.go`'s four, plus one each in `partial_json_test.go`
+and `raw_test.go`); `make fuzz-thread` runs `weft/thread`'s five
+(`thread` and `thread/jsonl`). Crashers land in each package's
+`testdata/fuzz`.)*
+
 ## The registers
 
 The plan's guesses, as shipped (T1–T13), and the implementation's
@@ -213,7 +227,7 @@ corrections (C1–C6):
 | C2 | `ExampleReplay` is a doc-pattern example — examples cannot construct a `testing.TB`, so the pattern lives in the godoc of `Record`/`Replay` |
 | C3 | `LastText` is the last message's last text part; `""` on a tool message |
 | C4 | A fixture write failure surfaces as the stream's terminal error (loud on both channels), keeping `FailNow` off run goroutines |
-| C5 | `seq` is 1-based (`001`…), matching the plan's `<seq:03d>` reading order |
+| C5 | `seq` is 1-based (`001`…), matching the plan's `<seq:03d>` reading order (five digits, `00001`…, since the 2026-09-26 amendment) |
 | C6 | The miss error names the test's fixture directory (`dir/<test>`), key, and first user words — the plan's `%s/%s` folded into the joined path |
 
 ## Consequences

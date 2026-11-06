@@ -118,8 +118,8 @@ func argumentBytes(req *sdk.CallToolRequest) json.RawMessage {
 // dispatched through the agent's tool chain (Agent.CallTool) so
 // middleware and approval policy apply — an approval-gated tool
 // answers with the ErrApprovalRequired text rather than running, loud
-// where AddTools refuses outright. Each call runs as the loop would run
-// it (core.Agent.ServeCall): under the tool's Timeout, else the agent's
+// where AddTools refuses outright. Each of those tools' calls runs as the
+// loop would run it (core.Agent.ServeCall): under the tool's Timeout, else the agent's
 // ("tool X timed out after d"; "OUTCOME_UNKNOWN: …" for a tool that is
 // not ReplaySafe — its handler is abandoned and may still complete),
 // with the result cap (the tool's MaxResultBytes, else the agent's)
@@ -149,7 +149,12 @@ func argumentBytes(req *sdk.CallToolRequest) json.RawMessage {
 // final-text rule — Serve is Subagent over the wire. description is
 // what MCP clients (and their models) read to decide when to call the
 // agent: it is the whole routing surface, as for Subagent, and it is
-// written by the caller, never synthesised.
+// written by the caller, never synthesised. The agent tool is
+// registered with AddTools, not dispatched through ServeCall: it runs
+// as AddTools runs any tool (ToolDef.Invoke, panics contained) — no
+// WrapTools chain, no Timeout and no result cap of the agent's apply
+// to it; the child run's own budgets (MaxSteps, UsageLimit, its tools'
+// Timeouts) and the client's cancellation bound it.
 //
 // The tools exposed are the agent's registered ones (Agent.Tools);
 // a ToolSource's snapshot is a per-step, runtime list and is not

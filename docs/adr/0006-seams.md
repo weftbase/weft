@@ -48,6 +48,12 @@ error)`: the result text the model will see, or an error. The chain is:
     agent WrapTools (outermost first) → the tool's own WrapTools →
     base: resolve the tool → RequireApproval check → decode → handler
 
+*(Editor's note: superseded in part — the base now runs resolve →
+approval boundary → the `BeforeDispatch` gate (ADR 0031) → the tool's
+`WrapHandler` middleware (ADR 0032's 2026-11-04 amendment "a delegation
+is a call") → decode → handler. See the 2026-11-06 amendment below and
+`docs/life-of-a-call.md`.)*
+
 - An unknown tool still runs the agent-level chain (so `Allow`/`Audit`
   see the attempt); the base returns the `NO_SUCH_TOOL` error.
 - **Panic containment stays outside the chain.** A middleware panic is
@@ -75,7 +81,9 @@ error)`: the result text the model will see, or an error. The chain is:
   registration order, blank-line separated — on every model call.
 - `Replay(ReplaySafe|ReplayNever)` is an annotation the manifest
   carries for the store/runtime's checkpoint restart; the loop ignores
-  it.
+  it. *(Editor's note: no longer true — retracted 2026-09-18, re-added
+  later, and since ADR 0032 the loop reads it: see the 2026-11-06
+  amendment below.)*
 - `RequireApproval()` → ADR 0007.
 
 The manifest records `sequential`, `require_approval`, `replay`, and
@@ -244,3 +252,26 @@ that may refuse the call (`ErrNotDispatched`). Neither is a third
 seam: the key is context decoration read through `CallFromContext`,
 and the gate changes nothing but whether the handler starts. ADR 0031
 records them.
+
+## Amendment (2026-11-06 — editor's note: the chain and `Replay` as the code has them)
+
+Two passages above no longer describe the code (v0.24.0); the decision
+— two behavioural seams, one tap — stands.
+
+- **The tool chain's base grew two steps** after the approval check:
+  the `BeforeDispatch` gate (ADR 0031) and the tool's handler-side
+  middleware, `weft.WrapHandler` (ADR 0032, amendment 2026-11-04 "a
+  delegation is a call"; `thread/pool` delegates through it). The full
+  order is agent `WrapTools` → tool `WrapTools` → resolve → approval
+  boundary → `BeforeDispatch` → `WrapHandler` → decode → handler, with
+  `AfterDispatch` once the handler returns. `docs/life-of-a-call.md`
+  draws it. `WrapHandler` is not a third seam: it is the tool seam's
+  `ToolMiddleware` placed on the handler's side of the gate.
+- **The loop reads `Replay`.** `Replay(ReplaySafe|ReplayNever)` came
+  back with the thread layer, and since ADR 0032 a tool that is not
+  `ReplaySafe` whose handler started and gave no answer of its own — a
+  panic, a `Timeout`, a cancel, a layer failing after the handler
+  answered — reads `OUTCOME_UNKNOWN: …` (or parks under `ParkUnknown`)
+  instead of the "panicked" / "timed out" text the Decision section
+  pins; `weft/thread`'s gate also reads it (ADR 0031). A middleware
+  panic before the handler started still reads `tool "x" panicked: …`.

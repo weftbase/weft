@@ -155,7 +155,8 @@ res, err := agt.Generate(ctx, weft.Prompt("Where is order 1234?"))
 //   weft.ParkUnknown()              // a call of unknown outcome parks (res.Pending, pending.source outcome_unknown) instead of reading OUTCOME_UNKNOWN
 //   weft.WithCaller(ctx, weft.Caller{RunID, CallID, Span}) // a caller in another process: weft.caller.* + a span link, never parenthood
 // A changed run carries weft.override.hash + weft.override.* on its invoke_agent span (the experiment's fingerprint).
-// res.Text(), res.Messages (full transcript), res.Steps, res.Usage, res.ID
+// res.Text(), res.Messages (full transcript), res.Steps, res.Usage, res.ID, res.StopReason, res.Pending, res.Park
+//   (no StoppedBy on RunResult: what ended the run is RunFinish.StoppedBy and the span's weft.run.stopped_by)
 // Cancel with a cause: ctx, cancel := context.WithCancelCause(ctx); cancel(weft.CancelCause("app.shutdown"))
 //   — the run fails with a *RunError matching context.Canceled; its invoke_agent span records
 //   weft.cancel.cause app.shutdown beside weft.run.stopped_by canceled (any cause with a Kind() string
@@ -366,7 +367,10 @@ ignore it.
    `ToolResultPart{IsError: true}`; siblings keep running. So does a
    panic in the returned error's own methods (`Error`, `Is`, `As`,
    `ErrorType`): the loop reads them contained, as the tool's failure,
-   with or without a tracer. Model
+   with or without a tracer. A tool that is not `ReplaySafe` whose
+   handler started and gave no answer of its own — it panicked, its
+   `Timeout` passed, the run was canceled under it — reads
+   `OUTCOME_UNKNOWN: …` instead (or parks under `ParkUnknown`; ADR 0032). Model
    failure, context cancellation, `MaxSteps`, and a malformed
    tool-source snapshot (`ErrDuplicateTool`, `ErrNilTool`) return an
    error, always `*RunError` with the partial transcript in `.Result`.
@@ -402,8 +406,11 @@ ignore it.
    default, `weft.MaxResultBytes`, per agent or per tool) with a marker
    the model sees.
 9. **A hung tool never hangs the run**: `weft.Timeout` on a tool or
-   agent records "tool X timed out after d" as an error result and
-   abandons the handler's goroutine; handlers must honour ctx.
+   agent records an error result and abandons the handler's goroutine;
+   handlers must honour ctx. The result reads "tool X timed out after
+   d" for a `ReplaySafe` tool or a handler that never started, else
+   `OUTCOME_UNKNOWN: tool "X" did not answer within d; it may still
+   complete; outcome unknown` (ADR 0032).
 10. **Two behavioural seams, one tap, no more.** `WrapModel` and
     `WrapTools` (chi-style, first listed = outermost) are where
     behaviour attaches; `Tap` observes. The loop reports its own spans
@@ -434,7 +441,8 @@ ignore it.
   writer lease with its first write (`Create` and `Fork` are one) and
   holds it until `Close`. Another Session's write fails with
   `ErrLocked` and changes nothing; one whose view fell behind fails
-  with `ErrStale` — open the session again. Never write a session
+  with `ErrStale` — close it (it keeps the lease until `Close`) and
+  open the session again. Never write a session
   behind its Session (`st.Append` on a session a Session holds).
 - **T2. Close what you opened to write.** `s.Close(ctx)` stops new
   work, drains the running turn and the queue, seals the Session

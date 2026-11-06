@@ -13,7 +13,10 @@
 - Companion ADRs: 0020 (compaction), 0021 (approvals), 0022 (pool,
   decided 2026-09-29), 0023 (sandbox — abandoned 2026-09-29, never
   decided)
-- Implementation: module `github.com/weftgo/weft/thread`
+- Implementation: module `github.com/weftgo/weft/thread` *(editor's
+  note: since ADR 0027 (0.9.0) `thread` is a package of the framework
+  module, and since 0.21 its path is `github.com/weftbase/weft/thread`;
+  `thread/sqlite` is a package of that module too, not its own)*
 
 ## Context
 
@@ -48,6 +51,9 @@ The field's scars decide most of the shape:
 ## Decision
 
 ### 1. Module and tier
+
+*(Editor's note: the module layout in this section is history — see the
+Implementation line above and ADR 0027.)*
 
 `weft/thread` is its own module (ADR 0005). It imports the root module
 and nothing else from weft — **not** `weft/store`: recording runs stays
@@ -148,6 +154,13 @@ type Storage interface {
   after a crash a later `Load` returns all of the batch or none of it.
   (It is not isolated from a concurrent reader in another process on a
   file backend — amendment §B, the torn-tail rule.)
+  *(Editor's note: superseded by ADR 0032's 2026-11-05 amendment ("torn
+  batches"): sqlite and Memory land a batch whole or not at all, while
+  jsonl can keep a prefix of the batch's complete lines — never a gap,
+  a reordering or a half-entry. The session writes the entry that
+  closes a batch's fact (a turn's end, a recovery's audit) last, so a
+  prefix reads as the fact not done. The `Storage.Append` godoc is the
+  current rule.)*
 - One writer per session. A backend that can be opened by two processes
   locks (jsonl: an advisory file lock; second writer → `ErrLocked`).
   Amendment §B states the whole rule: the lock is a lease, and between
@@ -413,8 +426,10 @@ logs one `Warn` through `thread.OpenLogger`. So a crash costs the
 half-written line and nothing after it. A file with no complete header
 line is not repaired: it is `ErrCorrupt` on line 1, and its recovery
 is `Delete` then `Create`. `Append` is atomic against the writer's
-death; it is not isolated from a concurrent reader in another process,
-which can see the write in flight as a torn tail.
+death (*editor's note: on sqlite and Memory; jsonl can keep a prefix of
+a batch's complete lines — §5's note, ADR 0032*); it is not isolated
+from a concurrent reader in another process, which can see the write in
+flight as a torn tail.
 
 **Keyset cursor.** `List` orders by `Created` descending, ties by `ID`
 descending. `Query.Before` and `Query.BeforeID` are a keyset over that

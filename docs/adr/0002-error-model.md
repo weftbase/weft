@@ -78,7 +78,11 @@ what can silently pass:
 - **A `max_tokens` finish is recorded, not fatal** (TODO §5.6 decided
   against a run error): the run succeeds and the last step's
   `StopReason` is surfaced on `RunResult.StopReason`, so a caller can
-  branch on truncation without indexing into steps. A `max_tokens` step
+  branch on truncation without indexing into steps. *(Editor's note:
+  the rest of this bullet is superseded — since the 2026-09-14
+  amendment below ("Fail truncated calls"), a `max_tokens` step with
+  tool calls executes none of them; every call gets the pinned "was not
+  executed" result. AGENTS.md rule 11.)* A `max_tokens` step
   *with* tool calls still executes — arguments truncated into
   undecodable JSON already come back as `ErrInvalidToolInput` results
   the model recovers from. Considered and rejected: failing the run with

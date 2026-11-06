@@ -23,6 +23,11 @@ ADR records the mechanics.
 
 ## Decision
 
+*(Editor's note: three passages of this ADR no longer describe the
+code — `weft/mcp` is a package of the framework module, served tools
+run through `Agent.ServeCall`, and a served run can be linked to its
+caller. See the 2026-11-06 amendment at the end.)*
+
 **One satellite module, `weft/mcp`, over the official SDK
 (`github.com/modelcontextprotocol/go-sdk` v1.8.0), three functions and
 two option constructors.** The core gains three additive exports
@@ -310,3 +315,32 @@ conformance fixture.
   carry the skips: `core.SkippedImports(source, …)` — an agent option,
   the one piece of core API this costs — carries them, and
   `ImportError.Option()` builds it from the import's report.
+
+## Amendment (2026-11-06 — editor's note: module, dispatch and caller link as of 0.24.0)
+
+Three statements above are history, not the code:
+
+- **Not a satellite module.** Since ADR 0027 (0.9.0) `weft/mcp` is a
+  package of the framework module (`github.com/weftbase/weft/mcp` since
+  the 0.21 rename), one version and one `go get` with the rest; the
+  "fourth satellite module" consequence no longer holds.
+- **Served tools run through `Agent.ServeCall`, not `Agent.CallTool`**
+  (0.24.0). `Serve`'s per-tool handlers execute each call the way the
+  loop does — the tool's `Timeout` (else the agent's) with the pinned
+  "timed out" / `OUTCOME_UNKNOWN` texts (ADR 0032), the result cap,
+  panic containment, `WrapTools` and the approval policy — and the
+  handler's `Call.IdempotencyKey` is the client's `_meta` key, never
+  invented. The **agent tool** is still registered through `AddTools`
+  (`core.Subagent` under the agent's name): it runs as `AddTools` runs
+  any tool, with panic containment and none of the agent's
+  `WrapTools`, `Timeout` or result cap; the child run's own budgets and
+  the client's cancellation bound it. `AddTools` itself still applies
+  no run policy.
+- **The served run is linkable** (0.20.0, U33.1). Under
+  `mcp.CallerMeta()` an imported tool sends its caller in
+  `params._meta` (`traceparent` and the weft caller key); `Serve` and
+  `AddTools`' tools read it back and start the run under
+  `core.WithCaller`: its `invoke_agent` span links to the caller's span
+  and records `weft.caller.run.id` / `weft.caller.call.id` /
+  `weft.caller.remote` — a link, never parenthood. The 2026-10-26
+  amendment's "the served run is still unlinked" is superseded.

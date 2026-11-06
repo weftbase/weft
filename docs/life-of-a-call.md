@@ -54,7 +54,10 @@ transcript: one assistant message (reasoning parts, text, tool calls)
         └─ calls → life of a tool call (below), then one tool message
         │
         ▼
-StepFinish → pending approvals? / no calls? / StopWhen? → RunFinish
+StepFinish → pending approvals? (parked) → StopWhen? (its condition's
+        │  name: StepCountIs(1) on a text step reports step_count_is:1)
+        │  → steering drain (a delivery redirects into one more step)
+        │  → no calls? (final_answer) → RunFinish
         │  (a run-ending step succeeds even if it overshot a budget)
         ▼
 the continuation point: budgets (MaxModelRetries, UsageLimit, DetectLoops;

@@ -887,9 +887,9 @@ func (s *Session) Storage() Storage {
 // Close, as one that wrote does.
 //
 // It is for a caller that must know it can write before it promises
-// to — weftbase/runtime acks a debugger's decision only once the Session
-// it was handed is the writer — and costs the holder nothing: the
-// backend answers from memory.
+// to — a platform's runtime that acks a remote decision only once the
+// Session it was handed is the writer, say — and costs the holder
+// nothing: the backend answers from memory.
 func (s *Session) Claim(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

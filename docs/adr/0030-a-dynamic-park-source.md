@@ -49,6 +49,11 @@ model-visible behaviour (AGENTS.md rule 5), hence this record.
    cached set": the runtime's source copies a small map under a mutex.
    A nil or empty answer parks nothing; a panic is contained, parks
    nothing and is reported as one Debug line ("park source panicked").
+   *(Editor's note: superseded by ADR 0032's 2026-11-05 amendment
+   (WR-14): a panicking source's set is unknown, so the run parks every
+   call but the agent's own `Output` answer, and the panic is one Warn
+   line, "park source panicked: every call of the run parks". See the
+   2026-11-06 note below.)*
 3. **It is behaviour, not an override.** The names are not written to
    `weft.override.*` and do not change the run's override hash: that
    fingerprint describes what a caller changed about a run, and a
@@ -158,3 +163,14 @@ decides; the source acts on the app's own runs only. Pinned by
 
 Nothing new crosses the wire to Studio except the registration's
 `breakpoints_own` flag; no route is added.
+
+## Note (2026-11-06 — a panicking source parks every call)
+
+§2's panic clause is history. Since ADR 0032's 2026-11-05 amendment
+(WR-14, `TestParkSourcePanicParksEveryCall`,
+`TestParkSourcePanicLetsTheAnswerThrough`) a breakpoint set that cannot
+be read is not an empty one: when any `ParkSource` panics, the run
+parks every call (`weft.tool.pending.source` `park_source`) except the
+agent's own `Output` submission, and the loop logs one Warn line
+"park source panicked: every call of the run parks" on the agent's
+`Logger`, naming the run and the panic value.

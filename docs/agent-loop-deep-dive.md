@@ -384,6 +384,10 @@ the deadline. At the deadline the run's own ctx error wins if it is
 set; otherwise the result is "tool X timed out after D" and the
 handler goroutine is abandoned. A handler that returns
 `context.DeadlineExceeded` itself gets the same named timeout text.
+(Since ADR 0032 those texts hold for a `ReplaySafe` tool or a handler
+that never started; any other tool whose handler started reads
+`OUTCOME_UNKNOWN: …` after a panic, a timeout or a cancel — see
+`outcomeUnknown` in `core/loop.go`.)
 Then the error is classified: one wrapping `ErrApprovalRequired` makes
 the call pending; any other error becomes `IsError: true` with
 `err.Error()` as the content; success stores the output.
@@ -1740,7 +1744,9 @@ child's run id; the parent's call id is on the `Nested` wrapper.
 **Cancellation.** The child runs on the parent's call ctx. Parent
 cancellation cancels the child; a `Timeout` on the subagent tool
 cancels the child at the deadline and the parent records "tool research
-timed out after 2m0s"; the abandoned child goroutine stops at its next
+timed out after 2m0s" (a `ReplaySafe` Subagent; an unannotated one reads
+`OUTCOME_UNKNOWN: tool "research" did not answer within 2m0s; …`, ADR
+0032); the abandoned child goroutine stops at its next
 ctx check and its late events are dropped by the post-cancellation
 rule. THE-END-GOAL's "subagents are goroutines" is literally the
 implementation.

@@ -1,3 +1,7 @@
+*(Editor's note: this file is an amendment to ADR 0017,
+`0017-testing-conventions.md` — two ADR files share the number 0017;
+they are not renumbered. The decision it amends is that file's "The
+file" section and its C5 register row.)*
 
 ## Amendment (2026-09-26 — the sequence pad widens to five digits)
 
