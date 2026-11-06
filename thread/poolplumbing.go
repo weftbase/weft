@@ -62,7 +62,9 @@ func (s *Session) AppendPoolReceipt(ctx context.Context, e PoolReceiptEntry) (Po
 // the model's context, and their resolution is the pool's to route. A
 // mirror stops being pending when it is decided — by an approver, by
 // its expiry, or by DenyMirrored when its delegation ends — or when a
-// later mirror reuses its call id.
+// later mirror reuses its call id. The session's OnRequest is called
+// for each, once the batch is durable, on the caller's goroutine,
+// holding no lock (since 0.24.1).
 func (s *Session) AppendApprovalRequests(ctx context.Context, reqs ...ApprovalRequestEntry) ([]ApprovalRequestEntry, error) {
 	if len(reqs) == 0 {
 		return nil, fmt.Errorf("thread: AppendApprovalRequests with no requests")
@@ -72,10 +74,24 @@ func (s *Session) AppendApprovalRequests(ctx context.Context, reqs ...ApprovalRe
 			return nil, fmt.Errorf("thread: AppendApprovalRequests: request for call %q names no child session", r.CallID)
 		}
 	}
+	out, notify, fn, err := s.appendApprovalRequests(ctx, reqs)
+	if err != nil {
+		return nil, err
+	}
+	// OnRequest (ADR 0021 §5) hears of a mirror as of any parked
+	// request: after it is durable, holding no lock, on this caller's
+	// goroutine (the pool's).
+	s.notifyRequests(fn, notify)
+	return out, nil
+}
+
+// appendApprovalRequests is AppendApprovalRequests under the lock: the
+// stored entries, the requests OnRequest is owed, and the callback.
+func (s *Session) appendApprovalRequests(ctx context.Context, reqs []ApprovalRequestEntry) ([]ApprovalRequestEntry, []Request, func(Request), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	entries := make([]Entry, 0, len(reqs))
 	parent := s.leaf
@@ -84,7 +100,7 @@ func (s *Session) AppendApprovalRequests(ctx context.Context, reqs ...ApprovalRe
 	for _, r := range reqs {
 		id, err := s.mintCheckedLocked(entries)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		r.ID, r.ParentID, r.Created = id, parent, now
 		r.Args = slices.Clone(r.Args)
@@ -96,12 +112,20 @@ func (s *Session) AppendApprovalRequests(ctx context.Context, reqs ...ApprovalRe
 		parent = id
 	}
 	if err := s.appendEntriesLocked(ctx, entries...); err != nil {
-		return nil, err
+		return nil, nil, nil, err
+	}
+	var notify []Request
+	if s.cfg.onRequest != nil {
+		for _, re := range out {
+			r := requestFromEntry(s.header.ID, re)
+			s.requestKeyLocked(&r)
+			notify = append(notify, r)
+		}
 	}
 	for i := range out {
 		out[i].Args = slices.Clone(out[i].Args) // the caller's copy, not the tree's
 	}
-	return out, nil
+	return out, notify, s.cfg.onRequest, nil
 }
 
 // MirroredRequest is one mirrored child request as the parent session

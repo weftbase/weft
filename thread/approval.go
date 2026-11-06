@@ -383,6 +383,14 @@ func (o onRequestOption) applySession(c *sessionConfig) {
 // fn is contained and logged, never failing the turn. A nil fn is
 // ignored.
 //
+// A thread/pool child's request mirrored onto this session (ADR 0022
+// §7; Request.Child names the child) is a parked request too: fn is
+// called for it once the mirror is durable, on the pool's goroutine,
+// holding no session lock (since 0.24.1; before, a nested request
+// reached no OnRequest inbox). The delegating call such a request
+// parks under is not decidable (ErrDelegated), and fn is not called for
+// it.
+//
 // An edit's revision (Request.RevisionOf) is a new request too: when
 // the Decide or DecideSigned that recorded the edit leaves it pending
 // (under Quorum it still needs approvers), fn is called for it on that
@@ -1617,8 +1625,13 @@ func (s *Session) chainRequests(cr *chainResult) ([]Request, func(Request)) {
 	}
 	s.mu.Lock()
 	var reqs []Request
-	for i := len(s.order) - 1; i >= 0 && len(reqs) < len(cr.parkedCalls); i-- {
+	wrappers := s.approvalWalkLocked().wrappers
+	for i := len(s.order) - 1; i >= 0 && len(want) > 0; i-- {
 		if re, ok := s.order[i].(ApprovalRequestEntry); ok && want[re.CallID] {
+			delete(want, re.CallID)
+			if wrappers[re.CallID] != "" {
+				continue // a delegating call: its child's mirrored requests are the ones to decide
+			}
 			r := requestFromEntry(s.header.ID, re)
 			s.requestKeyLocked(&r)
 			reqs = append(reqs, r)

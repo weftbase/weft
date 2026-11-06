@@ -168,3 +168,54 @@ func TestSubagentChildDelegationRefused(t *testing.T) {
 		t.Errorf("%d sessions stored, want the lead alone", len(page.Sessions))
 	}
 }
+
+// The parent session's OnRequest fires for a mirrored child request,
+// once, after it is durable: an inbox fed by OnRequest sees nested
+// approvals. Before 0.24.1 it never fired for a mirror.
+func TestOnRequestFiresForAMirroredRequest(t *testing.T) {
+	ctx := context.Background()
+	p := pool.New(2)
+	defer func() { _ = p.Close(ctx) }()
+	child, _ := gatedChild(
+		wefttest.ToolCalls(wefttest.Call{Name: "refund", Args: `{"order_id":"1234"}`}),
+		wefttest.Say("refunded"),
+	)
+	var mu sync.Mutex
+	var got []thread.Request
+	var s *thread.Session
+	durable := true
+	s, err := thread.Create(ctx, thread.Memory(), nestedParent(p, child), thread.OnRequest(func(r thread.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, r)
+		seen := false
+		for _, q := range s.Pending() {
+			seen = seen || q.CallID == r.CallID
+		}
+		durable = durable && seen
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1, err := s.Send(ctx, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := t1.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var mirrored []thread.Request
+	for _, r := range got {
+		if r.Child != "" {
+			mirrored = append(mirrored, r)
+		}
+	}
+	if len(mirrored) != 1 || mirrored[0].Tool != "refund" {
+		t.Fatalf("OnRequest got %+v, want the child's refund request once", got)
+	}
+	if !durable {
+		t.Error("OnRequest fired before the mirror was on Pending")
+	}
+}
