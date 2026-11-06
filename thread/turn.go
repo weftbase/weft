@@ -155,7 +155,7 @@ type runOptionsOption struct{ opts []core.RunOption }
 func (o runOptionsOption) applySend(c *sendConfig) { c.runOpts = append(c.runOpts, o.opts...) }
 
 // RunOptions returns the SendOption carrying extra core.RunOptions
-// into this turn's run — budgets, taps, thinking, metadata. Three
+// into this turn's run — budgets, taps, thinking, metadata. Four
 // things are the session's own, and an option that would set one is
 // rejected by Send with an error wrapping core.ErrInvalidRunOption:
 //
@@ -169,7 +169,15 @@ func (o runOptionsOption) applySend(c *sendConfig) { c.runOpts = append(c.runOpt
 //     core.ResolveError: a Send never runs while an approval boundary
 //     is open (it queues behind it), so a decision passed here would
 //     reach no parked call. Decisions are recorded with Session.Decide
-//     and applied by the boundary's resume run (ADR 0021 §1).
+//     and applied by the boundary's resume run (ADR 0021 §1);
+//   - the dispatch seam — core.BeforeDispatch, core.AfterDispatch,
+//     core.IdempotencyKeys: the session installs its own on every run
+//     (a step's calls start only once the step is durable, a keyed
+//     retry waits for an abandoned handler, each call's key is derived
+//     from its step entry — ADR 0031/0032), and the core keeps the last
+//     of each, so a caller's would replace or be replaced. Refused
+//     since 0.24.1 (before, silently overridden by the session's); a
+//     precondition of your own belongs in core.WrapTools middleware.
 //
 // The options bind every run the session starts on the turn's behalf:
 // the resume run of a boundary the turn parked (after Decide or
@@ -215,13 +223,20 @@ func sessionOwned(o core.RunOption) string {
 		return "core.Deny in RunOptions: a Send never reaches a parked call; record the decision with Session.Decide (ADR 0021 §1)"
 	case reflect.TypeOf(core.Resolve("", "")): // ResolveError is the same option type
 		return "core.Resolve in RunOptions: a Send never reaches a parked call; record the decision with Session.Decide (ADR 0021 §1)"
+	case reflect.TypeOf(core.BeforeDispatch(nil)):
+		return "core.BeforeDispatch in RunOptions: the session installs its own dispatch gate on every run, a step's calls start only once the step is durable (ADR 0031/0032); gate inside the tool chain with core.WrapTools instead"
+	case reflect.TypeOf(core.AfterDispatch(nil)):
+		return "core.AfterDispatch in RunOptions: the session installs its own after-dispatch hook on every run, the wait a keyed retry makes for an abandoned handler (ADR 0032)"
+	case reflect.TypeOf(core.IdempotencyKeys(nil)):
+		return "core.IdempotencyKeys in RunOptions: the session derives every call's recovery-stable key from its step entry (ADR 0031, thread.IdempotencyKey)"
 	}
 	return ""
 }
 
 // rejectSessionOwned fails a Send whose run options would set what the
 // session owns — the transcript, the run id, the steering source, the
-// approval decisions — wrapping core.ErrInvalidRunOption.
+// approval decisions, the dispatch seam (gate, after-dispatch hook,
+// idempotency keys) — wrapping core.ErrInvalidRunOption.
 func rejectSessionOwned(opts []core.RunOption) error {
 	for _, o := range opts {
 		if o == nil {

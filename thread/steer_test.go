@@ -1224,3 +1224,30 @@ func TestDeferredSteerFollowUpKeepsItsRunOptions(t *testing.T) {
 		t.Errorf("the follow-up's recorded policy = %q, want steer", tes[len(tes)-1].Policy)
 	}
 }
+
+// core.BeforeDispatch, core.AfterDispatch and core.IdempotencyKeys in
+// RunOptions are refused at Send, nothing written: the session installs
+// its own on every run (ADR 0031/0032 — the durable-step gate, the
+// abandoned-handler wait, the recovery-stable keys), and the last
+// option wins, so before 0.24.1 the caller's was accepted and silently
+// replaced.
+func TestDispatchSeamRejectedInRunOptions(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		opt  core.RunOption
+	}{
+		{"core.BeforeDispatch", core.BeforeDispatch(func(context.Context, core.Call, *core.ToolDef) error { return nil })},
+		{"core.AfterDispatch", core.AfterDispatch(func(context.Context, core.Call, *core.ToolDef) {})},
+		{"core.IdempotencyKeys", core.IdempotencyKeys(func(core.Call) string { return "k" })},
+	} {
+		s, _ := thread.Create(ctx, thread.Memory(), core.New(wefttest.Script(wefttest.Say("x"))))
+		_, err := s.Send(ctx, core.User("go"), thread.RunOptions(tc.opt))
+		if !errors.Is(err, core.ErrInvalidRunOption) || !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("%s: err = %v, want core.ErrInvalidRunOption naming it", tc.name, err)
+		}
+		if n := len(s.Entries()); n != 0 {
+			t.Errorf("%s: a refused Send wrote %d entries", tc.name, n)
+		}
+	}
+}
