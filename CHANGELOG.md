@@ -6,6 +6,19 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+A patch: the bugs the architecture guide's examples found.
+
+### Added
+
+- thread/pool: `ErrMixedPools` (see Fixed) — the one new name of this patch, a sentinel to match the refusal with `errors.Is`.
+
+### Fixed
+
+- thread/pool: two `Pool` values at different levels of one delegation chain (the lead delegates through one pool, the child it runs through another) broke nested approvals: a decision at the top failed the top receipt with "nothing to resume: the child's resume did not survive a restart" while the lower pool ran the approved effect anyway and then could not record its settlement — the effect happened, the lead was told it failed. A delegation from a child session another pool runs — a wrapped tool of the second pool, or `Submit` from the child's run — is now refused with `ErrMixedPools` before any child exists; the model reads the refusal as the call's error. One `Pool` value per chain is the rule (ADR 0022 amendment 2026-11-06); several pools delegating from the top session are unchanged.
+- thread/pool: a wrapped tool called by a `core.Subagent` child running inside a session turn (or by any run started beneath the turn that is not the turn's own) delegated, writing a receipt into the session that named a call id only the child run held — the hazard `ErrNestedDelegation` already refused for `Agent.CallTool`. It is now refused with `ErrNestedDelegation` before any child exists.
+
 ## 0.24.0 — 2026-11-06
 
 The reliability pass: weft reviewed against its reliability principles (R1–R16) and the Weftbase boundary decisions, every confirmed finding fixed, and the fixes reviewed again for regressions.

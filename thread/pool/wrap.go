@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -137,7 +138,11 @@ func ToolOptions(opts ...core.ToolOption) WrapOption { return toolOptionsOption{
 // one dispatched from inside another call's handler (Agent.CallTool)
 // is refused with ErrNestedDelegation before any child exists — its
 // receipt and mirrored requests would name a call the transcript does
-// not hold.
+// not hold — and so is one made by a run beneath the session's turn
+// that is not the turn's own (a core.Subagent child given this tool).
+// A child session this pool does not run — another Pool's child —
+// delegating through it is refused with ErrMixedPools: wrap every
+// level of a chain with one Pool.
 //
 // name is also the resume key: children the wrap makes record it, and
 // a restarted process that wraps the same agents under the same names
@@ -186,6 +191,15 @@ func (p *Pool) Wrap(name, description string, agent *core.Agent, opts ...WrapOpt
 				// call the parent's transcript does not hold: refused
 				// before any child exists (ErrNestedDelegation).
 				return "", fmt.Errorf("%w: %q from call %s", ErrNestedDelegation, name, c.Outer)
+			} else if ok && c.RunID != "" && !sessionTurnRun(parent.ID(), c.RunID) {
+				// A run under the session's turn that is not the turn's
+				// own — a core.Subagent child (<run>/<step>/<call>), a
+				// Generate started in a handler: its call is not in the
+				// session's transcript either, so the same refusal.
+				return "", fmt.Errorf("%w: %q from run %s, not a turn of session %s", ErrNestedDelegation, name, c.RunID, parent.ID())
+			}
+			if err := p.mixedChain(ctx, parent); err != nil {
+				return "", fmt.Errorf("%w (delegating %q)", err, name)
 			}
 			var in struct {
 				Prompt string `json:"prompt"`
@@ -409,6 +423,41 @@ type runInfo struct {
 	// read off the context when it delegates.
 	chain []*core.Agent
 	slot  *slot
+	// pool and session name the pool running this run and the child
+	// session it runs: a delegation from that session through another
+	// pool is refused (ErrMixedPools). Both nil outside a pool child's
+	// run.
+	pool    *Pool
+	session *thread.Session
+}
+
+// sessionTurnRun reports whether runID is one of session's own turn
+// runs, <session>-t<n> (thread mints them, ADR 0011 §4).
+func sessionTurnRun(session, runID string) bool {
+	rest, ok := strings.CutPrefix(runID, session+"-t")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// mixedChain refuses a delegation from parent through p when parent is
+// a child session another pool runs — the run calling is that pool's
+// (ADR 0022, amendment 2026-11-06): one Pool value owns a delegation
+// chain. The nested-approval bridge (mirrors up, resumes down, the
+// slot hand-off) is per Pool value, so a second pool one level down
+// could neither resume the chain nor record its settlement.
+func (p *Pool) mixedChain(ctx context.Context, parent *thread.Session) error {
+	above := runFromContext(ctx)
+	if above.pool == nil || above.pool == p || parent == nil || above.session != parent {
+		return nil
+	}
+	return fmt.Errorf("%w: session %s is a child of another pool", ErrMixedPools, parent.ID())
 }
 
 type runKey struct{}

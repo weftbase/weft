@@ -135,11 +135,27 @@ var ErrDuplicateWrap = errors.New("thread/pool: wrap name already in use")
 // name the delegating call, and an inner call is not in the parent's
 // transcript — a crash, a cut-off or a parked child would leave the
 // outer call offered beside the child's request, and approving both
-// would delegate twice. The handler reads this error; returned, the
+// would delegate twice. The same holds for a call of any run beneath
+// the session's turn that is not the turn's own — a core.Subagent
+// child run (its run id <run>/<step>/<call>), an Agent.Generate a
+// handler started on its context: the wrapped tool refuses it with
+// this error, before any child exists (since 0.24.1). The handler reads this error; returned, the
 // model reads it as the outer call's result. Give the model the
 // wrapped tool directly instead. Outside a session (a bare Generate)
 // the ordinary subagent path runs, nested or not.
 var ErrNestedDelegation = errors.New("thread/pool: a delegation dispatched from inside another tool call's handler is refused under a session; call the delegating tool directly")
+
+// ErrMixedPools is what a wrapped tool returns, and Submit, for a
+// delegation from a child session another Pool value runs: it is
+// refused before any child exists. One Pool value owns a delegation
+// chain — the nested-approval bridge (a grandchild's request mirrored
+// up, the decision's resume handed down level by level, the slot
+// handed over for the wait) is kept per Pool value, so a second pool
+// one level down could not resume the chain: the top delegation would
+// fail while the lower pool still ran the approved effect. Wrap every
+// level of a chain with one pool. Several pools delegating from one
+// session that is no pool's child (the top session) remain supported.
+var ErrMixedPools = errors.New("thread/pool: a delegation from a child session another pool runs is refused; wrap every level of a delegation chain with one Pool")
 
 // A StateError reports a receipt whose child is not in the state the
 // call serves — Forward to a child that is queued, parked or settled;
@@ -218,6 +234,14 @@ const DefaultMaxDepth = 8
 // a parked child of a pool not yet watching with ErrNoAgent, and
 // leaves it for that pool's Recover. Cancel and Forward a receipt through
 // the pool that made it.
+//
+// One Pool value owns a delegation chain: a child session one pool
+// runs delegates through that same pool. A delegation from it through
+// another pool — a wrapped tool of a second Pool given to the child's
+// agent, or Submit from the child's run — is refused with
+// ErrMixedPools before any child exists (since 0.24.1): the nested
+// approval bridge is kept per Pool value, and a second pool one level
+// down could neither resume the chain nor record its settlement.
 type Pool struct {
 	max      int
 	maxDepth int
@@ -462,6 +486,9 @@ func (r Receipt) Settled() bool { return r.State.Settled() }
 func (p *Pool) Submit(ctx context.Context, parent *thread.Session, agent *core.Agent, prompt string) (*Receipt, error) {
 	if agent == nil {
 		return nil, fmt.Errorf("thread/pool: Submit with a nil agent")
+	}
+	if err := p.mixedChain(ctx, parent); err != nil {
+		return nil, err
 	}
 	info, err := p.admit(ctx, agent)
 	if err != nil {
@@ -1309,6 +1336,7 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 	}()
 	info := d.info
 	info.slot = sl
+	info.pool, info.session = p, d.child
 	runCtx := withRun(ctx, info)
 
 	if _, err := d.parent.AppendPoolReceipt(ledger, thread.PoolReceiptEntry{
