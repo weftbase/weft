@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/weftbase/weft/core"
 	"github.com/weftbase/weft/thread"
@@ -257,14 +258,33 @@ func TestSteerFollowUpKeepsTheAimedTurnsMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := core.WithMetadata(ctx, map[string]string{"src": "chat"})
-	if _, err := s.Send(chat, core.User("also tidy up"), thread.As(thread.Steer)); err != nil {
+	steer, err := s.Send(chat, core.User("also tidy up"), thread.As(thread.Steer))
+	if err != nil {
 		t.Fatal(err)
 	}
+	// The steer's Turn ends when the steer reaches its final state
+	// (Policy Steer's godoc). The parked turn's Wait returns before its
+	// runner's epilogue, so a steer accepted in that window waits in the
+	// live queue and defers in the epilogue, not inside Send: the
+	// deferral — the follow-up's accepted receipt — is only promised
+	// once the steer's Turn is done.
+	select {
+	case <-steer.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the steer's Turn never reached a final state")
+	}
+	if o := steer.Outcome(); o != thread.TurnDeferred || steer.Next() == nil {
+		t.Fatalf("steer outcome = %v, next = %v; want deferred with a follow-up", o, steer.Next())
+	}
 	var run *core.RunSettings
+	found := false
 	for _, e := range s.Entries() {
-		if rc, ok := e.(thread.ReceiptEntry); ok && rc.Status == thread.ReceiptAccepted {
-			run = rc.Run
+		if rc, ok := e.(thread.ReceiptEntry); ok && rc.Status == thread.ReceiptAccepted && rc.Turn == steer.Next().ID() {
+			run, found = rc.Run, true
 		}
+	}
+	if !found {
+		t.Fatalf("no accepted receipt names the follow-up turn %s", steer.Next().ID())
 	}
 	if run == nil || run.Metadata["tenant"] != "acme" || run.Metadata["src"] != "chat" {
 		t.Fatalf("follow-up settings = %+v, want tenant=acme beside src=chat", run)

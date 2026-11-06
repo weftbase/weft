@@ -166,16 +166,19 @@ type Request struct {
 	// Args are an editor's, not the model's, and the resume runs them.
 	// Empty on every other request.
 	RevisionOf string
-	// Recovery marks a recovery request (ADR 0032): a call a crash or
-	// a shutdown left without a result, parked by Session.RecoverTurn
-	// under the run that was cut off. Approve retries it with the same
+	// Recovery marks a recovery request (ADR 0032): a call of unknown
+	// outcome — one a crash or a shutdown left without a result, parked
+	// by Session.RecoverTurn under the run that was cut off, or one a
+	// live turn's Timeout or interrupt abandoned, parked at that turn's
+	// end once its handler returned or its bound passed. Approve retries it with the same
 	// IdempotencyKey; Deny or Resolve skips it; ApproveAlways is
 	// refused (ErrInvalidDecision). Reason says what is known of its
 	// outcome.
 	Recovery bool
 	// IdempotencyKey is the key the call runs under when it is
 	// approved (IdempotencyKey: from the session, the assistant entry
-	// holding the call and the call id) — the handler reads the same
+	// holding the call, the call id and, for an edited call, the edited
+	// arguments' SHA-256) — the handler reads the same
 	// value as core.Call.IdempotencyKey, on whichever worker resumes it,
 	// and a recovery retry keeps it. Empty on a mirrored child request
 	// (the child's own Pending names it).
@@ -183,12 +186,13 @@ type Request struct {
 }
 
 // Decision is one call's outcome, the value Decide records (ADR 0021
-// §1). Build one with Approve, Deny, Resolve or ResolveError; Who is
-// the caller's to fill.
+// §1). Build one with Approve, Deny, Resolve, ResolveError or Edit;
+// Who is the caller's to fill.
 type Decision struct {
 	// CallID is the pending call the decision addresses.
 	CallID string
-	// Kind is the outcome: approve, deny, resolve or resolve_error.
+	// Kind is the outcome: approve, deny, resolve, resolve_error or
+	// edit.
 	Kind Outcome
 	// Reason is the deny reason — the text the model sees after
 	// "DENIED: ".
