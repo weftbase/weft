@@ -45,6 +45,16 @@ var ErrToolError = errors.New("mcp: tool returned an error")
 // error.type — mcp_tool_error (isError), mcp_rpc_error (the server
 // refused the call) and mcp_transport (no answer).
 //
+// An unknown outcome does not survive an MCP hop as a type. A tool
+// served by a weft mcp.Serve that answers OUTCOME_UNKNOWN (its handler
+// timed out, or was cut off) sends an isError result like any other
+// failure — MCP has no unknown-outcome signal — so the importing side
+// reads it as a remote isError (errors.Is ErrToolError, the text
+// verbatim, starting "OUTCOME_UNKNOWN:"), not as core.ErrOutcomeUnknown:
+// a session's recovery ladder does not see it as unknown. Give such a
+// tool an idempotency key end to end (the server's handler dedupes on
+// the client's key) rather than relying on the importer's ladder.
+//
 // Every imported tool names where it came from for the record (O8):
 // its Origin is "mcp:<server>" under Server ("mcp" otherwise) and its
 // core.OriginDetail the server, the Transport, the Prefix and its name

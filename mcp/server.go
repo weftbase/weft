@@ -124,7 +124,11 @@ func argumentBytes(req *sdk.CallToolRequest) json.RawMessage {
 // not ReplaySafe — its handler is abandoned and may still complete),
 // with the result cap (the tool's MaxResultBytes, else the agent's)
 // and panic containment. The SDK bounds nothing: a call with no Timeout
-// runs until it answers or the client cancels it.
+// runs until it answers or the client cancels it. An OUTCOME_UNKNOWN
+// answer goes out as an ordinary isError result — MCP carries no
+// unknown-outcome signal — so a weft client importing the tool (Tools)
+// reads it as ErrToolError with that text, not as
+// core.ErrOutcomeUnknown: the type is lost after one hop.
 //
 // A served tool's handler reads its call with core.CallFromContext. Its
 // IdempotencyKey is the client's: params._meta's MetaIdempotencyKey
