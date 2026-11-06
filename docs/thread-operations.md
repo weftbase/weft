@@ -629,7 +629,7 @@ not the numbers themselves.
   `p.Recover(ctx, parent)`. It reattaches children parked at an
   approval (mirroring any request the crash left unmirrored), settles
   children that finished from their own files, and settles `failed`
-  those that never started their first run — and, since 0.23.0, those
+  those that never started their first run — and, since 0.24.0, those
   whose receipt names a child that does not exist ("… does not exist
   and its run never started: nothing ran"): the acceptance receipt is
   written before the child session is created, so a crash between the

@@ -337,9 +337,10 @@ type ApprovalRequestEntry struct {
 	// written against and an approval is given for. A resume whose
 	// agent no longer has the tool with that schema (removed, renamed,
 	// its input changed) does not run the call on an approval: it is
-	// denied, saying so, and the audit trail names the drift. Empty for
-	// a tool the agent's static set did not hold (a ToolSource's), which
-	// is not checked.
+	// denied, saying so, and the audit trail names the drift. The schema
+	// is the tool's as the agent resolves it (its ToolSource included,
+	// since 0.24.0). Empty on a request recorded before that for a
+	// ToolSource tool, or for a tool the agent did not hold: not checked.
 	SchemaSHA256 string `json:"schema_sha256,omitempty"`
 	// Quorum is how many approvals from distinct identities the call
 	// needs (the session's Quorum when it parked, above 1), 0 when one

@@ -68,11 +68,12 @@ func MaxSteps(n int) MaxStepsOption { return core.MaxSteps(n) }
 // partial transcript on RunError.Result. There is no default limit:
 // the right value is workload-specific, and MaxSteps is the default
 // budget. Usage.Total() is not a separate limit — a caller who wants a
-// total sets both fields. A Subagent child the loop abandoned — its
-// call's Timeout passed, or the run was canceled under it — is counted
-// up to the moment it was abandoned: whatever it spends after (its
-// goroutine runs on until it honours its context) is reported on its
-// own run's record but reaches neither RunResult.Usage nor this limit.
+// total sets both fields. A Subagent child's usage is counted when the
+// child run returns; a child the loop abandoned — its call's Timeout
+// passed, or the run was canceled under it — is not counted at all:
+// what it spent (its goroutine runs on until it honours its context)
+// is reported on its own run's record but reaches neither
+// RunResult.Usage nor this limit.
 // Give delegations a Timeout their child honours, and a UsageLimit of
 // their own on the child agent.
 func UsageLimit(max Usage) Option { return core.UsageLimit(max) }
@@ -1878,11 +1879,11 @@ func AgentFromContext(ctx context.Context) *Agent { return core.AgentFromContext
 // and the tool's result is the child's final text (or, for a child
 // built with Output, the submitted JSON). The child's events arrive in
 // the parent's stream wrapped in Nested; its usage is added to the
-// parent's RunResult.Usage and recorded on StepRecord.SubagentUsage —
-// up to the moment the call ends: a child abandoned at its Timeout or
-// at the parent's cancellation runs on until it honours its context,
-// and what it spends after is on its own run's record only, never on
-// the parent's usage or UsageLimit. The child inherits none of the
+// parent's RunResult.Usage and recorded on StepRecord.SubagentUsage
+// when the child run returns. A child abandoned at its Timeout or at
+// the parent's cancellation runs on until it honours its context, and
+// none of its usage reaches the parent's usage or UsageLimit: it is on
+// its own run's record only. The child inherits none of the
 // parent run's per-call options: ParkOn, ParkUnknown, OnlyTools,
 // IdempotencyKeys, BeforeDispatch, AfterDispatch (ParkAllExcept and
 // Metadata it does inherit).

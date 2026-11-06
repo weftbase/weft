@@ -738,9 +738,9 @@ its own call.
 **Bounded, and said where not (C10, WR-32).** `mw.MaxTotal(d)` bounds a
 `Retry`'s whole call, waits included (off by default; no default
 changed). A `Subagent` child abandoned at its `Timeout` or at the
-parent's cancellation is counted to the moment it was abandoned: its
-later spend reaches neither the parent's usage nor `UsageLimit` — now
-documented on both, with the advice to give a delegation a `Timeout`
+parent's cancellation is not counted: a child's usage is recorded when
+the child run returns, so an abandoned child's spend reaches neither the
+parent's usage nor `UsageLimit` — now documented on both, with the advice to give a delegation a `Timeout`
 its child honours and a limit of its own.
 
 Tests: `TestLayerFailureAfterTheHandlerIsAnUnknownOutcome`,
