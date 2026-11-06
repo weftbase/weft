@@ -2550,16 +2550,17 @@ func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, ti
 	// passed timed out, whatever else its error says — parked or not,
 	// and without its Error being read.
 	expired := func() bool { return ctx.Err() == nil && tctx.Err() != nil }
+	dl, _ := tctx.Deadline()
 	go func() {
 		out, fail := invokeContained(tctx, fn, call, mark, expired)
-		done <- timedOutcome{out, fail}
+		done <- timedOutcome{out, fail, time.Now()}
 	}()
 	// The timeout and the run's cancellation are core's own errors:
 	// read uncontained, they cannot panic.
 	timedOut := func() toolFailure {
 		return readToolError(&toolTimeoutError{name: call.Name, d: timeout})
 	}
-	if o, answered := awaitAnswer(done, tctx.Done()); answered {
+	if o, answered := awaitAnswer(done, tctx.Done(), dl); answered {
 		// A handler that honoured the deadline returns
 		// DeadlineExceeded itself; name the timeout rather than
 		// echoing the context error. The match was read in the
@@ -2592,22 +2593,33 @@ func invokeWithTimeout(ctx context.Context, fn ToolCaller, call ToolCallPart, ti
 type timedOutcome struct {
 	out  string
 	fail toolFailure
+	// at is when the handler's chain returned: an answer counts only
+	// when it came by the deadline (awaitAnswer).
+	at time.Time
 }
 
 // awaitAnswer waits for the call's answer or its deadline, whichever
-// comes first — and when both are ready at once, the answer: a select
-// alone picks between ready cases at random, and would throw away the
-// real result of a handler that answered right at its Timeout (C9).
-// answered is false only when the deadline came and no answer was
-// waiting.
-func awaitAnswer(done <-chan timedOutcome, deadline <-chan struct{}) (timedOutcome, bool) {
+// comes first. An answer the handler gave by the deadline (dl) is kept
+// even when both are ready at once — a select alone picks between ready
+// cases at random, and would throw away the real result of a handler
+// that answered right at its Timeout (C9). An answer given after the
+// deadline is not an answer within the Timeout: most often it is the
+// handler reacting to the deadline's own cancellation, and the call
+// timed out (answered false), whichever case the select saw first.
+func awaitAnswer(done <-chan timedOutcome, deadline <-chan struct{}, dl time.Time) (timedOutcome, bool) {
+	inTime := func(o timedOutcome) (timedOutcome, bool) {
+		if !dl.IsZero() && o.at.After(dl) {
+			return timedOutcome{}, false
+		}
+		return o, true
+	}
 	select {
 	case o := <-done:
-		return o, true
+		return inTime(o)
 	case <-deadline:
 		select {
 		case o := <-done:
-			return o, true
+			return inTime(o)
 		default:
 			return timedOutcome{}, false
 		}

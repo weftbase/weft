@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // countedDeadlineErr matches context.DeadlineExceeded; its Error panics
@@ -75,16 +76,26 @@ func TestSettleReadsTheDeadlineFirst(t *testing.T) {
 func TestAwaitAnswerPrefersTheAnswerAtTheDeadline(t *testing.T) {
 	deadline := make(chan struct{})
 	close(deadline)
+	dl := time.Now()
 	for range 200 {
 		done := make(chan timedOutcome, 1)
-		done <- timedOutcome{out: "paid"}
-		o, answered := awaitAnswer(done, deadline)
+		done <- timedOutcome{out: "paid", at: dl}
+		o, answered := awaitAnswer(done, deadline, dl)
 		if !answered || o.out != "paid" {
 			t.Fatalf("awaitAnswer = %+v, %v; want the answer that was waiting", o, answered)
 		}
 	}
 	// No answer waiting: the deadline.
-	if _, answered := awaitAnswer(make(chan timedOutcome, 1), deadline); answered {
+	if _, answered := awaitAnswer(make(chan timedOutcome, 1), deadline, dl); answered {
 		t.Fatal("awaitAnswer answered with no answer waiting")
+	}
+	// An answer given after the deadline — the handler reacting to the
+	// deadline's cancellation — is a timeout, whichever case is seen.
+	for range 200 {
+		done := make(chan timedOutcome, 1)
+		done <- timedOutcome{out: "never", at: dl.Add(time.Millisecond)}
+		if o, answered := awaitAnswer(done, deadline, dl); answered {
+			t.Fatalf("awaitAnswer = %+v; want a timeout for an answer after the deadline", o)
+		}
 	}
 }
