@@ -215,7 +215,7 @@ func (s *Session) ResolveDelegation(ctx context.Context, callID, child, content 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if got := s.approvalWalkLocked().wrappers[callID]; got != child && !s.danglingDelegationLocked(callID, child) {
+	if got := s.approvalWalkLocked().wrappers[callID]; (got == "" || got != child) && !s.danglingDelegationLocked(callID, child) {
 		return nil, fmt.Errorf("%w: call %q does not delegate to child session %s", ErrNotPending, callID, child)
 	}
 	d := Resolve(callID, content)
@@ -233,11 +233,18 @@ func (s *Session) ResolveDelegation(ctx context.Context, callID, child, content 
 // left dangling on this session's boundary with no mirror naming it —
 // a turn cut off while the delegation ran, whose child then recovered
 // on its own without parking — and whether its latest delegation's
-// acceptance receipt names child. The receipt is the durable record of
-// the delegation (W6), so the pool's settlement resolves that call as
-// it resolves a mirrored one. Callers hold s.mu.
+// acceptance receipt names child, that delegation open or settled with
+// an answer of its own (done, failed, capped). The receipt is the
+// durable record of the delegation (W6), so the pool's settlement
+// resolves that call as it resolves a mirrored one. One settled
+// canceled — what the child did is not known — is a person's to decide
+// (RecoverTurn's recovery request), never resolved here. Callers hold
+// s.mu.
 func (s *Session) danglingDelegationLocked(callID, child string) bool {
 	if child == "" {
+		return false
+	}
+	if !s.delegationOpenLocked(callID) && !s.delegationAnsweredLocked(callID) {
 		return false
 	}
 	i, ok := s.byID[s.callEntryLocked(callID)]

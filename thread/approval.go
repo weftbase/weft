@@ -393,7 +393,12 @@ func (o onRequestOption) applySession(c *sessionConfig) {
 // holding no session lock (since 0.24.1; before, a nested request
 // reached no OnRequest inbox). The delegating call such a request
 // parks under is not decidable (ErrDelegated), and fn is not called for
-// it.
+// it; nor for a delegating call parked while its delegation is open (the
+// pool cut its child off, the reason "delegated: its thread/pool
+// delegation is still open …"): the pool resolves it and an approval is
+// refused. Should that delegation end canceled instead, the call becomes
+// a person's — Pending offers it with "cut off while it delegated: …" —
+// but fn is not called again: an inbox learns of it from Pending.
 //
 // An edit's revision (Request.RevisionOf) is a new request too: when
 // the Decide or DecideSigned that recorded the edit leaves it pending
@@ -1638,8 +1643,12 @@ func (s *Session) chainRequests(cr *chainResult) ([]Request, func(Request)) {
 	for i := len(s.order) - 1; i >= 0 && len(want) > 0; i-- {
 		if re, ok := s.order[i].(ApprovalRequestEntry); ok && want[re.CallID] {
 			delete(want, re.CallID)
-			if wrappers[re.CallID] != "" {
-				continue // a delegating call: its child's mirrored requests are the ones to decide
+			if wrappers[re.CallID] != "" || re.Reason == reasonDelegationOpen {
+				// A delegating call: its child's mirrored requests are the
+				// ones to decide, or — its delegation open, the pool cut the
+				// child off — the pool resolves it, and an approval is
+				// refused. Nobody can act on it: no notification.
+				continue
 			}
 			r := requestFromEntry(s.header.ID, re)
 			s.requestKeyLocked(&r)
@@ -2283,8 +2292,16 @@ func (s *Session) pendingLocked() []Request {
 		}
 		if requested {
 			r := requestFromEntry(s.header.ID, re)
-			if r.Reason == reasonDelegationOpen && s.delegationAnsweredLocked(c.ID) {
-				r.Reason = reasonDelegationDone // settled since it parked: the pool resolves it
+			if r.Reason == reasonDelegationOpen {
+				switch {
+				case s.delegationAnsweredLocked(c.ID):
+					r.Reason = reasonDelegationDone // settled since it parked: the pool resolves it
+				case !s.delegationOpenLocked(c.ID):
+					// Ended canceled since it parked: what the child did is
+					// not known, and the call is a person's — approve
+					// delegates again, deny skips it.
+					r.Reason = reasonDelegated
+				}
 			}
 			r.Quorum = s.quorumOf(re)
 			if r.Quorum < 2 {
@@ -2304,6 +2321,8 @@ func (s *Session) pendingLocked() []Request {
 			r.Reason = reasonDelegationOpen // the pool's to settle; an approval is refused
 		} else if s.delegationAnsweredLocked(c.ID) {
 			r.Reason = reasonDelegationDone // the pool's to resolve; an approval is refused
+		} else if s.delegationEndedLocked(s.callEntryLocked(c.ID), c.ID) {
+			r.Reason = reasonDelegated // ended canceled: a person's to decide
 		}
 		s.requestKeyLocked(&r)
 		out = append(out, r)

@@ -834,7 +834,11 @@ reached no inbox, and the delegating call the mirror parks under — not
 decidable, `ErrDelegated` — did. `AppendApprovalRequests` now calls
 `OnRequest` for each mirror once the batch is durable, on the pool's
 goroutine with no lock held, and the chain no longer calls it for a
-delegating call.
+delegating call — neither one a mirror names nor one parked while its
+delegation is open (the pool cut the child off): nobody can approve
+either. If such a delegation then ends `canceled`, the call becomes a
+person's (ADR 0032's amendment of the same date) without a second
+notification; `Pending` lists it.
 
 Model-visible text (§I): the `ErrMixedPools` and `ErrNestedDelegation`
 texts a refused delegation reads, pinned by the tests below.

@@ -875,7 +875,13 @@ approving it delegated a second time: the effect twice. Now:
   call from the receipt when the live resolution was lost. A delegation
   ended `canceled` — a cut-off child's subtree ended by `Recover`,
   what it did not known — still parks for a person with `cut off while
-  it delegated: …`, unchanged.
+  it delegated: …`, unchanged: `ResolveDelegation` accepts a dangling
+  call only while its latest delegation is open or settled with an
+  answer, and `pool.Recover` never resolves one whose receipt reads
+  `canceled`. A call parked while its delegation was open (below) whose
+  receipt then settles `canceled` is offered with that same reason
+  instead of the stale "still open", and an approval of it — a
+  person's, delegating again — is no longer refused.
 - A delegation the *pool* cut off (`pool.Close` under
   `thread.ErrShutdown`) while the parent session's turn kept running
   answered the delegating call with the raw shutdown error, which the

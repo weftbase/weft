@@ -144,8 +144,11 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 		}
 		// The call may also dangle with no mirror: a turn cut off while
 		// the delegation ran, its child recovered without parking
-		// (ResolveDelegation checks the receipt names the child).
-		if rc.Call != "" && (open[rc.Child] == rc.Call || delegatingCallPending(parent, rc)) {
+		// (ResolveDelegation checks the receipt names the child). Not
+		// one settled canceled: what that child did is not known, and
+		// the call is a person's to decide (RecoverTurn's recovery
+		// request), never resolved with the canceled text.
+		if rc.Call != "" && (open[rc.Child] == rc.Call || rc.State != Canceled && delegatingCallPending(parent, rc)) {
 			if err := p.reResolve(ctx, parent, rc); err != nil {
 				errs = append(errs, err)
 			}
