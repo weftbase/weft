@@ -395,8 +395,10 @@ func (o onRequestOption) applySession(c *sessionConfig) {
 // parks under is not decidable (ErrDelegated), and fn is not called for
 // it; nor for a delegating call parked while its delegation is open (the
 // pool cut its child off, the reason "delegated: its thread/pool
-// delegation is still open …"): the pool resolves it and an approval is
-// refused. Should that delegation end canceled instead, the call becomes
+// delegation is still open …"): the pool resolves it and an approval or
+// an edit is refused (a deny is still accepted: it skips the call while the
+// child runs on, so a person can act on it from Pending, unnotified).
+// Should that delegation end canceled instead, the call becomes
 // a person's — Pending offers it with "cut off while it delegated: …" —
 // but fn is not called again: an inbox learns of it from Pending.
 //
