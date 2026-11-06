@@ -320,7 +320,11 @@ func ResolveError(callID, content string) Decision {
 // must not call back into the same Session — the chain consults it
 // outside the session lock, but the turn is still running. The Request
 // it is handed has no ID, Nonce or Created: the chain asks before the
-// request is persisted.
+// request is persisted. Its Metadata is the parking run's (since
+// 0.24.1; before, it was empty), as Pending and OnRequest report it. It
+// is consulted only in a live turn's chain: RecoverTurn's recovery
+// requests and a thread/pool child's mirrored ones never reach it — a
+// person (Decide) or OnRequest's inbox decides those.
 type Approver func(ctx context.Context, r Request) (Decision, bool)
 
 // Request builder options below (SessionOptions).
@@ -1398,6 +1402,11 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 				Session: s.header.ID, CallID: c.ID, Tool: c.Name,
 				Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
 				RunID: t.runID, Reason: parkingReason(currentTool(s.agent, c.Name)), Expiry: expiry,
+			}
+			if settings != nil && len(settings.Metadata) > 0 {
+				// The run metadata the request would record (requestFromEntry):
+				// an approver routing by it sees what Pending and OnRequest see.
+				req.Metadata = maps.Clone(settings.Metadata)
 			}
 			s.locked(func() { s.requestKeyLocked(&req) })
 			d, decided, outcome := s.consultApprover(ctx, req)

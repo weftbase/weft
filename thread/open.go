@@ -213,7 +213,7 @@ type Leaser interface {
 
 // Watcher is the optional Storage capability that tails a session as
 // it is appended to — the same small-interface rule; jsonl and sqlite
-// implement it. Watch yields the session's entries in arrival order,
+// implement it, thread.Memory does not. Watch yields the session's entries in arrival order,
 // each exactly once, starting after the entry named by after (empty —
 // from the beginning), then keeps yielding as appends land, and ends
 // when ctx is done. A session the storage does not hold fails with

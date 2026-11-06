@@ -75,7 +75,11 @@ func (o onReadyOption) applySession(c *sessionConfig) {
 // Work that was ready before the Session existed — a boundary decided
 // before a crash, sends restored by Open, a cut-off turn — is not
 // handed over: Session.Ready lists it, for the owner's boot recovery
-// (Open → Claim → Ready → act). fn must not block for long: a slow fn
+// (Open → Claim → Ready → act). RecoverTurn, like Resume and Continue,
+// is the owner's explicit start: under OnReady it still starts the run
+// it decides — a continuation, or the resume when its own decisions
+// (a keyed retry, a Reconcile) complete the boundary — and returns that
+// Turn already running; fn is not called for it. fn must not block for long: a slow fn
 // delays the next hint, nothing else; a panic in it is contained. A nil
 // fn is ignored.
 func OnReady(fn func(Ready)) SessionOption { return onReadyOption(fn) }

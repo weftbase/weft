@@ -281,6 +281,15 @@ type pendingSend struct {
 // appended in one atomic batch under a context.WithoutCancel window,
 // so a caller who walks away still leaves a complete session behind.
 //
+// The run is a child of ctx: canceling ctx cancels the turn — a queued
+// send that has not started is recorded canceled before it runs, a
+// running one is canceled mid-step (its calls of unknown outcome park
+// for the recovery ladder) — and the turn's end entries are still
+// written. An HTTP handler whose request context ends when the client
+// hangs up should therefore pass context.WithoutCancel(r.Context())
+// (and bound the turn some other way, or Steer/Interrupt it) unless a
+// hang-up is meant to cancel the turn.
+//
 // Settings are captured when Send is called: the agent, the extra run
 // options, and the busy policy. On a busy session the policy decides —
 // Queue (the default) holds the follow-up, in order, durably: an

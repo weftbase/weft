@@ -82,6 +82,10 @@ func (s memSession) head() (Header, error) {
 // writer Memory tells from another is a lease holder (the Leaser
 // capability, which is how two Sessions on one Memory are kept to one
 // writer), and its Release (the Releaser capability) ends that lease.
+//
+// Memory does not implement Watcher: there is no live tail of a session
+// held here (a st.(thread.Watcher) assertion fails). Read it with Open
+// or Load, or use thread/jsonl or thread/sqlite where a tail is needed.
 func Memory(opts ...OpenOption) Storage {
 	cfg := resolveOpen(opts)
 	return &memStorage{salvage: cfg.Salvage, log: cfg.Logger, sessions: map[string]memSession{}}
