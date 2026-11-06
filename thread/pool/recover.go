@@ -83,7 +83,10 @@ import (
 //
 // A sync delegation's call still parked in the parent is resolved
 // with the settlement, including for receipts that settled but whose
-// resolution a crash lost. Last, the pump runs (Decide with no
+// resolution a crash lost — and a delegating call a cut-off turn left
+// dangling with no mirror (its child recovered without parking) is
+// resolved the same way, never left offered for an approval that would
+// delegate again. Last, the pump runs (Decide with no
 // decisions): children whose requests were already decided resume.
 //
 // A cut-off child's recovery runs on a pool goroutine: Recover returns
@@ -139,7 +142,10 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 				errs = append(errs, fmt.Errorf("thread/pool: requests of ended child %s: %w", rc.Child, err))
 			}
 		}
-		if rc.Call != "" && open[rc.Child] == rc.Call {
+		// The call may also dangle with no mirror: a turn cut off while
+		// the delegation ran, its child recovered without parking
+		// (ResolveDelegation checks the receipt names the child).
+		if rc.Call != "" && (open[rc.Child] == rc.Call || callPending(parent, rc.Call)) {
 			if err := p.reResolve(ctx, parent, rc); err != nil {
 				errs = append(errs, err)
 			}

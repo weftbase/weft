@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -164,6 +165,107 @@ func TestCutOffDelegateCancelInProcess(t *testing.T) {
 			}
 			if got.State != pool.Canceled {
 				t.Fatalf("after Cancel the receipt reads %s (%s), want canceled", got.State, got.Stop)
+			}
+		})
+	}
+}
+
+// A cut-off sync delegation whose child recovers on its own without
+// parking — its ReplayKeyed call retried under the same key — resolves
+// the parent's delegating call with the child's answer when its receipt
+// settles, whichever of pool.Recover and the parent's RecoverTurn runs
+// first. Before 0.24.1 ResolveDelegation accepted only a call a mirror
+// named: the pool logged "delegating call no longer pending", the
+// parent kept offering the call as a plain pending one, a second
+// Recover did not fix it, and approving it delegated a second time.
+func TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall(t *testing.T) {
+	for _, order := range []string{"pool first", "session first"} {
+		for _, sc := range poolStores(t) {
+			t.Run(order+"/"+sc.name, func(t *testing.T) {
+				ctx := context.Background()
+				p, s2, rc, release := cutOffDelegation(t, sc.st(t))
+				release() // the abandoned handler returns: the child's recovery retries by key, no park
+				recoverTurn := func() {
+					if _, err := s2.RecoverTurn(ctx); err != nil {
+						t.Fatalf("RecoverTurn: %v", err)
+					}
+				}
+				if order == "session first" {
+					recoverTurn()
+				}
+				if err := p.Recover(ctx, s2); err != nil {
+					t.Fatalf("Recover: %v", err)
+				}
+				if order == "pool first" {
+					recoverTurn()
+				}
+				deadline := time.Now().Add(15 * time.Second)
+				for {
+					r := pool.Receipts(s2)
+					settled := len(r) == 1 && r[0].Settled()
+					if settled && len(s2.Pending()) == 0 && lastText(s2) == "parent done" {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("not resolved: receipts %+v, pending %+v, last %q", r, s2.Pending(), lastText(s2))
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				if err := p.Recover(ctx, s2); err != nil {
+					t.Fatalf("a second Recover: %v", err)
+				}
+				rs := pool.Receipts(s2)
+				if len(rs) != 1 || rs[0].ID != rc.ID || rs[0].State != pool.Done {
+					t.Errorf("receipts = %+v, want the one delegation done: never delegated again", rs)
+				}
+				if got := toolResultsOf(s2.Context()); len(got) != 1 || got[0] != "child done" {
+					t.Errorf("the parent's model read %q, want the child's answer", got)
+				}
+			})
+		}
+	}
+}
+
+// A settlement whose resolution was lost (a crash between the two) of a
+// delegating call left dangling with no mirror: Recover resolves the
+// call from the receipt.
+func TestRecoverResolvesADanglingCallFromItsSettledReceipt(t *testing.T) {
+	for _, sc := range poolStores(t) {
+		t.Run(sc.name, func(t *testing.T) {
+			ctx := context.Background()
+			p, s2, rc, release := cutOffDelegation(t, sc.st(t))
+			defer release()
+			if _, err := s2.AppendPoolReceipt(ctx, thread.PoolReceiptEntry{
+				Receipt: rc.ID, Status: thread.PoolDone, Child: rc.Child, Stop: "child done",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s2.RecoverTurn(ctx); err != nil {
+				t.Fatalf("RecoverTurn: %v", err)
+			}
+			// Until the pool resolves it the call is offered with the
+			// settled reason, and an approval — a second delegation — is
+			// refused.
+			pend := s2.Pending()
+			if len(pend) != 1 || pend[0].Reason != "delegated: its thread/pool delegation settled and its answer is on the receipt; the pool resolves the call with it (pool.Recover), and an approval, which would delegate again, is refused" {
+				t.Fatalf("pending = %+v, want the call offered with the settled reason", pend)
+			}
+			if _, err := s2.Decide(ctx, thread.Approve("").Bind(pend[0])); !errors.Is(err, thread.ErrDelegated) {
+				t.Fatalf("Approve of the settled delegation's call = %v, want ErrDelegated", err)
+			}
+			if err := p.Recover(ctx, s2); err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := s2.WaitIdle(wctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(s2.Pending()) != 0 || lastText(s2) != "parent done" {
+				t.Fatalf("pending %+v, last %q: want the call resolved from the receipt", s2.Pending(), lastText(s2))
+			}
+			if got := toolResultsOf(s2.Context()); len(got) != 1 || got[0] != "child done" {
+				t.Errorf("the parent's model read %q, want the receipt's answer", got)
 			}
 		})
 	}

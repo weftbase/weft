@@ -782,6 +782,14 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q (request %s): its thread/pool delegation is still open; the pool settles it, approve again only once it has settled",
 				ErrStillRunning, d.CallID, req.ID)
 		}
+		if (d.Kind == OutcomeApprove || d.Kind == OutcomeEdit) && req.Child == "" && s.delegationAnsweredLocked(d.CallID) {
+			// Its thread/pool delegation settled with an answer the
+			// call has not been resolved with yet (a cut-off turn's
+			// delegating call, its child recovered without parking):
+			// approving would delegate a second time, the effect twice.
+			return fmt.Errorf("%w: call %q (request %s): its thread/pool delegation settled and its answer is on the receipt; pool.Recover resolves the call with it",
+				ErrDelegated, d.CallID, req.ID)
+		}
 		if d.Kind == OutcomeEdit {
 			if walk.requests[req.CallID].ID != req.ID {
 				// A dangling call no request entry names (Pending's
@@ -2251,6 +2259,8 @@ func (s *Session) pendingLocked() []Request {
 		}
 		if s.delegationOpenLocked(c.ID) {
 			r.Reason = reasonDelegationOpen // the pool's to settle; an approval is refused
+		} else if s.delegationAnsweredLocked(c.ID) {
+			r.Reason = reasonDelegationDone // the pool's to resolve; an approval is refused
 		}
 		s.requestKeyLocked(&r)
 		out = append(out, r)

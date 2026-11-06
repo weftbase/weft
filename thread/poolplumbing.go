@@ -173,7 +173,12 @@ func (s *Session) MirroredRequests(ctx context.Context) ([]MirroredRequest, erro
 // delegating call is resolved — Decide refuses such a call with
 // ErrDelegated. callID must be the delegating call of a mirrored
 // request of child: the current occurrence of the call, named as
-// Wrapper by a request entry whose Child is child. Anything else — a
+// Wrapper by a request entry whose Child is child — or, with no mirror,
+// a delegating call still pending on this session's boundary whose
+// latest acceptance receipt names child: a turn cut off while the
+// delegation ran, its child recovered without parking (since 0.24.1;
+// before, that call stayed offered and approving it delegated again).
+// Anything else — a
 // call that delegates to nobody, or to another child, as a call id
 // reused by a later turn does — fails with ErrNotPending. A
 // delegation's answer is not an approval, so the call records under
@@ -186,7 +191,7 @@ func (s *Session) ResolveDelegation(ctx context.Context, callID, child, content 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if got := s.approvalWalkLocked().wrappers[callID]; got == "" || got != child {
+	if got := s.approvalWalkLocked().wrappers[callID]; got != child && !s.danglingDelegationLocked(callID, child) {
 		return nil, fmt.Errorf("%w: call %q does not delegate to child session %s", ErrNotPending, callID, child)
 	}
 	d := Resolve(callID, content)
@@ -198,6 +203,38 @@ func (s *Session) ResolveDelegation(ctx context.Context, callID, child, content 
 		return nil, err
 	}
 	return s.armSettledLocked(ctx)
+}
+
+// danglingDelegationLocked reports whether callID is a delegating call
+// left dangling on this session's boundary with no mirror naming it —
+// a turn cut off while the delegation ran, whose child then recovered
+// on its own without parking — and whether its latest delegation's
+// acceptance receipt names child. The receipt is the durable record of
+// the delegation (W6), so the pool's settlement resolves that call as
+// it resolves a mirrored one. Callers hold s.mu.
+func (s *Session) danglingDelegationLocked(callID, child string) bool {
+	if child == "" {
+		return false
+	}
+	i, ok := s.byID[s.callEntryLocked(callID)]
+	if !ok {
+		return false
+	}
+	named := ""
+	for _, e := range s.order[i+1:] {
+		if pr, ok := e.(PoolReceiptEntry); ok && pr.Receipt == "" && pr.Call == callID {
+			named = pr.Child
+		}
+	}
+	if named != child {
+		return false
+	}
+	for _, r := range s.pendingLocked() {
+		if r.CallID == callID && r.Child == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // DenyMirrored denies every still-pending mirrored request of child

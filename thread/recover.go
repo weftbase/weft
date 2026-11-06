@@ -34,6 +34,7 @@ const (
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
 	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key once it has returned, deny to skip it"
 	reasonDelegationOpen = "delegated: its thread/pool delegation is still open and the pool settles it; an approval, which would delegate again, is refused until it settles"
+	reasonDelegationDone = "delegated: its thread/pool delegation settled and its answer is on the receipt; the pool resolves the call with it (pool.Recover), and an approval, which would delegate again, is refused"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
 	reasonReconcileMiss  = "cut off: the system of record has no such call; it runs again with the same idempotency key"
 	cutOffTurn           = "thread: turn cut off: the session's writer stopped before the turn ended"
@@ -722,6 +723,37 @@ func (s *Session) delegationStateLocked(entry, callID string) (accepted, ended b
 	return receipt != "", ended
 }
 
+// delegationAnsweredLocked reports whether callID's latest thread/pool
+// delegation settled with an outcome of its own — done, failed or
+// capped, never canceled (a cut-off child's subtree is ended canceled:
+// what it did is not known). Asked of a call that holds no result (a
+// cut-off turn's, a pending one): a turn cut off while it delegated,
+// the child recovered without parking. Its answer is on the receipt, and the pool resolves the call
+// with it (ResolveDelegation); an approval would delegate a second
+// time. Callers hold s.mu.
+func (s *Session) delegationAnsweredLocked(callID string) bool {
+	i, ok := s.byID[s.callEntryLocked(callID)]
+	if !ok {
+		return false
+	}
+	receipt, status := "", ""
+	for _, e := range s.order[i+1:] {
+		pr, ok := e.(PoolReceiptEntry)
+		switch {
+		case !ok:
+		case pr.Receipt == "" && pr.Call == callID:
+			receipt, status = pr.ID, ""
+		case receipt != "" && pr.Receipt == receipt:
+			status = pr.Status
+		}
+	}
+	switch status {
+	case PoolDone, PoolFailed, PoolCapped:
+		return true
+	}
+	return false
+}
+
 // delegationOpenLocked reports whether callID's latest thread/pool
 // delegation is accepted and not settled (delegationStateLocked): the
 // pool's to settle, whether or not a mirror of the child's request is
@@ -743,7 +775,7 @@ func (s *Session) delegationOpenLocked(callID string) bool {
 // approval of it is refused while the delegation is open
 // (reasonDelegationOpen). Callers hold s.mu.
 func (s *Session) liveDelegationLocked(walk approvalWalk, callID string) bool {
-	if s.delegationOpenLocked(callID) {
+	if s.delegationOpenLocked(callID) || s.delegationAnsweredLocked(callID) {
 		return true
 	}
 	return walk.wrappers[callID] != "" && !s.delegationEndedLocked(s.callEntryLocked(callID), callID)
@@ -768,7 +800,7 @@ func (s *Session) unknownLocked(x cutOff) []core.ToolCallPart {
 		if s.replayAtDispatchLocked(c, x.run) == core.ReplaySafe {
 			continue
 		}
-		if walk.wrappers[c.ID] != "" || s.delegationOpenLocked(c.ID) {
+		if walk.wrappers[c.ID] != "" || s.delegationOpenLocked(c.ID) || s.delegationAnsweredLocked(c.ID) {
 			// A call delegating to a thread/pool child (mirrored, or
 			// accepted and not settled): the child session holds its
 			// outcome, and the pool's Recover settles it (ADR 0022 §7).
