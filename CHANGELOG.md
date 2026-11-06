@@ -6,9 +6,9 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
-## Unreleased
+## 0.24.0 — 2026-11-06
 
-The reliability pass (a review of weft against its reliability principles R1–R16 and the Weftbase decisions): the next release is 0.24.0.
+The reliability pass: weft reviewed against its reliability principles (R1–R16) and the Weftbase boundary decisions, every confirmed finding fixed, and the fixes reviewed again for regressions.
 
 ### Changed (breaking)
 
