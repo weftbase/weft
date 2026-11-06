@@ -283,7 +283,15 @@ A shutdown sequence that leaves nothing behind:
    `pool.Recover` after the restart, which recovers each such child
    on its own ladder (`RecoverTurn`) rather than settling it failed:
    its calls of unknown outcome reach the parent as mirrored recovery
-   requests, or it runs on to its answer.
+   requests, or it runs on to its answer. A parent session whose turn
+   is waiting on such a child (a sync delegation) is not closed by
+   this: since 0.24.1 its delegating call reads as an unknown outcome
+   and parks — left to the pool, an approval refused while the receipt
+   is open — instead of reaching the parent's model as a plain tool
+   failure; `pool.Recover` after the restart resolves it with the
+   child's answer. Closing the sessions first (step 3 before step 2,
+   under the same cause) records those turns cut off instead; either
+   order leaves nothing settled on a guess.
 3. `s.Close(ctx)` for each open session, with a deadline you can
    afford and the cause `thread.ErrShutdown` (above).
 4. Exit.

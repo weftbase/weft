@@ -145,7 +145,7 @@ func (p *Pool) Recover(ctx context.Context, parent *thread.Session) error {
 		// The call may also dangle with no mirror: a turn cut off while
 		// the delegation ran, its child recovered without parking
 		// (ResolveDelegation checks the receipt names the child).
-		if rc.Call != "" && (open[rc.Child] == rc.Call || callPending(parent, rc.Call)) {
+		if rc.Call != "" && (open[rc.Child] == rc.Call || delegatingCallPending(parent, rc)) {
 			if err := p.reResolve(ctx, parent, rc); err != nil {
 				errs = append(errs, err)
 			}
@@ -596,7 +596,7 @@ func (p *Pool) reattach(ctx context.Context, parent *thread.Session, rc Receipt)
 // turn ended.
 func wrapperOf(parent *thread.Session, rc Receipt) string {
 	wrapper := ""
-	if rc.Call != "" && callPending(parent, rc.Call) {
+	if rc.Call != "" && (callPending(parent, rc.Call) || delegatingCallPending(parent, rc)) {
 		// The delegating call is still open in the parent: the child's
 		// requests park under it again, and its answer resolves it.
 		wrapper = rc.Call
@@ -648,6 +648,30 @@ func turnLandedSince(parent *thread.Session, receipt string) bool {
 func callPending(parent *thread.Session, callID string) bool {
 	for _, r := range parent.Pending() {
 		if r.CallID == callID && r.Child == "" && !requestEntry(parent, r.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// delegatingCallPending reports whether rc's delegating call is pending
+// in parent as a call of its own boundary (no Child) and rc is that
+// call's latest delegation: a delegating call left unanswered — a
+// cut-off turn's, or one parked as of unknown outcome when the pool cut
+// its child off and left the receipt open. A later delegation under a
+// reused call id has a later acceptance, and is not rc.
+func delegatingCallPending(parent *thread.Session, rc Receipt) bool {
+	latest := ""
+	for _, e := range parent.Entries() {
+		if pr, ok := e.(thread.PoolReceiptEntry); ok && pr.Receipt == "" && pr.Call == rc.Call {
+			latest = pr.ID
+		}
+	}
+	if latest != rc.ID {
+		return false
+	}
+	for _, r := range parent.Pending() {
+		if r.CallID == rc.Call && r.Child == "" {
 			return true
 		}
 	}

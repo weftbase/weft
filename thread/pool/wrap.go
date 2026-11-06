@@ -321,6 +321,14 @@ func delegationError(name string, out outcome) error {
 	var um *unmirroredError
 	var re *core.RunError
 	switch {
+	case out.cutOff:
+		// The child was cut off (or another writer holds it) and its
+		// receipt is open: what it did is not known, so the delegating
+		// call's outcome is unknown — under a session the call parks,
+		// left to the pool (an approval is refused while the receipt is
+		// open), and Recover resolves it with the child's answer. Never
+		// a plain failure the parent's model would act on (R5).
+		return fmt.Errorf("%w: agent %q: the delegation was cut off before it answered; its receipt stays open for pool.Recover: %w", core.ErrOutcomeUnknown, name, out.err)
 	case errors.As(out.err, &um):
 		return &core.ToolError{Code: core.CodeSubagentFailed,
 			Message: fmt.Sprintf(unmirroredMessage, name, um.err), Err: out.err}

@@ -759,7 +759,14 @@ func (p *Pool) Wait(ctx context.Context, parent *thread.Session, receiptID strin
 // recorded cut off (thread.TurnEntry.CutOff) and its receipt stays
 // unsettled, so Recover after the restart reattaches the child and
 // recovers its turn (ADR 0032). Queued children are canceled as
-// always.
+// always. A parent session whose turn is waiting on such a child (a
+// sync delegation) keeps running: its delegating call reads as an
+// unknown outcome (core.ErrOutcomeUnknown) and, under the session's
+// core.ParkUnknown, parks — left to the pool, an approval refused while
+// the receipt is open — never a plain failure the parent's model acts
+// on; Recover of the parent resolves it with the child's answer (since
+// 0.24.1). Closing the parent sessions first, under the same cause,
+// records their turns cut off instead.
 func (p *Pool) Close(ctx context.Context) error {
 	p.mu.Lock()
 	if p.closed {
@@ -1019,6 +1026,10 @@ type outcome struct {
 	err      error
 	parked   bool
 	canceled bool
+	// cutOff: the child's run was cut off (a shutdown) or another
+	// writer holds the child, and its receipt is left open for Recover:
+	// what the child did is not known.
+	cutOff bool
 }
 
 // admit checks a delegation to agent, made from ctx, against the
@@ -1495,7 +1506,7 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 			p.closeChild(context.WithoutCancel(ctx), d)
 		}
 		p.letGo(d, r.idle)
-		return outcome{err: err}
+		return outcome{err: err, cutOff: true}
 	}
 	canceled := p.wasCanceled(d)
 	text := d.runFailureText(err)

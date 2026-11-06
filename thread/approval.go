@@ -1277,10 +1277,24 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	// delegation again in a second child session, a denial would
 	// abandon a child that is still parked.
 	var wrappers map[string]string
+	// open holds the delegating calls whose thread/pool delegation is
+	// accepted and not settled, with no mirror naming them: the pool
+	// cut the child off (a pool Close under thread.ErrShutdown before
+	// this session's) and left its receipt open, and the wrapped tool
+	// answered with an unknown outcome. The ladder must not retry such
+	// a call (a retry delegates again) nor a grant or Approver approve
+	// it: it parks, the pool's to resolve (Recover), as a cut-off
+	// turn's delegating call does.
+	open := map[string]bool{}
 	tv := snapshotTools(s.agent) // the recovery entries below read it; never the source under s.mu
 	s.locked(func() {
 		s.useToolsLocked(tv)
 		wrappers = s.approvalWalkLocked().wrappers
+		for _, c := range calls {
+			if wrappers[c.ID] == "" && (s.delegationOpenLocked(c.ID) || s.delegationAnsweredLocked(c.ID)) {
+				open[c.ID] = true
+			}
+		}
 	})
 	// The calls whose handler started and gave no answer
 	// (core.ParkUnknown): the outcome is unknown, and the recovery
@@ -1295,7 +1309,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	unknown := map[string][]Entry{}
 	var waitFor []string
 	for _, c := range calls {
-		if wrappers[c.ID] != "" || !sp.wasStarted(s, c.ID) {
+		if wrappers[c.ID] != "" || open[c.ID] || !sp.wasStarted(s, c.ID) {
 			continue
 		}
 		var es []Entry
@@ -1341,7 +1355,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		// they hold the call's effective verdict.
 		var steps []Entry
 		resolved := false
-		if wrappers[c.ID] != "" {
+		if wrappers[c.ID] != "" || open[c.ID] {
 			// Delegated: straight to the park.
 		} else if d, ref, ok := s.matchGrant(ctx, c, uses); ok {
 			// The chain's first step decides at once, audited — the
@@ -1418,9 +1432,13 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			continue
 		}
 		args := slices.Clone(c.Args)
+		reason := parkingReason(currentTool(s.agent, c.Name))
+		if open[c.ID] {
+			reason = reasonDelegationOpen
+		}
 		cr.entries = append(cr.entries, ApprovalRequestEntry{
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
-			RunID: t.runID, Reason: parkingReason(currentTool(s.agent, c.Name)), Expiry: expiry,
+			RunID: t.runID, Reason: reason, Expiry: expiry,
 			Run: settings.Clone(), SchemaSHA256: toolSchemaHash(s.agent, c.Name),
 			Quorum: s.parkQuorum(),
 		})
@@ -2243,6 +2261,9 @@ func (s *Session) pendingLocked() []Request {
 		}
 		if requested {
 			r := requestFromEntry(s.header.ID, re)
+			if r.Reason == reasonDelegationOpen && s.delegationAnsweredLocked(c.ID) {
+				r.Reason = reasonDelegationDone // settled since it parked: the pool resolves it
+			}
 			r.Quorum = s.quorumOf(re)
 			if r.Quorum < 2 {
 				r.Quorum = 0
