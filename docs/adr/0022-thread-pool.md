@@ -7,7 +7,8 @@
   depth guard, the nested-approval bridge and `Decide`'s shape, and
   where it disagrees with the text above it, the amendment is the
   decision; amended 2026-10-31 — `Recover` after a kill (the subtree
-  of a child it settles; a delegating call nothing parked), at the end
+  of a child it settles; a delegating call nothing parked), at the end;
+  amended 2026-11-06 — one pool per chain (`ErrMixedPools`), at the end
 - Depends on: ADR 0011 (sessions), ADR 0014 (subagents as tools), ADR
   0021 (approvals), ADR 0019 (steering, for forwarding)
 
@@ -783,3 +784,63 @@ Tests: `TestCutOffDelegateIsRecoveredInProcess`,
 `TestChildrenListsAChildBeingCreated`,
 `TestDelegatedCoversGrandchildren`, `TestClassifyBillsTheSubtree`,
 `TestWrapRefusesHandlerMiddleware`, `TestBarePanicReleasesTheSlot`.
+
+## Amendment 2026-11-06 — one pool per chain, the turn's own calls, mirrors notify
+
+The architecture guide's examples found these; each is fixed before
+any child exists or any effect runs twice.
+
+**One `Pool` value owns a delegation chain.** The bridge — a
+grandchild's request mirrored up, the decision's resume handed down
+level by level (`nestedBoundary`, the nest hold), the slot handed over
+for a sync wait — is kept per `Pool` value and keyed by the child
+sessions that pool runs. With two pools at different levels of one
+chain (the lead delegating through A, A's child through B) the mirror
+went up, but the resume down did not: A found no boundary of its own
+to resume, concluded the top delegation stale ("nothing to resume: the
+child's resume did not survive a restart"), while B, woken by the
+replayed decision, ran the approved effect and then could not record
+its settlement in a session A had closed — the effect happened, the
+lead read failed. Making the bridge span pools would move every
+per-pool register behind a cross-pool protocol; refusing the shape is
+the contained fix. A delegation from a child session another pool runs
+— a wrapped tool of B called by A's child, or B's `Submit` from that
+child's run — is refused with `ErrMixedPools` before any child exists
+(the model reads its text as the call's error). The run's pool and
+session ride the child run's context (the pool's own run info), so the
+check needs no global and no storage read. Several pools delegating
+from one session that is no pool's child — the top session — remain
+supported (§ "several pools" in the `Pool` godoc).
+
+**A delegation is the session turn's own call.** `ErrNestedDelegation`
+refused a wrapped tool reached through `Agent.CallTool`, whose call id
+the transcript does not hold. A `core.Subagent` child running inside a
+session turn (its run id `<run>/<step>/<call>`), or an `Agent.Generate`
+a handler started, inherits the session on its context too, and its
+wrapped tool delegated, writing a receipt into the session that named a
+call only the child run held. The wrapped tool now refuses, with
+`ErrNestedDelegation`, a call whose run is not one of the session's
+turn runs (`<session>-t<n>`).
+
+**A cut-off delegation and its delegating call.** See ADR 0032's
+amendment of the same date: a settled receipt resolves a delegating
+call left dangling with no mirror, and a delegation the pool cut off
+while its parent's turn ran parks the parent's call as an unknown
+outcome instead of answering it with the raw shutdown error.
+
+**Mirrors notify.** The parent session's `OnRequest` (ADR 0021 §5)
+fired for its own parked calls only; a child's request mirrored onto it
+reached no inbox, and the delegating call the mirror parks under — not
+decidable, `ErrDelegated` — did. `AppendApprovalRequests` now calls
+`OnRequest` for each mirror once the batch is durable, on the pool's
+goroutine with no lock held, and the chain no longer calls it for a
+delegating call.
+
+Model-visible text (§I): the `ErrMixedPools` and `ErrNestedDelegation`
+texts a refused delegation reads, pinned by the tests below.
+
+Tests: `TestMixedPoolsAcrossLevelsRefused`, `TestMixedPoolsSubmitRefused`,
+`TestSubagentChildDelegationRefused`,
+`TestOnRequestFiresForAMirroredRequest`; one pool across levels still
+resolves the chain (`TestNestedTwoLevelApprove` and the rest of
+`twolevel_test.go`).

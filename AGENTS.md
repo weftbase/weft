@@ -286,6 +286,8 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
 //    p.Decide(ctx, parent, ds...) error records and arms, p.Wait(ctx, parent, id) follows; p.Cancel,
 //    p.Forward, p.Recover(ctx, parent) after a restart, p.Close(ctx); pool.Receipts, Children, Descendants.
+//    One Pool value per delegation chain: a child one pool runs delegating through another → ErrMixedPools; a
+//    wrapped tool called from a run that is not the session turn's own (CallTool, a Subagent child) → ErrNestedDelegation.
 //    One resumer: thread.OnReady(fn) hands ready work to fn (Ready{Session, Kind, RunID}: ReadyResume → s.Resume,
 //    ReadyQueued → s.Continue) instead of starting it — implies AutoResume(false), an in-process best-effort hint;
 //    s.Ready() lists it from the journal (ReadyRecover alone after a crash). Boot: Open → Claim → Ready → act.

@@ -847,3 +847,59 @@ Tests: `TestShutdownWithAnAnsweredSiblingIsRecovered`,
 `TestReconcileAsksCallsInParallel` (thread); the crash matrix's
 `tool_running`, `tool_ran_keyed`, `tool_dispatched` and `recover_batch`
 rows (jsonl and sqlite).
+
+## Amendment (2026-11-06 — a settled delegation answers its call; an unknown outcome over MCP)
+
+**A cut-off delegation whose child answered resolves its call (R5).** A
+sync delegation cut off by a shutdown leaves its delegating call
+dangling on the parent with no mirror, its receipt open, and the
+child recovers on its own ladder (`pool.Recover`). When that child
+recovered without parking — a keyed retry, a continuation — its
+receipt settled, but `ResolveDelegation` accepted only a call a mirror
+named, so the call stayed offered as a plain dangling call, and
+approving it delegated a second time: the effect twice. Now:
+
+- `ResolveDelegation` also accepts a delegating call pending on the
+  session's own boundary whose latest acceptance receipt names the
+  child — the receipt is the delegation's durable record (W6), as for
+  `delegationOpenLocked` — so the live settlement resolves it with the
+  child's answer, the text the sync path gives.
+- A delegation that settled `done`, `failed` or `capped` while its
+  call holds no result is the pool's to resolve, like an open one:
+  `RecoverTurn` leaves it to the pool (no recovery request, no keyed
+  retry), `Pending` offers it with the pinned reason `delegated: its
+  thread/pool delegation settled and its answer is on the receipt; the
+  pool resolves the call with it (pool.Recover), and an approval, which
+  would delegate again, is refused`, and `Decide` refuses an approval
+  or an edit of it with `ErrDelegated`. `pool.Recover` resolves such a
+  call from the receipt when the live resolution was lost. A delegation
+  ended `canceled` — a cut-off child's subtree ended by `Recover`,
+  what it did not known — still parks for a person with `cut off while
+  it delegated: …`, unchanged.
+- A delegation the *pool* cut off (`pool.Close` under
+  `thread.ErrShutdown`) while the parent session's turn kept running
+  answered the delegating call with the raw shutdown error, which the
+  parent's model read as a tool failure and acted on. The wrapped tool
+  now answers it with an error wrapping `core.ErrOutcomeUnknown`; under
+  the session's `ParkUnknown` the call parks, and the turn-end chain
+  treats a delegating call whose receipt is open (or settled with an
+  answer) as delegated — straight to the park with the reason
+  `delegated: its thread/pool delegation is still open …`, never down
+  the ladder (a keyed retry would delegate again) and never to a grant
+  or an Approver. `pool.Recover` resolves it with the child's answer.
+
+**An unknown outcome does not survive an MCP hop.** A tool served by
+`mcp.Serve` that answers `OUTCOME_UNKNOWN` sends an ordinary `isError`
+result — MCP has no unknown-outcome signal — and the importing side
+(`mcp.Tools`) reads it as `ErrToolError` with that text, not as
+`core.ErrOutcomeUnknown`: a session on the importing side does not send
+it down its ladder. A wire signal (a `_meta` flag both sides read) is a
+protocol change left for a minor release; until then a tool whose
+effect must not be repeated across the hop dedupes on the client's
+idempotency key, which the hop does carry. Documented on `mcp.Tools`
+and `mcp.Serve`.
+
+Tests: `TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall`
+(pool first and session first; memory, jsonl, sqlite),
+`TestRecoverResolvesADanglingCallFromItsSettledReceipt`,
+`TestPoolClosedFirstParksTheDelegatingCall` (thread/pool).
