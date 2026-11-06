@@ -8139,3 +8139,59 @@ func TestToolDefTimeout(t *testing.T) {
 		}
 	}
 }
+
+// A handler the loop abandoned at its Timeout cannot dispatch new
+// calls afterwards: once the loop has settled its call (the model told
+// "timed out" or OUTCOME_UNKNOWN), a CallTool whose outer call is that
+// call fails closed with ErrNotDispatched, and the inner handler never
+// runs — no effect starts behind a settled answer. The same for a
+// goroutine a handler leaves behind after it returned.
+func TestCallToolAfterTheOuterCallSettledIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+	}{{"abandoned at its Timeout", 20 * time.Millisecond}, {"returned, a goroutine left behind", 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent atomic.Int32
+			email := core.Tool("send_email", "", func(context.Context, struct{}) (string, error) {
+				sent.Add(1)
+				return "sent", nil
+			})
+			release := make(chan struct{})
+			got := make(chan error, 1)
+			flow := core.Tool("flow", "", func(ctx context.Context, _ struct{}) (string, error) {
+				agt := core.AgentFromContext(ctx)
+				inner := context.WithoutCancel(ctx) // a handler that ignores its deadline
+				go func() {
+					<-release
+					_, err := agt.CallTool(inner, core.ToolCallPart{ID: "e1", Name: "send_email", Args: json.RawMessage(`{}`)})
+					got <- err
+				}()
+				if tc.timeout > 0 {
+					<-release
+					time.Sleep(50 * time.Millisecond)
+				}
+				return "flow done", nil
+			}, core.Timeout(tc.timeout))
+			agt := core.New(wefttest.Script(
+				wefttest.ToolCalls(wefttest.Call{Name: "flow", ID: "f1", Args: `{}`}),
+				wefttest.Say("ok"),
+			), flow, email)
+			if _, err := agt.Generate(context.Background(), core.Prompt("go")); err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			select {
+			case err := <-got:
+				if !errors.Is(err, core.ErrNotDispatched) {
+					t.Errorf("CallTool after the call settled = %v, want ErrNotDispatched", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the inner CallTool never returned")
+			}
+			if n := sent.Load(); n != 0 {
+				t.Errorf("send_email ran %d times behind a settled answer, want never", n)
+			}
+		})
+	}
+}

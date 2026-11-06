@@ -197,3 +197,20 @@ Tests: `TestParkUnknownIsNotInheritedByAChildRun`,
 `TestCallToolFromAMiddleware`, `TestCallToolHonoursOnlyTools`,
 `TestIdempotencyKeysPanicFailsTheCallClosed`,
 `TestServeCallKeylessInnerCallsCarryNoKey` (core).
+
+## Amendment (2026-11-06 — no inner call behind a settled answer)
+
+A handler the loop abandoned at its `Timeout` (or at the run's
+cancellation) keeps its goroutine, and on plain core nothing stopped it
+from dispatching inner calls afterwards: an email could be sent after
+the model had read `OUTCOME_UNKNOWN` for the call that sent it. Under a
+session the gate refused them; without one nothing did. §4 now holds
+without a gate too: an inner call starts only while its outer call is
+open. Once the loop has settled the outer call — answered it at its
+deadline or cancellation, or read its handler's return — `CallTool`
+from that handler (or from a goroutine it left behind) fails with an
+error wrapping `ErrNotDispatched`, and the inner handler never runs.
+The rule follows 0.22.1's and 0.24.0's abandon lock (a handler not
+entered by the deadline never starts). No text the model reads changes:
+the refusal is the abandoned handler's to read. Test:
+`TestCallToolAfterTheOuterCallSettledIsRefused`.

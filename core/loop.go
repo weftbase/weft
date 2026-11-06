@@ -1782,7 +1782,14 @@ func deniedResult(reason string) string {
 // ErrNotDispatched), and a handler of a tool that is not ReplaySafe
 // cut off by the run's cancellation before it answered returns an
 // error wrapping ErrOutcomeUnknown — return it, and the dispatching
-// call's outcome is unknown too. It resolves against the run's tools:
+// call's outcome is unknown too. Inner calls start only while their
+// outer call is open: once the loop has settled the dispatching call —
+// answered it as timed out or OUTCOME_UNKNOWN at its Timeout or the
+// run's cancellation, or read its handler's return — a CallTool from
+// that handler (still running past its deadline, or a goroutine it
+// left behind) is refused with an error wrapping ErrNotDispatched and
+// the inner handler never runs (since 0.24.1), so no effect starts
+// behind an answer the model has already read. It resolves against the run's tools:
 // a tool the run's OnlyTools narrowed away is unknown (ErrNoSuchTool).
 // Called from a WrapTools middleware of a loop call — before that
 // call's handler has started — it is not a handler's inner call: under
@@ -1821,6 +1828,12 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 		// id — never the id alone: a child run's call may reuse its
 		// parent's call id (Gemini's call_0).
 		if in := innerFrom(ctx); in != nil && !in.early && in.outer == outer {
+			if in.mark != nil && in.mark.wasSettled() {
+				// The loop has already answered the outer call (its
+				// Timeout, the run's cancellation, or its return): no
+				// effect starts behind an answer the model has read.
+				return "", fmt.Errorf("%w: tool %q was dispatched by the handler of call %q after the loop had settled that call (it timed out, was canceled, or returned); a call starts only while its outer call is open", ErrNotDispatched, call.Name, outer.CallID)
+			}
 			// Keyed from the outer call and its position, and gated like
 			// the loop's own calls: a retry of the outer call that
 			// dispatches in the same order reuses the same keys.
@@ -1859,6 +1872,9 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	// ErrApprovalRequired to the handler, never runs unasked (WR-7).
 	mark := new(handlerMark)
 	out, err := a.chain(def, strict, parkRuleFrom(ctx), mark, nil)(ctx, call)
+	// Settled for the handler's own CallTool calls too: one it leaves
+	// running dispatches nothing after this answer.
+	mark.abandon()
 	if err != nil && def != nil && def.ReplayPolicy() != ReplaySafe && mark.wasEntered() &&
 		ctx.Err() != nil && !errors.Is(err, ErrOutcomeUnknown) {
 		// The handler started and the run was cut off under it before
@@ -1968,7 +1984,7 @@ func (a *Agent) chain(def *ToolDef, strict bool, parkSet *parkRule, mark *handle
 			// A CallTool from inside the handler dispatches under this
 			// call: a key derived from its key and the inner call's
 			// position, through the same gate (P1-5).
-			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate, after: after})
+			ctx = withInner(ctx, &innerDispatch{outer: c, gate: gate, after: after, mark: mark})
 		}
 		// The handler, with its own middleware (WrapHandler) around it:
 		// past the approval boundary and the gate, inside AfterDispatch.
@@ -2382,6 +2398,11 @@ type handlerMark struct {
 	// run's cancellation under it) before the handler was entered; it
 	// never is (enter refuses).
 	abandoned bool
+	// settled: the loop has given the call its answer (abandon was
+	// called, whether or not the handler had been entered). A CallTool
+	// from the handler — still running past its Timeout, or a goroutine
+	// it left behind — is refused from then on (innerDispatch).
+	settled bool
 	// wantStack, when set, is asked once a panic is recovered: true
 	// under the development detail level with content on, and the
 	// containment keeps the panicking goroutine's stack (the
@@ -2428,9 +2449,17 @@ func (m *handlerMark) enter() bool {
 func (m *handlerMark) abandon() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.settled = true
 	if !m.entered {
 		m.abandoned = true
 	}
+}
+
+// wasSettled reports whether the loop has settled the call (abandon).
+func (m *handlerMark) wasSettled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.settled
 }
 
 func (m *handlerMark) wasEntered() bool {

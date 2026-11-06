@@ -516,7 +516,9 @@ func (t *ToolDef) apply(a *Agent) {
 // 10s" for a ReplaySafe tool or a handler that never started; any other
 // tool's handler may still complete, so its call reads "OUTCOME_UNKNOWN:
 // tool "X" did not answer within 10s; …" (ADR 0032) — or parks, under
-// ParkUnknown. Without any Timeout only the run's ctx bounds a call.
+// ParkUnknown. An abandoned handler dispatches no new calls: its
+// Agent.CallTool fails with ErrNotDispatched from then on. Without any
+// Timeout only the run's ctx bounds a call.
 func Timeout(d time.Duration) PolicyOption { return timeoutOption{d} }
 
 type timeoutOption struct{ d time.Duration }

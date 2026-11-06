@@ -835,6 +835,10 @@ type innerDispatch struct {
 	// before its tool chain runs: a CallTool there comes from a
 	// WrapTools middleware, not from the call's handler (CallTool).
 	early bool
+	// mark is the outer call's: once the loop settled that call, an
+	// inner CallTool is refused (ErrNotDispatched). Nil on the early
+	// scope.
+	mark *handlerMark
 }
 
 type innerKeyCtx struct{}
