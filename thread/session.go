@@ -1878,7 +1878,7 @@ func (s *Session) sealLocked(ctx context.Context) error {
 		s.emitHeldMarker(markerMD, m)
 	}
 	if heldDropped > 0 {
-		s.agent.Logger().Debug("thread: session records dropped at close: no run to report them under",
+		s.agent.Logger().Warn("thread: session records dropped at close: no run to report them under",
 			"session", s.header.ID, "records", heldDropped)
 	}
 	if heldSums > 0 {

@@ -149,6 +149,12 @@ func (s *Session) reportLocked(runID string, r threadRec) {
 		}
 		if len(s.heldRecs) >= maxHeldThread {
 			s.heldRecs = slices.Delete(s.heldRecs, 0, 1)
+			if s.heldDropped == 0 {
+				// The first loss is said when it happens (R5): a reader of
+				// the records would otherwise take the stream as whole.
+				s.agent.Logger().Warn("thread: session records dropped: more are held for a run that has not reported than the bound keeps; the oldest go",
+					"session", s.header.ID, "bound", maxHeldThread)
+			}
 			s.heldDropped++
 		}
 		s.heldRecs = append(s.heldRecs, heldRec{rec: r, run: runID})
