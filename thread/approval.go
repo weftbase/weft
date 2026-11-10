@@ -115,11 +115,21 @@ type Request struct {
 	CallID string
 	// Tool is the call's tool name.
 	Tool string
-	// Args is the call's arguments, verbatim as the model wrote them.
+	// Args is the call's arguments as the model wrote them, in the
+	// bytes the session file holds: the same JSON value, insignificant
+	// space removed and "<", ">", "&" escaped (encoding/json's writing
+	// of raw JSON) — the same bytes in the process that parked the call
+	// and in one that reopened the session.
 	Args json.RawMessage
-	// ArgsSHA256 is the hex SHA-256 of Args — a decision names what it
-	// decided by this hash, and a signed decision carries it in the
-	// challenge.
+	// ArgsSHA256 is the hex SHA-256 of Args, exactly those bytes — a
+	// decision names what it decided by this hash, and a signed
+	// decision carries it in the challenge. Two exceptions, where it is
+	// the request's recorded token and a decider copies it rather than
+	// recomputing it: an edit's revision (RevisionOf) hashes the edited
+	// arguments in canonical form (Edit), which a reload re-escapes;
+	// and a request parked by an earlier build hashed the model's
+	// own bytes, which differ from Args after a reload when the model
+	// wrote a space or one of those characters.
 	ArgsSHA256 string
 	// RunID is the run that parked the call.
 	RunID string
@@ -833,6 +843,10 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 	now := s.approvalNow()
 	var entries []Entry
 	parent := s.leaf
+	// Every id is vetted like any other the session mints (valid, new to
+	// the tree and to the batch): a repeated id written here would make
+	// the file one the next Open refuses.
+	mint := func() (string, error) { return s.mintCheckedLocked(entries) }
 	held := map[string][]ApprovalDecisionEntry{} // per call: the occurrence's decisions, this batch's included
 	for _, d := range batch {
 		req := byCall[d.CallID]
@@ -873,23 +887,37 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			if e.ArgsSHA256 == "" {
 				e.ArgsSHA256 = req.ArgsSHA256
 			}
-			e.ID, e.ParentID, e.Created = s.mintIDLocked(), parent, now
+			id, err := mint()
+			if err != nil {
+				return err
+			}
+			e.ID, e.ParentID, e.Created = id, parent, now
 			entries = append(entries, e)
 			old := walk.requests[req.CallID] // validated above: the request entry req names
 			rev := old
 			rev.Args, rev.ArgsSHA256, rev.RevisionOf, rev.Recovery = edited, hashArgs(edited), req.ID, false
 			rev.Run = old.Run.Clone()
-			rev.ID, rev.ParentID, rev.Created = s.mintIDLocked(), e.ID, now
+			if id, err = mint(); err != nil {
+				return err
+			}
+			rev.ID, rev.ParentID, rev.Created = id, e.ID, now
 			entries = append(entries, rev)
 			ap := ApprovalDecisionEntry{CallID: d.CallID, Outcome: OutcomeApprove, Reason: d.Reason, Who: d.Who, Via: d.Via,
 				ApprovedBy: d.approvedBy, RunID: rev.RunID, KeyID: d.keyID, RequestID: rev.ID, ArgsSHA256: rev.ArgsSHA256, Cosigners: slices.Clone(d.Cosigners)}
-			ap.ID, ap.ParentID, ap.Created = s.mintIDLocked(), rev.ID, now
+			if id, err = mint(); err != nil {
+				return err
+			}
+			ap.ID, ap.ParentID, ap.Created = id, rev.ID, now
 			entries = append(entries, ap)
 			parent = ap.ID
 			held[d.CallID] = []ApprovalDecisionEntry{ap}
 			continue
 		}
-		e.ID, e.ParentID, e.Created = s.mintIDLocked(), parent, now
+		id, err := mint()
+		if err != nil {
+			return err
+		}
+		e.ID, e.ParentID, e.Created = id, parent, now
 		entries = append(entries, e)
 		parent = e.ID
 		// The grant is the verdict's, not the decision's (ADR 0021
@@ -903,7 +931,10 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		held[d.CallID] = all
 		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
 			g := alwaysGrant(schemaHashOf(s.toolLocked(req.Tool)), req.Tool, req.Args, e)
-			g.ID, g.ParentID, g.Created = s.mintIDLocked(), parent, now
+			if id, err = mint(); err != nil {
+				return err
+			}
+			g.ID, g.ParentID, g.Created = id, parent, now
 			entries = append(entries, g)
 			parent = g.ID
 		}
@@ -994,14 +1025,21 @@ func (s *Session) resolveExpiredLocked(ctx context.Context) ([]Request, error) {
 			CallID: r.CallID, Step: StepExpiry, Outcome: "denied",
 			Detail: expiryDetail(r.Expiry), RunID: r.RunID,
 		}
-		audit.ID, audit.ParentID, audit.Created = s.mintIDLocked(), parent, now
+		id, err := s.mintCheckedLocked(entries)
+		if err != nil {
+			return nil, err
+		}
+		audit.ID, audit.ParentID, audit.Created = id, parent, now
 		entries = append(entries, audit)
 		parent = audit.ID
 		d := ApprovalDecisionEntry{
 			CallID: r.CallID, Outcome: OutcomeDeny,
 			Reason: expiryReason(r.Expiry), Via: viaExpiry, RunID: r.RunID, RequestID: r.ID,
 		}
-		d.ID, d.ParentID, d.Created = s.mintIDLocked(), parent, now
+		if id, err = s.mintCheckedLocked(entries); err != nil {
+			return nil, err
+		}
+		d.ID, d.ParentID, d.Created = id, parent, now
 		entries = append(entries, d)
 		parent = d.ID
 	}
@@ -1224,6 +1262,30 @@ func hashArgs(args []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// storedArgs returns a call's arguments in the bytes a session file
+// holds them in — what encoding/json writes for a json.RawMessage:
+// insignificant space removed, "<", ">", "&", U+2028 and U+2029 escaped
+// — so the form is its own fixed point: read back from the file and
+// written again, the bytes do not change. A request parks with its
+// arguments in this form and its ArgsSHA256 over exactly these bytes,
+// so the hash a decider recomputes over Request.Args is the request's
+// in the process that parked the call and in every one that reopens
+// the session; hashing the model's own bytes instead would stop
+// matching at the first reload of arguments the model wrote with a
+// space or one of those characters. Absent arguments, and bytes that
+// are not JSON (no file would take them), are returned as they are (a
+// copy).
+func storedArgs(args json.RawMessage) json.RawMessage {
+	if len(args) == 0 {
+		return slices.Clone(args)
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return slices.Clone(args)
+	}
+	return b
+}
+
 // chainResult is what the decision chain produced for one parked turn:
 // the entries to append with it (callers fill their ids at append
 // time), the calls that parked (for OnRequest), and the turn settings
@@ -1405,9 +1467,10 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			)
 			_, resolved = effectiveDecision([]ApprovalDecisionEntry{de}, s.cfg.quorum)
 		} else if s.cfg.approver != nil && s.cfg.approverTimeout > 0 {
+			shown := storedArgs(c.Args) // the bytes the request entry would hold
 			req := Request{
 				Session: s.header.ID, CallID: c.ID, Tool: c.Name,
-				Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
+				Args: shown, ArgsSHA256: hashArgs(shown),
 				RunID: t.runID, Reason: parkingReason(currentTool(s.agent, c.Name)), Expiry: expiry,
 			}
 			if settings != nil && len(settings.Metadata) > 0 {
@@ -1455,7 +1518,7 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 			cr.entries = append(cr.entries, steps...)
 			continue
 		}
-		args := slices.Clone(c.Args)
+		args := storedArgs(c.Args)
 		reason := parkingReason(currentTool(s.agent, c.Name))
 		if open[c.ID] {
 			reason = reasonDelegationOpen
@@ -1998,8 +2061,9 @@ type approvalWalk struct {
 	wrappers map[string]string
 	// spent holds the decision entries a resume applied on another line
 	// of the tree (its "started" audit lists them and is not on this
-	// path): not in force here, and never repeated by an identical
-	// decision (ErrDecisionSpent).
+	// path — or is, the resume having applied them and ended above it):
+	// not in force here, and never repeated by an identical decision
+	// (ErrDecisionSpent).
 	spent map[string]bool
 }
 
@@ -2025,7 +2089,9 @@ func (w approvalWalk) occurrence(callID string) (string, []ApprovalDecisionEntry
 //
 // Two kinds of decision on the path are not in force. A spent one: a
 // resume that applied it lives on another line of the tree (its
-// "started" audit entry lists the decision and is not on this path)
+// "started" audit entry lists the decision and is not on this path),
+// or its audit entry is on this path and the resume applied the
+// decision and ended (resumeAppliedLocked: a Branch onto that entry)
 // — the call was resolved there, and a Branch back to the decided
 // boundary must not run it again on the old approval. And an
 // inherited one: a decision a Fork copied from its origin was made
@@ -2052,9 +2118,18 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 	}
 	spent := map[string]bool{}
 	w.spent = spent
-	for _, e := range s.order {
+	turnAt := map[string]int{} // run id → its turn entry's index (the latest)
+	for i, e := range s.order {
+		if te, ok := e.(TurnEntry); ok && te.RunID != "" {
+			turnAt[te.RunID] = i
+		}
+	}
+	for i, e := range s.order {
 		a, ok := e.(ApprovalAuditEntry)
-		if !ok || a.Step != StepResume || onPath[a.ID] {
+		if !ok || a.Step != StepResume || len(a.Decisions) == 0 {
+			continue
+		}
+		if onPath[a.ID] && !s.resumeAppliedLocked(i, a.RunID, turnAt) {
 			continue
 		}
 		for _, id := range a.Decisions {
@@ -2135,6 +2210,49 @@ func (s *Session) approvalWalkLocked() approvalWalk {
 		}
 	}
 	return w
+}
+
+// resumeAppliedLocked reports whether the resume whose "started" audit
+// entry sits at index at, written under run, applied its decisions and
+// ended: the file holds the turn entry that ended it — its own, or the
+// last run's of the chain an overflow re-run made (TurnEntry.ReRun),
+// and not one marked CutOff — and a message entry between the two, the
+// join that completed the boundary's tool message (perstep.go: the
+// first thing a resume writes). Such a resume spent its decisions even
+// while its audit entry is on the leaf's path: a Branch onto that entry
+// (or onto a dispatch record after it) puts the boundary back on the
+// path below the join, and the calls must read pending there, never
+// decided a second time by the approvals that already ran them.
+//
+// A resume in flight has no turn entry yet and reads its own decisions;
+// one that was cut off (no turn entry, or a CutOff one) is RecoverTurn's
+// to decide; one that ended without writing a message — felled before
+// the core completed the boundary — applied nothing, and a retry runs
+// on the same decisions. turnAt maps each run to its turn entry's index.
+// Callers hold s.mu.
+func (s *Session) resumeAppliedLocked(at int, run string, turnAt map[string]int) bool {
+	end := -1
+	for hops := 0; hops <= len(turnAt); hops++ {
+		i, ok := turnAt[run]
+		if !ok {
+			return false // in flight, or cut off with no turn entry
+		}
+		te := s.order[i].(TurnEntry)
+		if te.CutOff {
+			return false
+		}
+		if te.ReRun == "" {
+			end = i
+			break
+		}
+		run = te.ReRun
+	}
+	for i := at + 1; i < end; i++ {
+		if _, ok := s.order[i].(MessageEntry); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ownRecoveryRetryLocked reports whether d, an approval with Via
@@ -2313,10 +2431,11 @@ func (s *Session) pendingLocked() []Request {
 			out = append(out, r)
 			continue
 		}
+		shown := storedArgs(c.Args) // stable across a reload, like a request entry's
 		r := Request{
 			ID:      danglingRequestID(s.header.ID, s.callEntryLocked(c.ID), c.ID),
 			Session: s.header.ID, CallID: c.ID, Tool: c.Name,
-			Args: slices.Clone(c.Args), ArgsSHA256: hashArgs(c.Args),
+			Args: shown, ArgsSHA256: hashArgs(shown),
 			RunID: run, Quorum: s.parkQuorum(),
 		}
 		if s.delegationOpenLocked(c.ID) {

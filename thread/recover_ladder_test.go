@@ -23,6 +23,7 @@ import (
 func TestAbandonedHandlerIsNotReconciledAndRerun(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
 			st := b.open(t)
 			// The Timeout spans the dispatch gate too, and on a loaded
 			// machine the gate's durable record can outlast it: the
@@ -433,6 +434,7 @@ func TestKeyedRetryWaitsForTheAbandonedHandler(t *testing.T) {
 // 2 s): the session does not retry it — the call goes to a person, the
 // handler ran once.
 func TestKeyedRetryOfAStillRunningHandlerAsksAPerson(t *testing.T) {
+	t.Parallel()
 	outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
 		var mu sync.Mutex
 		invoked := 0
@@ -577,6 +579,7 @@ func TestNeverRetryWaitsForTheAbandonedHandler(t *testing.T) {
 func TestApprovalWaitsForAStillRunningHandler(t *testing.T) {
 	for _, policy := range []core.ReplayPolicy{core.ReplayNever, core.ReplayKeyed} {
 		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
 			outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
 				ship := &abandonedTool{release: make(chan struct{})}
 				released := false

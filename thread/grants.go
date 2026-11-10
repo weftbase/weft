@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/weftbase/weft/core"
 )
@@ -28,6 +29,12 @@ type Grant struct {
 	// Args are the argument predicates; every one must match. Empty
 	// matches any arguments, which is the tool-wide grant Crush
 	// taught the field to want more than (ADR 0021 §4's rejected).
+	//
+	// A call whose arguments hold, in any object, two keys that differ
+	// only by case — or one key twice — matches no grant at all, this
+	// one included, approval or refusal: a predicate reads one of the
+	// two and the tool may read the other (encoding/json folds case and
+	// keeps the last), so the call parks for a person instead.
 	Args []Arg `json:"args,omitempty"`
 	// Deny makes the grant a standing refusal: the chain denies the
 	// call at once, with Reason the model sees.
@@ -348,7 +355,7 @@ func (s *Session) liveGrantsLocked(now time.Time, pending map[string]int) []Gran
 		case GrantRevokedEntry:
 			revoked[e.GrantID] = true
 		case ApprovalAuditEntry:
-			if e.Step == StepGrant && e.GrantID != "" && !e.GrantShared {
+			if grantUse(e) {
 				uses[e.GrantID]++
 			}
 		}
@@ -372,6 +379,15 @@ func (s *Session) liveGrantsLocked(now time.Time, pending map[string]int) []Gran
 		out = append(out, g)
 	}
 	return out
+}
+
+// grantUse reports whether an audit entry counts as one use of a
+// session grant: a StepGrant entry naming the grant by its entry id —
+// the chain's own, written when the grant matched, or one a Fork
+// carried from its origin (Outcome "carried") — never a shared grant's
+// match, whose id is the store's.
+func grantUse(a ApprovalAuditEntry) bool {
+	return a.Step == StepGrant && a.GrantID != "" && !a.GrantShared
 }
 
 // revokedGrantLocked names the session grant whose approval among ds
@@ -404,9 +420,15 @@ func (s *Session) revokedGrantLocked(ds []ApprovalDecisionEntry) string {
 }
 
 // grantMatches reports whether the call satisfies the grant: the tool
-// name exactly, then every argument predicate.
+// name exactly, then every argument predicate. Arguments that hold an
+// ambiguous key (ambiguousKeys) satisfy no grant, whatever its
+// predicates — a tool-wide grant and a deny-grant included: the call
+// parks for a person, who is shown every key.
 func grantMatches(g Grant, c core.ToolCallPart) bool {
 	if g.Tool != c.Name {
+		return false
+	}
+	if ambiguousKeys(c.Args) {
 		return false
 	}
 	for _, a := range g.Args {
@@ -415,6 +437,83 @@ func grantMatches(g Grant, c core.ToolCallPart) bool {
 		}
 	}
 	return true
+}
+
+// ambiguousKeys reports whether some object in the arguments holds two
+// keys that are equal under Unicode case folding — a key repeated
+// exactly included. A predicate reads one key by its exact name, and
+// what the tool reads is its decoder's choice: encoding/json matches a
+// struct field's name case-insensitively and lets the last such key
+// win (so {"command":"go test","Command":"rm -rf /"} satisfies a
+// predicate on /command and runs the other value), and a decoder
+// elsewhere — a server behind MCP — may keep the first of two equal
+// keys. Whatever a predicate saw of such a document is not known to be
+// what the tool sees, so no grant decides it (grantMatches). Arguments
+// that are not JSON are not ambiguous here: every predicate fails on
+// them by its own reading, and the tool refuses them.
+func ambiguousKeys(args json.RawMessage) bool {
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.UseNumber()
+	// One frame per open object or array: the folded keys an object has
+	// shown (nil for an array), and whether its next token is a key.
+	type frame struct {
+		keys    map[string]bool
+		wantKey bool
+	}
+	var stack []frame
+	value := func() { // a value ended: its object, if any, expects a key next
+		if n := len(stack); n > 0 && stack[n-1].keys != nil {
+			stack[n-1].wantKey = true
+		}
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false // the end, or not JSON
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, frame{keys: map[string]bool{}, wantKey: true})
+			case '[':
+				stack = append(stack, frame{})
+			default: // '}' or ']'
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				value()
+			}
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].wantKey {
+				k := foldKey(t)
+				if stack[n-1].keys[k] {
+					return true
+				}
+				stack[n-1].keys[k] = true
+				stack[n-1].wantKey = false
+				continue
+			}
+			value()
+		default:
+			value()
+		}
+	}
+}
+
+// foldKey maps a key to the representative of its case-folding class:
+// foldKey(a) == foldKey(b) exactly when strings.EqualFold(a, b) — each
+// rune replaced by the smallest rune of its simple-folding orbit.
+func foldKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < least {
+				least = f
+			}
+		}
+		return least
+	}, s)
 }
 
 // argMatches evaluates one predicate against the call's arguments. A

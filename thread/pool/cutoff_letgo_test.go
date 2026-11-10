@@ -182,6 +182,7 @@ func TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall(t *testing.T) {
 	for _, order := range []string{"pool first", "session first"} {
 		for _, sc := range poolStores(t) {
 			t.Run(order+"/"+sc.name, func(t *testing.T) {
+				t.Parallel()
 				ctx := context.Background()
 				p, s2, rc, release := cutOffDelegation(t, sc.st(t))
 				release() // the abandoned handler returns: the child's recovery retries by key, no park

@@ -217,8 +217,9 @@ func schemaFor(t reflect.Type) *Schema {
 	return schemaOf(t, map[reflect.Type]bool{})
 }
 
-// schemaOf derives a schema; visiting holds the struct types on the
-// current derivation path, so cycles terminate.
+// schemaOf derives a schema; visiting holds the struct types and the
+// named slice, array and map types on the current derivation path, so
+// cycles terminate.
 func schemaOf(t reflect.Type, visiting map[reflect.Type]bool) *Schema {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -229,6 +230,18 @@ func schemaOf(t reflect.Type, visiting map[reflect.Type]bool) *Schema {
 	switch t {
 	case reflect.TypeOf(time.Time{}):
 		return &Schema{Type: "string", Format: "date-time"}
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		// Only a named container can contain itself (type Tree
+		// map[string]Tree): it is guarded as a struct is.
+		if t.Name() != "" {
+			if visiting[t] {
+				return &Schema{} // recursion: unconstrained at this depth
+			}
+			visiting[t] = true
+			defer delete(visiting, t)
+		}
 	}
 	switch t.Kind() {
 	case reflect.String:

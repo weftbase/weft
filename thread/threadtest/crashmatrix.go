@@ -151,6 +151,7 @@ func CrashMatrix(t *testing.T, helperTest string, pathFor func(point string) str
 			case <-sawMarker:
 			case <-time.After(20 * time.Second):
 				_ = cmd.Process.Kill()
+				_ = cmd.Wait() // reaped, its pipe closed
 				mu.Lock()
 				defer mu.Unlock()
 				t.Fatalf("the child never reached %q:\n%s", marker, strings.Join(lines, "\n"))
@@ -158,7 +159,7 @@ func CrashMatrix(t *testing.T, helperTest string, pathFor func(point string) str
 			if parentKilled(point) {
 				_ = cmd.Process.Kill() // SIGKILL mid-run: no cleanup, no flush
 			}
-			_, _ = cmd.Process.Wait()
+			_ = cmd.Wait() // reaps the child and closes its pipe
 			mu.Lock()
 			got := strings.Join(lines, "\n")
 			mu.Unlock()

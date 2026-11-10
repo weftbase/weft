@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -271,5 +272,55 @@ func TestCleanSinkShutdown(t *testing.T) {
 	defer cancel()
 	if err := p.Shutdown(ctx); err != nil {
 		t.Errorf("clean Shutdown = %v", err)
+	}
+}
+
+// slowBatchLogs exports slowly and never fails.
+type slowBatchLogs struct {
+	delay    time.Duration
+	exported atomic.Int64
+}
+
+func (e *slowBatchLogs) Export(_ context.Context, recs []sdklog.Record) error {
+	time.Sleep(e.delay)
+	e.exported.Add(int64(len(recs)))
+	return nil
+}
+func (*slowBatchLogs) Shutdown(context.Context) error   { return nil }
+func (*slowBatchLogs) ForceFlush(context.Context) error { return nil }
+
+// Records a slow (not failing) destination still has queued when
+// Shutdown's context ends are lost like any other: counted, and
+// reported as ErrRecordsLost. The flush is cut between chunks when the
+// chain closes; the chunks it never began used to be neither exported
+// nor counted, and Shutdown named only its deadline.
+func TestShutdownCountsRecordsASlowDestinationNeverExported(t *testing.T) {
+	exp := &slowBatchLogs{delay: 150 * time.Millisecond}
+	p, err := Start(context.Background(), NoEnv(), NoGlobal(), Heartbeat(0),
+		Exporters(nil, exp, BatchDelay(time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := p.LoggerProvider().Logger("slow")
+	const emitted = 1700 // four export chunks of the SDK's 512
+	for range emitted {
+		var r otellog.Record
+		r.SetEventName("slow")
+		l.Emit(context.Background(), r)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err = p.Shutdown(ctx)
+	if !errors.Is(err, ErrRecordsLost) {
+		t.Fatalf("Shutdown = %v, want ErrRecordsLost: the queue was not empty when the context ended", err)
+	}
+	var loss *LossError
+	if !errors.As(err, &loss) {
+		t.Fatalf("Shutdown = %v, want a *LossError", err)
+	}
+	time.Sleep(2 * exp.delay) // an export still running when Shutdown returned finishes
+	if got := exp.exported.Load(); got+loss.Lost < emitted {
+		t.Fatalf("%d emitted, %d exported, %d reported lost: %d records neither exported nor counted",
+			emitted, got, loss.Lost, emitted-got-loss.Lost)
 	}
 }

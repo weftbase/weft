@@ -881,3 +881,57 @@ func TestApproveAlwaysWithoutArguments(t *testing.T) {
 		t.Fatalf("the second argument-less call parked: Pending=%d", got)
 	}
 }
+
+// TestGrantNeverDecidesAmbiguousKeys: arguments holding two keys that
+// differ only by case, or one key twice, match no grant — a predicate
+// reads one of the two by its exact name, while the tool's decoder
+// (encoding/json folds case and keeps the last) may read the other, so
+// {"command":"go test ./...","Command":"rm -rf /"} would pass a grant
+// on /command and run "rm -rf /". The call parks for a person instead,
+// under a predicate grant and a tool-wide one alike, and nothing runs.
+func TestGrantNeverDecidesAmbiguousKeys(t *testing.T) {
+	ctx := context.Background()
+	grants := map[string]thread.Grant{
+		"predicate": {Tool: "run", Args: []thread.Arg{thread.ArgGlob("/command", "go test*")}},
+		"tool-wide": {Tool: "run"},
+	}
+	args := map[string]string{
+		"case variant last":  `{"command":"go test ./...","Command":"rm -rf /"}`,
+		"case variant first": `{"Command":"rm -rf /","command":"go test ./..."}`,
+		"repeated key":       `{"command":"rm -rf /","command":"go test ./..."}`,
+		"nested":             `{"command":"go test ./...","env":{"path":"/ws","PATH":"/"}}`,
+	}
+	for gname, g := range grants {
+		for aname, a := range args {
+			t.Run(gname+"/"+aname, func(t *testing.T) {
+				agent, ran := runAgent(
+					wefttest.ToolCalls(wefttest.Call{Name: "run", Args: a}),
+					wefttest.Say("done"),
+				)
+				s, err := thread.Create(ctx, thread.Memory(), agent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.Grant(ctx, g); err != nil {
+					t.Fatal(err)
+				}
+				turn, err := s.Send(ctx, core.User("test it"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := turn.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				if turn.Outcome() != thread.TurnParked || len(s.Pending()) != 1 {
+					t.Fatalf("outcome %v, pending %d: the ambiguous call did not park", turn.Outcome(), len(s.Pending()))
+				}
+				if len(*ran) != 0 {
+					t.Fatalf("a grant ran an ambiguous call: %q", *ran)
+				}
+				if counts := countApprovalEntries(s); counts["audit:grant:approved"] != 0 {
+					t.Fatalf("a grant decided an ambiguous call: %v", counts)
+				}
+			})
+		}
+	}
+}

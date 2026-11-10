@@ -1068,15 +1068,12 @@ func (s *Session) runOne(item workItem) {
 		return
 	}
 
-	// The trigger's first site (ADR 0020 §2): before the run, with the
-	// prompt already on the path so the estimate covers what the run
-	// is about to be fed. It never fires over an open approval
-	// boundary — the dangling tail must stay raw for its decisions.
-	s.maybeAutoCompact(ps.ctx)
-
 	// The run flies under a cancelable child of the caller's context:
 	// an Interrupt or Rollback send fells it without touching the
-	// caller's own.
+	// caller's own. The cancel is armed before the compaction below, so
+	// whatever fells the turn — an Interrupt, a Rollback, a Close that
+	// gave up — fells a summarizer's model call with it instead of
+	// waiting it out.
 	rctx, cancel := context.WithCancelCause(ps.ctx)
 	defer cancel(nil)
 	t.setRunCancel(cancel)
@@ -1086,6 +1083,15 @@ func (s *Session) runOne(item workItem) {
 		// cancel — between Send and here. The run dies at birth: the
 		// interrupting Send's follow-up is already queued.
 		cancel(t.interruptCause())
+	}
+
+	// The trigger's first site (ADR 0020 §2): before the run, with the
+	// prompt already on the path so the estimate covers what the run is
+	// about to be fed. It never fires over an open approval boundary —
+	// the dangling tail must stay raw for its decisions — nor for a turn
+	// already felled: no summary is paid for a run that will not start.
+	if rctx.Err() == nil {
+		s.maybeAutoCompact(rctx)
 	}
 	s.runTurn(persist, rctx, item, ps.opts)
 }
@@ -1535,7 +1541,40 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// reads the compacted context. Its hooks contain their own panics,
 	// and a panic past them cannot repaint the turn — finish is
 	// idempotent.
-	s.maybeAutoCompact(persist)
+	s.betweenTurnCompact(persist)
+}
+
+// betweenTurnCompact runs the trigger's second site under a context the
+// session can cancel: the turn has landed and its caller's context no
+// longer binds the runner (persist is a WithoutCancel window), so
+// without one a summarizer's model call that hangs would hold the
+// runner — and with it Close's seal and the session's lease — for as
+// long as it hangs. A Close that gives up cancels it (abandon), as it
+// fells a turn in flight; a session already abandoned starts none. A
+// canceled compaction writes nothing: the session is as it was.
+func (s *Session) betweenTurnCompact(persist context.Context) {
+	ctx, cancel := context.WithCancelCause(persist)
+	defer cancel(nil)
+	abandoned := false
+	s.locked(func() {
+		if abandoned = s.closing >= stateAborted; !abandoned {
+			s.houseCancel = cancel
+		}
+	})
+	if abandoned {
+		return
+	}
+	defer s.locked(func() { s.houseCancel = nil })
+	s.maybeAutoCompact(ctx)
+}
+
+// fellHousekeepingLocked cancels the between-turn compaction in
+// progress, if any, on behalf of a Close that gave up waiting. Callers
+// hold s.mu.
+func (s *Session) fellHousekeepingLocked() {
+	if s.houseCancel != nil {
+		s.houseCancel(s.fellCauseLocked())
+	}
 }
 
 // recordAttemptLocked writes the ledger of an overflow attempt that is
@@ -1655,7 +1694,7 @@ const (
 // weft.session.branch, read from the tree as the turn starts (its
 // prompt on the path). Callers hold s.mu.
 func (s *Session) branchMetadataLocked() (parent, branch string) {
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only: ids and turn entries' run ids
 	if err != nil {
 		return "", ""
 	}

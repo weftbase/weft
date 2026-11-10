@@ -1417,6 +1417,15 @@ func (a *Agent) execTools(ctx context.Context, runID string, step int, tools []*
 				endTool(outcomes[i], park, fail, cut, retryMark{}, time.Time{})
 			}
 			if parked[i] {
+				// A parked call has no ToolFinish to close its nest
+				// under, and its handler may still be running (an
+				// unknown outcome parked under ParkUnknown, a layer
+				// that gave up on a child): close it here, under the
+				// same lock, so nothing it emits or records later
+				// reaches a step the loop has already returned.
+				emitMu.Lock()
+				n.closed.Store(true)
+				emitMu.Unlock()
 				return
 			}
 			if cut > 0 {
@@ -1876,12 +1885,12 @@ func (a *Agent) CallTool(ctx context.Context, call ToolCallPart) (string, error)
 	// running dispatches nothing after this answer.
 	mark.abandon()
 	if err != nil && def != nil && def.ReplayPolicy() != ReplaySafe && mark.wasEntered() &&
-		ctx.Err() != nil && !errors.Is(err, ErrOutcomeUnknown) {
+		ctx.Err() != nil && !errIsContained(err, ErrOutcomeUnknown) {
 		// The handler started and the run was cut off under it before
 		// it answered: its effect is unknown, never a plain failure.
 		err = fmt.Errorf("%w: tool %q was cut off before it answered: %w", ErrOutcomeUnknown, call.Name, err)
 	}
-	if err != nil && nested && errors.Is(err, ErrApprovalRequired) {
+	if err != nil && nested && errIsContained(err, ErrApprovalRequired) {
 		// Parked for the handler: it reads ErrApprovalRequired. Returned
 		// by the handler, it fails the outer call rather than parking
 		// it — an approval names the outer call only, never the calls
@@ -2698,7 +2707,7 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 	if def == nil || def.ReplayPolicy() == ReplaySafe || mark == nil || !mark.wasEntered() {
 		return "", false
 	}
-	if _, ok := errors.AsType[*toolTimeoutError](fail.err); ok {
+	if _, ok := errAsContained[*toolTimeoutError](fail.err); ok {
 		return fmt.Sprintf("%s: tool %q did not answer within %s; it may still complete; outcome unknown", CodeOutcomeUnknown, call.Name, timeout), true
 	}
 	if ctx.Err() != nil {
@@ -2710,12 +2719,12 @@ func outcomeUnknown(ctx context.Context, call ToolCallPart, def *ToolDef, fail t
 		// value named is the one the containment caught, else (a
 		// middleware recovered it and failed otherwise) the handler's.
 		v := mark.panicValue()
-		if pe, ok := errors.AsType[*toolPanicError](fail.err); ok {
+		if pe, ok := errAsContained[*toolPanicError](fail.err); ok {
 			v = pe.value
 		}
 		return fmt.Sprintf("%s: tool %q panicked before it answered (%v); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, v), true
 	}
-	if errors.Is(fail.err, ErrOutcomeUnknown) {
+	if errIsContained(fail.err, ErrOutcomeUnknown) {
 		return fmt.Sprintf("%s: tool %q lost its answer (%s); it may have run; outcome unknown", CodeOutcomeUnknown, call.Name, fail.text), true
 	}
 	// Read across every entry of the handler, not the last one: a
@@ -2776,6 +2785,18 @@ func errIsContained(err, target error) (is bool) {
 		}
 	}()
 	return errors.Is(err, target)
+}
+
+// errAsContained is errors.AsType with a panic in the error's own As
+// or Unwrap contained (rule 1): it reads as no match.
+func errAsContained[T error](err error) (v T, ok bool) {
+	defer func() {
+		if recover() != nil {
+			var zero T
+			v, ok = zero, false
+		}
+	}()
+	return errors.AsType[T](err)
 }
 
 type parkUnknownKey struct{}

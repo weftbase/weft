@@ -19,7 +19,8 @@ the first Go run, and CI's shared runners are slower.
 | Format | `make fmt` | no (lint covers gofmt) | — | yes | < 1 |
 | Vet | `make vet` | yes (`test` job) | — | yes | < 1 |
 | Lint | `make lint` | yes (`lint` job) | — | yes | < 1 (cached) |
-| Unit + contract + examples, `-race` | `make test` | yes (`test` job, Go 1.26.x and stable) | — | yes | a few |
+| Vet + lint + layering + the race suite | `make check` (`vet lint layering test`) | the same targets, as separate jobs | — | yes | ~1 |
+| Unit + contract + examples, `-race` | `make test` | yes (`test` job, Go 1.26.x and stable) | — | yes | < 1 |
 | Offline kill switch | `make offline` | yes (`offline` job) | — | yes | ~1 |
 | Fuzz, core | `make fuzz` | yes (`fuzz` job) | — | yes | ~1.2 |
 | Fuzz, thread | `make fuzz-thread` | yes (`fuzz` job) | — | yes | ~1.4 |
@@ -49,15 +50,20 @@ detector, in every module the workspace lists:
 | `github.com/weftbase/weft/core` | `core` | the loop, `core/mw`, `core/wefttest`, `core/wefttest/conformance` |
 | `github.com/weftbase/weft/examples/otel` | `examples/otel` | the OTel example |
 
-Each target loops over these modules (`MODULES = go list -m -f '{{.Dir}}'`)
-and runs the Go tool in each one:
+`build`, `vet` and `test` hand every module to **one** `go` invocation
+(`PKGS`: each module's path with `/...`, which `go.work` resolves), so
+the modules' packages build and run side by side and the slowest
+package bounds the wall clock, not the sum of the modules. `lint`, `fmt`
+and `tidy` are per-module tools and loop over the module directories
+(`MODULES = go list -m -f '{{.Dir}}'`):
 
 ```sh
-make test   # go test -race -timeout 20m ./...   (TEST_TIMEOUT, CI's value)
-make vet    # go vet ./...
-make lint   # golangci-lint run, using .golangci.yml at the root
-make fmt    # go fmt ./...  (rewrites files; commit the result)
-make build  # go build ./...
+make check  # vet, lint, layering, test: the local gate in one command
+make test   # go test -race -timeout 20m <every module>/...   (TEST_TIMEOUT, CI's value)
+make vet    # go vet <every module>/...
+make lint   # golangci-lint run per module, using .golangci.yml at the root
+make fmt    # go fmt ./... per module  (rewrites files; commit the result)
+make build  # go build <every module>/...
 ```
 
 `make lint` needs `golangci-lint` v2.14.0, the version `ci.yml` pins:
@@ -67,16 +73,34 @@ The target puts `$(go env GOPATH)/bin` at the end of `PATH`, so a
 fail every import with "could not load export data" when the Go
 toolchain is newer than the linter.
 
-**When it runs.** On every push. CI's `test` job runs vet, then
-`go test -race -timeout 20m ./...`, then build, per module, under Go
+**When it runs.** On every push. CI's `test` job runs `make vet`,
+`make test`, then `make build`, under Go
 1.26.x and stable. The `lint` job runs golangci-lint per module.
 
-**Measured.** `make vet` 7 s, `make lint` 5 s (cached), `make test`
-a few minutes. `make test` passes
+**Measured.** `make check` 55 s in all (2026-11-10): `make vet` 3 s,
+`make lint` 5 s (cached), `make test` about 45 s. `make test` passes
 `-timeout 20m`, the value CI passes (`TEST_TIMEOUT ?= 20m` in the
 Makefile; raise it per invocation with `make test TEST_TIMEOUT=30m`).
-The slowest are `thread/sqlite` (~95 s), and `core`, `thread` and
-`otel` (40–50 s each).
+The slowest packages are `thread/sqlite`, `thread` and `thread/pool`
+(35–40 s each), then `core` (~20 s) and `thread/jsonl` (~18 s).
+
+**Keeping it fast.** The time is in a few dozen tests, and they run in
+parallel where that is safe:
+
+- A store × policy matrix whose cells each build their own session,
+  store and pool marks its subtests `t.Parallel()`: cells that each wait
+  out a bound (`ladder.AbandonedWait`, 2 s under test) overlap instead
+  of queueing.
+- An independent slow top-level test (the 100k-entry budgets, the
+  conformance tables, the crash matrices) is `t.Parallel()` too.
+- **Not** parallel, on purpose: a test that measures process-wide
+  allocation (`runtime.MemStats`, `testing.AllocsPerRun` — another
+  test's garbage would be counted), one that asserts an upper bound on
+  elapsed time, and one that sets a package variable, an environment
+  variable or a global (`slog.SetDefault`, the OTel globals).
+- A property test over many inputs keeps one seeded generator (a
+  failure names the same input every run) and spreads the checks over
+  the processors (`TestClosedPrefixStringsGrowByPrefix`).
 
 **Knobs.** These are standard `go test` flags. To narrow a run, go to
 the module and pass them yourself:
@@ -124,7 +148,7 @@ model requests are denied, so no test quietly depends on reaching a
 provider.
 
 ```sh
-make offline   # per module: WEFT_MODEL_REQUESTS=deny go test ./...  (no -race)
+make offline   # WEFT_MODEL_REQUESTS=deny go test <every module>/...  (no -race)
 ```
 
 **How the switch works.** `weft.ModelRequestsAllowed()` reads

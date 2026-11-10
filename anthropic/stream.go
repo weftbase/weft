@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"iter"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,6 +64,7 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 			thinking int64
 			stop     string
 			category string
+			ended    bool // message_stop arrived
 		)
 		for {
 			ok, idleHit := reader.next()
@@ -152,6 +156,8 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 				// reasoning_tokens and google thoughtsTokenCount the
 				// same way.
 				thinking = e.Usage.OutputTokensDetails.ThinkingTokens
+			case anthropic.MessageStopEvent:
+				ended = true
 			}
 		}
 		reader.wait()
@@ -168,12 +174,20 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 			yield(nil, err)
 			return
 		}
-		// Whole calls, in block order, before the finish.
-		for i := int64(0); i >= 0; i++ {
-			b, ok := blocks[i]
-			if !ok {
-				break
-			}
+		// Truncation is never silent (rule 8): a body that ends cleanly
+		// with neither a stop reason nor message_stop — a proxy that
+		// closed the response mid-stream — is a cut-off answer, not an
+		// end of turn, and a half-written tool call must not be run.
+		if stop == "" && !ended {
+			yield(nil, fmt.Errorf("anthropic: the stream ended before message_stop: %w", io.ErrUnexpectedEOF))
+			return
+		}
+		// Whole calls, in block order, before the finish. The indexes
+		// are the ones the stream carried: a gateway that numbers from
+		// one, or drops a block, leaves a gap that must not hide the
+		// calls after it.
+		for _, i := range slices.Sorted(maps.Keys(blocks)) {
+			b := blocks[i]
 			if b.kind != "tool_use" {
 				continue
 			}

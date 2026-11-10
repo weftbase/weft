@@ -82,6 +82,7 @@ func TestEveryArmingFunctionRefusesAnUndecidedRecoveryRequest(t *testing.T) {
 // — nothing abandoned. Another session tries again then, with twice
 // the Timeout.
 func TestAbandonedRegistryReleasesOnReturn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	release := make(chan struct{})
 	var s *Session

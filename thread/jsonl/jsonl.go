@@ -4,7 +4,8 @@
 // the format is: readable with jq, backup-able with cp, append-only.
 //
 // The durability rules (ADR 0011 §4–§5): Create writes the header and
-// fsyncs the file and the directory; Append writes all of its entries
+// fsyncs the file and the directory; Delete removes the file and
+// fsyncs the directory; Append writes all of its entries
 // in one write and fsyncs (FsyncOnFlush defers that to Flush). One
 // write is not all-or-none against a kill or a power cut: a crash can
 // keep a prefix of a batch's complete lines, never a gap or a
@@ -139,6 +140,10 @@ type backend struct {
 	// the tests fail a write through (a short write, an I/O error).
 	// Nil outside tests: the write is f.Write.
 	put func(f *os.File, buf []byte) (int, error)
+	// syncd, when set, replaces the directory fsync that makes a created
+	// or removed name durable — the seam the tests observe and fail it
+	// through. Nil outside tests: the sync is syncDir.
+	syncd func(dir string) error
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -340,7 +345,7 @@ func (b *backend) createFile(s *session, id string, first []byte) error {
 		b.discard(f)
 		return err
 	}
-	if err := syncDir(b.dir); err != nil { // the new file's dirent, durable
+	if err := b.syncDir(); err != nil { // the new file's dirent, durable
 		b.discard(f)
 		return err
 	}
@@ -532,7 +537,11 @@ func (b *backend) List(ctx context.Context, q thread.Query) (thread.Page, error)
 	return thread.Page{Sessions: page, Total: total}, nil
 }
 
-// Delete removes the session's file and releases its lock. An unknown
+// Delete removes the session's file, fsyncs the directory — a Delete
+// that returned nil survives a power cut, as a Create does: the
+// conversation does not come back with the next boot — and releases
+// its lock. A directory sync that fails is returned; the file is
+// already gone from the directory by then. An unknown
 // session fails with ErrNotFound; a session held by another writer —
 // another Storage, another process — fails with ErrLocked: deleting
 // under a live writer would lose the writes it is about to make. A
@@ -573,6 +582,11 @@ func (b *backend) Delete(ctx context.Context, id string) error {
 		s.mu.Unlock()
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
+		}
+		if err == nil {
+			// The removed name, durable — outside the session's mutex:
+			// the slot is dropped, and nothing else waits on this fsync.
+			return b.syncDir()
 		}
 		return nil
 	}
@@ -1141,8 +1155,17 @@ func fmtNotFound(id string) error {
 	return fmt.Errorf("%w: %s", thread.ErrNotFound, id)
 }
 
-// syncDir fsyncs a directory so a newly created file's name is
-// durable, not just its contents.
+// syncDir fsyncs the session directory (through the tests' seam when
+// one is set).
+func (b *backend) syncDir() error {
+	if b.syncd != nil {
+		return b.syncd(b.dir)
+	}
+	return syncDir(b.dir)
+}
+
+// syncDir fsyncs a directory so a newly created file's name — or a
+// removed one's absence — is durable, not just the file's contents.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {

@@ -113,11 +113,16 @@ var ErrToolError = errors.New("mcp: tool returned an error")
 //
 // A tool that cannot be imported — an input schema the core cannot
 // key on (a non-object root, a $ref root, an omitted schema), an
-// empty name, a name repeated in the listing (the first importable
+// empty name, a name no provider accepts as a function name (with the
+// Prefix: ASCII letters, digits, _ and -, at most 64 bytes — one such
+// tool would fail every request of the agent holding it), a name
+// repeated in the listing (the first importable
 // occurrence stands: an earlier entry that was itself skipped claims
 // nothing), a nil entry — fails that tool, not the listing: the
 // importable tools are returned and the error is an *ImportError
 // naming each skipped tool and why (ADR 0015's 2026-09-27 amendment).
+// A listing of more than 10,000 tools is refused whole: an error, no
+// tools.
 // The slice is usable whether or not err is nil; the caller decides
 // whether a skipped tool is a warning to log or a reason to stop:
 //
@@ -156,6 +161,12 @@ func Tools(ctx context.Context, sess *sdk.ClientSession, opts ...Option) ([]*cor
 			return nil, err
 		}
 		index++
+		if index >= maxListedTools {
+			// The listing is the server's, and it is paginated: one
+			// that never ends its pages would grow this import until
+			// ctx ended — never, under a context without a deadline.
+			return nil, fmt.Errorf("mcp: the server listed more than %d tools; refusing the import", maxListedTools)
+		}
 		if t == nil {
 			skipped = append(skipped, SkippedTool{Index: index, Err: errors.New("nil entry in the tool list")})
 			continue
@@ -171,6 +182,17 @@ func Tools(ctx context.Context, sess *sdk.ClientSession, opts ...Option) ([]*cor
 			continue
 		}
 		name := cfg.prefix + t.Name
+		if !portableToolName(name) {
+			// The name goes to the model's provider as a function name
+			// on every request, and the providers refuse one outside
+			// this alphabet or past this length — one such remote tool
+			// would fail every run of the agent that imported it. It
+			// is skipped and reported, like the other unimportable
+			// entries; the rest of the listing imports.
+			skipped = append(skipped, SkippedTool{Name: t.Name, Index: index,
+				Err: fmt.Errorf("name %q is not a portable tool name (letters, digits, _ and -, at most %d bytes, the prefix included)", name, maxToolNameLen)})
+			continue
+		}
 		if seen[name] {
 			// A repeated name in one listing is the same untrusted
 			// input: both would import and core.New would panic on
@@ -319,6 +341,34 @@ func (e *ImportError) Unwrap() []error {
 // defaultCallTimeout bounds an imported tool's tools/call whose ctx
 // carries no deadline (WR-17). A var for tests.
 var defaultCallTimeout = time.Minute
+
+// maxToolNameLen is the longest tool name every first-party adapter's
+// provider accepts.
+const maxToolNameLen = 64
+
+// portableToolName reports whether name is one every first-party
+// adapter's provider accepts as a function name: ASCII letters,
+// digits, underscore and hyphen, 1 to maxToolNameLen bytes (OpenAI's
+// and Anthropic's rule; Gemini's is wider).
+func portableToolName(name string) bool {
+	if name == "" || len(name) > maxToolNameLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// maxListedTools bounds one server's tool listing (Tools): server-
+// provided content is untrusted, and far more tools than any agent can
+// be offered is a broken or hostile listing. A variable for the tests.
+var maxListedTools = 10_000
 
 // Option configures one Tools call.
 type Option interface{ apply(*importConfig) }

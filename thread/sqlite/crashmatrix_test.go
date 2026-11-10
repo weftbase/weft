@@ -25,6 +25,7 @@ import (
 // asserts the point's invariant — the durable prefix Load returns,
 // each committed batch all there, and a session that still continues.
 func TestCrashMatrix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	threadtest.CrashMatrix(t, "TestCrashMatrixHelper",
 		func(point string) string { return filepath.Join(dir, point+".db") },

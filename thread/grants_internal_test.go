@@ -117,3 +117,41 @@ func TestExactArgsGrantMatchesEmptyArgs(t *testing.T) {
 		t.Error("an exact-arguments grant matches a call with none")
 	}
 }
+
+// TestAmbiguousKeys pins what grant matching refuses to read: an object
+// with two keys equal under case folding, at any depth — and nothing
+// else. The same key in two different objects, a value that repeats a
+// key's text, and bytes that are not JSON are not ambiguous.
+func TestAmbiguousKeys(t *testing.T) {
+	for args, want := range map[string]bool{
+		``:                              false,
+		`{}`:                            false,
+		`{"a":1,"b":2}`:                 false,
+		`{"a":1,"A":2}`:                 true,
+		`{"a":1,"a":2}`:                 true,
+		`{"k":1,"\u212a":2}`:            true, // the Kelvin sign folds to k
+		`{"a":{"x":1},"b":{"x":2}}`:     false,
+		`{"a":{"x":1,"X":2}}`:           true,
+		`{"a":[{"x":1},{"x":2}]}`:       false,
+		`{"a":[1,{"x":1,"x":2}]}`:       true,
+		`{"a":"A","b":["a","A"]}`:       false,
+		`{"a":"b","B":"a"}`:             false,
+		`{"a":{"b":1},"A":2}`:           true,
+		`[{"a":1},{"A":2}]`:             false,
+		`{"a":1`:                        false,
+		`not json`:                      false,
+		`{"a":{"A":1},"b":{"a":{}}}`:    false,
+		`{"a":null,"b":true,"a":false}`: true,
+	} {
+		if got := ambiguousKeys(json.RawMessage(args)); got != want {
+			t.Errorf("ambiguousKeys(%s) = %v, want %v", args, got, want)
+		}
+	}
+	g := Grant{Tool: "run"}
+	if grantMatches(g, core.ToolCallPart{Name: "run", Args: json.RawMessage(`{"a":1,"A":2}`)}) {
+		t.Error("a tool-wide grant matched arguments with an ambiguous key")
+	}
+	if !grantMatches(g, core.ToolCallPart{Name: "run", Args: json.RawMessage(`{"a":1,"b":2}`)}) {
+		t.Error("a tool-wide grant no longer matches plain arguments")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -528,5 +529,130 @@ func TestFailedAppendUnderNoLockFallsBackToTailRepair(t *testing.T) {
 	// The torn second line is gone; the first, complete line stayed.
 	if len(entries) != 2 {
 		t.Fatalf("Load holds %d entries, want the surviving first line and the later append", len(entries))
+	}
+}
+
+// A tail is not isolated from an append that fails: the batch's lines
+// reach the file, a poll reads them, and the failure — a late write
+// error, a failed fsync — cuts them back out (unwrite). The session is
+// still there, so the stream must not end with ErrNotFound, the word
+// for a deleted or replaced session: it ends with an error that says
+// the history was cut back. Before the fix the next poll read the
+// shorter file as another session's and answered ErrNotFound.
+func TestWatchOfACutBackSessionIsNotNotFound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	b := openBackend(t, dir)
+	s, err := thread.Create(ctx, b, core.New(wefttest.Script()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInfo(ctx, "one", nil); err != nil {
+		t.Fatal(err)
+	}
+	r := openBackend(t, dir) // the reader: another Storage, as another process
+	seq, err := r.Watch(ctx, s.ID(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type item struct {
+		e   thread.Entry
+		err error
+	}
+	got := make(chan item, 16)
+	go func() {
+		for e, err := range seq {
+			got <- item{e, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	next := func() item {
+		t.Helper()
+		select {
+		case it := <-got:
+			return it
+		case <-time.After(5 * time.Second):
+			t.Fatal("the watcher yielded nothing")
+			return item{}
+		}
+	}
+	if it := next(); it.err != nil {
+		t.Fatalf("the backlog: %v", it.err)
+	}
+	// The whole batch reaches the file and the watcher reads it; only
+	// then does the write report its failure.
+	errDisk := errors.New("fsync: input/output error")
+	var phantom item
+	b.put = func(f *os.File, buf []byte) (int, error) {
+		b.put = nil
+		n, err := f.Write(buf)
+		if err != nil {
+			return n, err
+		}
+		phantom = next()
+		return n, errDisk
+	}
+	if err := s.SetInfo(ctx, "two", nil); !errors.Is(err, errDisk) {
+		t.Fatalf("the failed append: %v, want the disk error", err)
+	}
+	if phantom.err != nil {
+		t.Fatalf("the poll over the append in flight: %v", phantom.err)
+	}
+	if _, entries, _, err := r.Load(ctx, s.ID()); err != nil || len(entries) != 1 {
+		t.Fatalf("after the cut the session holds %d entries (err %v), want 1", len(entries), err)
+	}
+	if err := s.SetInfo(ctx, "three", nil); err != nil {
+		t.Fatalf("the append after the failed one: %v", err)
+	}
+	end := next()
+	switch {
+	case end.err == nil:
+		t.Fatalf("the tail went on past a history cut back under it: yielded %T", end.e)
+	case errors.Is(end.err, thread.ErrNotFound):
+		t.Errorf("the tail of a cut-back session ended with %v — the session was never deleted", end.err)
+	case !errors.Is(end.err, errCutBack):
+		t.Errorf("the tail of a cut-back session ended with %v, want the cut-back error", end.err)
+	}
+}
+
+// Delete makes the removal durable: the directory is fsynced after the
+// file is removed, as Create fsyncs it after the file is made — a
+// deleted conversation must not come back with the next boot. A sync
+// that fails is the Delete's error.
+func TestDeleteSyncsTheDirectory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	b := openBackend(t, dir)
+	for _, id := range []string{"s_gone", "s_unsynced"} {
+		if err := b.Create(ctx, thread.Header{ID: id, Created: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var synced []string
+	b.syncd = func(d string) error {
+		if _, err := os.Stat(b.path("s_gone")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the directory was synced with the file still named (stat: %v)", err)
+		}
+		synced = append(synced, d)
+		return nil
+	}
+	if err := b.Delete(ctx, "s_gone"); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 1 || synced[0] != b.dir {
+		t.Errorf("Delete synced %v, want the session directory once", synced)
+	}
+	errSync := errors.New("fsync: input/output error")
+	b.syncd = func(string) error { return errSync }
+	if err := b.Delete(ctx, "s_unsynced"); !errors.Is(err, errSync) {
+		t.Errorf("Delete with a failing directory sync: %v, want the sync's error", err)
+	}
+	// A session that is not there syncs nothing.
+	b.syncd = func(string) error { t.Error("a Delete that removed nothing synced the directory"); return nil }
+	if err := b.Delete(ctx, "s_never"); !errors.Is(err, thread.ErrNotFound) {
+		t.Errorf("Delete of an unknown session: %v, want ErrNotFound", err)
 	}
 }

@@ -778,7 +778,8 @@ weftbase repository; nothing here imports it (`make layering`, CI's
 ## Development
 
 ```sh
-make test   # go test -race -timeout 20m ./... in every workspace module
+make check  # the local gate: vet, lint, layering, test
+make test   # go test -race -timeout 20m over every workspace module, one invocation
 make vet
 make lint   # golangci-lint (CI uses .golangci.yml)
 make live   # adapter conformance against real keys (-tags live)

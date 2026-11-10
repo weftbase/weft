@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,12 @@ type admission struct {
 	space chan struct{}
 	done  chan struct{}
 	once  sync.Once
+	// gate orders admissions against the chain's shutdown: an emitter
+	// holds it shared from its admission to its enqueue, seal takes it
+	// alone, so every place held once seal returned is a record the
+	// SDK's queue was handed before the shutdown.
+	gate sync.RWMutex
+	shut bool
 }
 
 func newAdmission(size int, blocking bool) *admission {
@@ -197,6 +204,46 @@ func (a *admission) signal() {
 // close wakes every Blocking waiter for good (the chain shut down).
 func (a *admission) close() { a.once.Do(func() { close(a.done) }) }
 
+// enter opens an emitter's pass through the gate; false once the chain
+// was sealed (the record is not admitted). leave ends the pass.
+func (a *admission) enter() bool {
+	a.gate.RLock()
+	if a.shut {
+		a.gate.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (a *admission) leave() { a.gate.RUnlock() }
+
+// seal is close, then no further admission: the Blocking waiters are
+// woken first, so the gate is never waited on behind one.
+func (a *admission) seal() {
+	a.close()
+	a.gate.Lock()
+	a.shut = true
+	a.gate.Unlock()
+}
+
+// errShutdownUnexported is the cause named for records a shutdown left
+// in the queue.
+var errShutdownUnexported = errors.New("shut down before the queued records were exported")
+
+// countUnexported counts as lost, once, the places still held when the
+// chain's SDK processor has shut down: records admitted to the queue
+// whose export never began — the shutdown's context ended before a
+// slow destination took them (the detached flush stops between chunks
+// when the chain closes). Without it they would be neither exported
+// nor counted, and Shutdown would not report ErrRecordsLost. An export
+// the SDK still finishes after its Shutdown returned is counted lost
+// all the same: nothing waits for it.
+func (a *admission) countUnexported(drops *dropCounter) {
+	if n := a.inflight.Swap(0); n > 0 && drops != nil {
+		drops.dropped(n, errShutdownUnexported)
+	}
+}
+
 // newAdmittedLogBatch is a batch log chain's SDK processor over exp:
 // admission sized queue, the SDK queue the same size, each export
 // releasing its records' places, a stall warned through drops. The
@@ -265,6 +312,10 @@ func (p admittedSpanProc) OnEnd(s sdktrace.ReadOnlySpan) {
 		// the run's context too). No deadline of its own here: one set
 		// to the same wait fires first and returns without the latch,
 		// so every later End would pay the wait again.
+		if !p.adm.enter() {
+			return // shut down: as the SDK's own processor answers
+		}
+		defer p.adm.leave()
 		if !p.adm.admit(context.Background(), spanTier(s)) {
 			p.drops.overflowed(1, p.adm.size)
 			return
@@ -278,8 +329,10 @@ func (p admittedSpanProc) ForceFlush(ctx context.Context) error {
 }
 
 func (p admittedSpanProc) Shutdown(ctx context.Context) error {
-	p.adm.close()
-	return p.SpanProcessor.Shutdown(ctx)
+	p.adm.seal()
+	err := p.SpanProcessor.Shutdown(ctx)
+	p.adm.countUnexported(p.drops)
+	return err
 }
 
 // spanTier is a span's shedding class: the run's root last.

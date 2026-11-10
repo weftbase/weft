@@ -236,6 +236,7 @@ func assertStillParked(t *testing.T, s *thread.Session, shipped *atomic.Int32) {
 func TestNoArmingPathSettlesAnUndecidedRecoveryRequest(t *testing.T) {
 	for _, sc := range everyStore(t) {
 		t.Run(sc.name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("Resume", func(t *testing.T) {
 				s, shipped := recoveryBoundary(t, sc.open(t))
 				approveAsk(t, s)

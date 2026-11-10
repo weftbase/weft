@@ -62,10 +62,11 @@ func CrashTurn(t *testing.T, helperTest, storagePath string, reopen func() (thre
 	case <-sawStep:
 	case <-time.After(20 * time.Second):
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait() // reaped, its pipe closed
 		t.Fatal("the child never finished its first step")
 	}
 	_ = cmd.Process.Kill() // SIGKILL mid-second-step: no cleanup, no flush
-	_, _ = cmd.Process.Wait()
+	_ = cmd.Wait()         // reaps the child and closes its pipe
 
 	st, err := reopen()
 	if err != nil {

@@ -26,23 +26,16 @@ jobs:
             **/go.sum
             go.work.sum
       # The framework module, the core module and the examples (ADR
-      # 0027): loop over the workspace the same way `make test` does. The live suite is never in CI — no
-      # keys; it is a release-time manual step.
+      # 0027): every workspace module in one go invocation, the same
+      # targets a contributor runs (the Makefile's PKGS), so the
+      # modules' packages build and test side by side. The live suite
+      # is never in CI — no keys; it is a release-time manual step.
       - name: vet (every module)
-        run: |
-          for m in $(go list -m -f '{{.Dir}}'); do
-            (cd "$m" && go vet ./...)
-          done
+        run: make vet
       - name: test (every module)
-        run: |
-          for m in $(go list -m -f '{{.Dir}}'); do
-            (cd "$m" && go test -race -timeout 20m ./...)
-          done
+        run: make test
       - name: build (every module)
-        run: |
-          for m in $(go list -m -f '{{.Dir}}'); do
-            (cd "$m" && go build ./...)
-          done
+        run: make build
 
   # The layering guard (scripts/check-layering.sh): no package of the
   # workspace, tests included, imports the platform
@@ -59,7 +52,7 @@ jobs:
             **/go.sum
             go.work.sum
       - name: layering (framework never imports the platform)
-        run: scripts/check-layering.sh
+        run: make layering
 
   lint:
     runs-on: ubuntu-latest
@@ -133,10 +126,7 @@ jobs:
             **/go.sum
             go.work.sum
       - name: test (every module, WEFT_MODEL_REQUESTS=deny)
-        run: |
-          for m in $(go list -m -f '{{.Dir}}'); do
-            (cd "$m" && WEFT_MODEL_REQUESTS=deny go test ./...)
-          done
+        run: make offline
 
   # The fuzz gate (TODO §9.4): every Fuzz* target of the core module
   # and of thread's decoders runs for FUZZTIME on

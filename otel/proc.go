@@ -127,11 +127,7 @@ func (p *destProc) OnEmit(ctx context.Context, r *sdklog.Record) error {
 		}
 		// An app's lines are shed with the deltas: a chatty Debug logger
 		// never crowds weft's own records out of a full queue.
-		if p.adm != nil && !p.adm.admit(ctx, tierDelta) {
-			p.drops.overflowed(1, p.adm.size)
-			return nil
-		}
-		return p.inner.OnEmit(ctx, &clone)
+		return p.enqueue(ctx, tierDelta, &clone)
 	}
 	clone := r.Clone()
 	kind := recordKind(&clone)
@@ -217,20 +213,38 @@ func (p *destProc) OnEmit(ctx context.Context, r *sdklog.Record) error {
 			setAttr(&clone, attrRecordsDropped, attribute.Int64Value(n))
 		}
 	}
-	if p.adm != nil {
-		if !p.adm.admit(ctx, t) {
-			p.drops.overflowed(1, p.adm.size)
-			return nil
-		}
+	return p.enqueue(ctx, t, &clone)
+}
+
+// enqueue hands a shaped record to the chain's processor, through the
+// batch chain's admission when it has one. Admission and the enqueue
+// happen inside the admission's gate, so Shutdown's count of the
+// places still held (countUnexported) is exactly the records the
+// queue held: one emitted after the chain shut down takes no place.
+func (p *destProc) enqueue(ctx context.Context, t tier, r *sdklog.Record) error {
+	if p.adm == nil {
+		return p.inner.OnEmit(ctx, r)
 	}
-	return p.inner.OnEmit(ctx, &clone)
+	if !p.adm.enter() {
+		return nil // shut down: as the SDK's own processor answers
+	}
+	defer p.adm.leave()
+	if !p.adm.admit(ctx, t) {
+		p.drops.overflowed(1, p.adm.size)
+		return nil
+	}
+	return p.inner.OnEmit(ctx, r)
 }
 
 func (p *destProc) Shutdown(ctx context.Context) error {
 	if p.adm != nil {
-		p.adm.close()
+		p.adm.seal()
 	}
-	return p.inner.Shutdown(ctx)
+	err := p.inner.Shutdown(ctx)
+	if p.adm != nil {
+		p.adm.countUnexported(p.drops)
+	}
+	return err
 }
 
 func (p *destProc) ForceFlush(ctx context.Context) error {
@@ -456,13 +470,20 @@ func (p *destProc) shapeEvent(clone *sdklog.Record) {
 	if body.Type() != attribute.STRING {
 		return
 	}
-	ev, err := core.UnmarshalEvent([]byte(body.AsString()))
-	if err != nil {
-		return
-	}
 	cfg := p.contentC
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = 32 << 10
+	}
+	raw := body.AsString()
+	if cfg.Redact == nil && cfg.MaxBytes > 0 && len(raw) <= cfg.MaxBytes {
+		// Nothing to redact, and no field can pass the cap when the
+		// whole encoded body does not (JSON encoding never shrinks a
+		// string): the common delta goes through undecoded.
+		return
+	}
+	ev, err := core.UnmarshalEvent([]byte(raw))
+	if err != nil {
+		return
 	}
 	shaped, cut, changed := shapeEventValue(ev, cfg.Redact, cfg.MaxBytes)
 	if !changed && cut == 0 {

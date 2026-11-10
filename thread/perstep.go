@@ -368,7 +368,9 @@ func (s *Session) flushStepsLocked(ctx context.Context, sp *stepPersist) error {
 // The join completes the run's input; the run's own messages attach
 // after it, so the attempt's start moves here. Callers hold s.mu.
 func (s *Session) appendJoinLocked(ctx context.Context, sp *stepPersist, tool core.Message) error {
-	path, err := s.pathLocked(s.leaf)
+	// Read-only: roles and ids are read off the path, and an entry that
+	// is carried over is copied where it is restamped (cloneEntry).
+	path, err := s.walkLocked(s.leaf)
 	if err != nil {
 		return err
 	}

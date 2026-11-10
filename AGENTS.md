@@ -467,8 +467,9 @@ ignore it.
 
 ## Working in this repo
 
-- Run `make test` (`go test -race -timeout 20m ./...`), `make vet`, `make lint`
-  before claiming done. Add a test in `core/contract_test.go` for any promise
+- Run `make check` (`make vet lint layering test`; the test half is
+  `go test -race -timeout 20m` over every workspace module in one
+  invocation) before claiming done. Add a test in `core/contract_test.go` for any promise
   you add or change; add a godoc example for any public feature.
 - Keep the public surface small: functional options, sealed interfaces
   (`Option`, `Event`, `Part`, `ModelEvent`), no config structs, no

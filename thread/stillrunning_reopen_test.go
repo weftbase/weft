@@ -25,6 +25,7 @@ import (
 func TestStillRunningSurvivesAnInProcessReopen(t *testing.T) {
 	for _, policy := range []core.ReplayPolicy{core.ReplayNever, core.ReplayKeyed} {
 		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
 			stores := []struct {
 				name   string
 				first  func(t *testing.T) thread.Storage
@@ -43,6 +44,7 @@ func TestStillRunningSurvivesAnInProcessReopen(t *testing.T) {
 			}
 			for _, sc := range stores {
 				t.Run(sc.name, func(t *testing.T) {
+					t.Parallel()
 					outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
 						ship := &abandonedTool{release: make(chan struct{})}
 						released := false
@@ -128,6 +130,7 @@ func TestStillRunningSurvivesAnInProcessReopen(t *testing.T) {
 // returned, then runs — never let an approval through beside a
 // running handler.
 func TestStillRunningRunIDCollisionOnlyRefuses(t *testing.T) {
+	t.Parallel()
 	pinned := func() thread.SessionOption {
 		var n atomic.Int64
 		return thread.IDs(func() string {

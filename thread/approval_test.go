@@ -1624,3 +1624,219 @@ func TestDecideGrantRevokeFlushDurable(t *testing.T) {
 		t.Error("Revoke did not flush: a lost revocation re-activates the grant after a crash")
 	}
 }
+
+// TestBranchOntoAppliedResumeAsksAgain: a decision is spent by the
+// resume that applied it, wherever the leaf goes afterwards. A Branch
+// onto that resume's own "started" audit entry — or onto the dispatch
+// record after it — puts the decision and the audit both on the path,
+// below the results: the call must read pending there, not decided, or
+// the next arming would run it a second time on the one approval. The
+// identical decision again is ErrDecisionSpent; a new one runs it.
+func TestBranchOntoAppliedResumeAsksAgain(t *testing.T) {
+	ctx := context.Background()
+	for _, target := range []string{thread.StepResume, thread.StepDispatch} {
+		t.Run(target, func(t *testing.T) {
+			agent, ran := runAgent(
+				wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command":"pay 100","dir":"/ws"}`}),
+				wefttest.Say("done"),
+				wefttest.Say("paid again"),
+				wefttest.Say("spare"),
+			)
+			s, err := thread.Create(ctx, thread.Memory(), agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn, err := s.Send(ctx, core.User("pay"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := turn.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			approval := thread.Approve(s.Pending()[0].CallID).Bind(s.Pending()[0])
+			approval.Who = "alice"
+			resume, err := s.Decide(ctx, approval)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resume.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.WaitIdle(ctx); err != nil {
+				t.Fatal(err)
+			}
+			at := ""
+			for _, e := range s.Entries() {
+				a, ok := e.(thread.ApprovalAuditEntry)
+				if ok && a.Step == target && (target != thread.StepResume || a.Outcome == "started") {
+					at = a.ID
+				}
+			}
+			if at == "" {
+				t.Fatalf("no %s audit entry to branch onto", target)
+			}
+			if err := s.Branch(ctx, at); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Pending(); len(got) != 1 {
+				t.Fatalf("pending after the Branch = %d: the spent approval still decides the call", len(got))
+			}
+			// Nothing arms on the old approval: a Send waits behind the
+			// boundary, and the call has run once.
+			queued, err := s.Send(ctx, core.User("next"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued.Outcome() != thread.TurnRunning || len(*ran) != 1 {
+				t.Fatalf("queued send outcome %v, ran %q: the boundary resumed on a spent approval", queued.Outcome(), *ran)
+			}
+			if _, err := s.Decide(ctx, approval); !errors.Is(err, thread.ErrDecisionSpent) {
+				t.Fatalf("the identical decision again = %v, want ErrDecisionSpent", err)
+			}
+			if len(*ran) != 1 {
+				t.Fatalf("ran %q after the refused repeat", *ran)
+			}
+			fresh := thread.Approve(s.Pending()[0].CallID).Bind(s.Pending()[0])
+			fresh.Who = "bob"
+			resume, err = s.Decide(ctx, fresh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resume.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if len(*ran) != 2 {
+				t.Fatalf("ran %q after a new approval, want the call run again", *ran)
+			}
+			if _, err := queued.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// TestDecisionRefusesRepeatedEntryID: the ids a decision's entries
+// take are vetted like every other the session mints (IDs' contract: a
+// repeated id fails the write that would carry it). A decision written
+// under an id the tree already holds would leave a file no Open
+// accepts; it is refused instead, nothing recorded, and the session
+// keeps working.
+func TestDecisionRefusesRepeatedEntryID(t *testing.T) {
+	ctx := context.Background()
+	agent, _ := runAgent(
+		wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command":"x","dir":"/ws"}`}),
+		wefttest.Say("done"),
+	)
+	var (
+		mu     sync.Mutex
+		n      int
+		repeat string
+	)
+	ids := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		if repeat != "" {
+			return repeat
+		}
+		n++
+		return fmt.Sprintf("id_%d", n)
+	}
+	st := thread.Memory()
+	s, err := thread.Create(ctx, st, agent, thread.IDs(ids), thread.AutoResume(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.Send(ctx, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	req := s.Pending()[0]
+	before := len(s.Entries())
+	mu.Lock()
+	repeat = s.Leaf() // an id the tree holds
+	mu.Unlock()
+	if _, err := s.Decide(ctx, thread.Deny(req.CallID, "no").Bind(req)); err == nil {
+		t.Fatal("a decision minted under a repeated entry id was recorded")
+	}
+	edit := thread.Edit(req.CallID, json.RawMessage(`{"command":"y","dir":"/ws"}`)).Bind(req)
+	if _, err := s.Decide(ctx, edit); err == nil {
+		t.Fatal("an edit minted under a repeated entry id was recorded")
+	}
+	if got := len(s.Entries()); got != before || len(s.Pending()) != 1 {
+		t.Fatalf("the refused decisions left %d entries more, pending %d", got-before, len(s.Pending()))
+	}
+	mu.Lock()
+	repeat = ""
+	mu.Unlock()
+	if _, err := s.Decide(ctx, thread.Deny(req.CallID, "no").Bind(req)); err != nil {
+		t.Fatalf("a decision under a fresh id: %v", err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Open(ctx, st, s.ID(), agent); err != nil {
+		t.Fatalf("the session no longer opens: %v", err)
+	}
+}
+
+// TestRequestArgsHashSurvivesReopen: Request.ArgsSHA256 is the SHA-256
+// of Request.Args, in the process that parked the call and in one that
+// reopened the session. The file holds raw JSON as encoding/json writes
+// it — no insignificant space, "<", ">" and "&" escaped — so a request
+// parks with its arguments in those bytes and its hash over them: a
+// decider that recomputes the hash over what it displays agrees with
+// the session on both sides of a restart, and a decision bound before
+// one still answers the request after it.
+func TestRequestArgsHashSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	agent, _ := runAgent(
+		wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command": "echo <b> & c", "dir": "/ws"}`}),
+		wefttest.Say("done"),
+	)
+	sum := func(b []byte) string {
+		h := sha256.Sum256(b)
+		return hex.EncodeToString(h[:])
+	}
+	st := thread.Memory()
+	s, err := thread.Create(ctx, st, agent, thread.AutoResume(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.Send(ctx, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	live := s.Pending()[0]
+	if sum(live.Args) != live.ArgsSHA256 {
+		t.Fatalf("live: ArgsSHA256 is not the hash of Args %s", live.Args)
+	}
+	var shown struct{ Command string }
+	if err := json.Unmarshal(live.Args, &shown); err != nil || shown.Command != "echo <b> & c" {
+		t.Fatalf("the request's arguments are not the model's: %s (%v)", live.Args, err)
+	}
+	decision := thread.Deny(live.CallID, "no").Bind(live)
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s, err = thread.Open(ctx, st, s.ID(), agent, thread.AutoResume(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened := s.Pending()[0]
+	if string(reopened.Args) != string(live.Args) || reopened.ArgsSHA256 != live.ArgsSHA256 {
+		t.Fatalf("the request changed across the reopen:\n live     %s %s\n reopened %s %s",
+			live.Args, live.ArgsSHA256, reopened.Args, reopened.ArgsSHA256)
+	}
+	if sum(reopened.Args) != reopened.ArgsSHA256 {
+		t.Fatalf("reopened: ArgsSHA256 is not the hash of Args %s", reopened.Args)
+	}
+	if _, err := s.Decide(ctx, decision); err != nil {
+		t.Fatalf("a decision bound before the restart: %v", err)
+	}
+}

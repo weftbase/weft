@@ -9,10 +9,23 @@ GO ?= go
 # repository; make layering keeps this one from importing it.
 MODULES = $(shell $(GO) list -m -f '{{.Dir}}')
 
-.PHONY: build test vet fmt lint layering tidy generate live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress
+# Every package of every workspace module, as patterns one go command
+# takes (go.work resolves them from any directory): build, vet and the
+# test targets run the modules in ONE invocation, so their packages
+# build and run side by side instead of a module at a time — the
+# slowest package bounds the wall clock, not the sum of the modules.
+# The module-at-a-time loop stays where the tool is per module (lint,
+# tidy, fmt).
+PKGS = $(addsuffix /...,$(shell $(GO) list -m))
+
+.PHONY: check build test vet fmt lint layering tidy generate live tools apidiff apidiff-core apidiff-all apidiff-selftest offline fuzz fuzz-thread soak-thread stress
+
+# The local gate in one command: what to run before claiming done
+# (AGENTS.md, "Working in this repo"). The cheap gates first.
+check: vet lint layering test
 
 build:
-	for m in $(MODULES); do (cd $$m && $(GO) build ./...) || exit 1; done
+	$(GO) build $(PKGS)
 
 # The per-package timeout `make test` passes: the one CI's test job
 # passes (.github/workflows/ci.yml); thread/pool's soak-style suites
@@ -21,10 +34,10 @@ build:
 TEST_TIMEOUT ?= 20m
 
 test:
-	for m in $(MODULES); do (cd $$m && $(GO) test -race -timeout $(TEST_TIMEOUT) ./...) || exit 1; done
+	$(GO) test -race -timeout $(TEST_TIMEOUT) $(PKGS)
 
 vet:
-	for m in $(MODULES); do (cd $$m && $(GO) vet ./...) || exit 1; done
+	$(GO) vet $(PKGS)
 
 fmt:
 	for m in $(MODULES); do (cd $$m && $(GO) fmt ./...) || exit 1; done
@@ -92,7 +105,7 @@ apidiff-selftest: tools
 # drive their fixtures through injected SDK clients — test doubles by
 # construction — so deny still means "no self-built client egress".
 offline:
-	for m in $(MODULES); do (cd $$m && WEFT_MODEL_REQUESTS=deny $(GO) test ./...) || exit 1; done
+	WEFT_MODEL_REQUESTS=deny $(GO) test $(PKGS)
 
 # Fuzz every Fuzz* target of the core module, one invocation each (Go
 # fuzzes one target at a time), FUZZTIME apiece. A crasher is written
@@ -135,5 +148,5 @@ stress:
 
 # Live adapter tests behind the `live` build tag; never in CI (no keys).
 live:
-	for m in $(MODULES); do (cd $$m && $(GO) test -tags live ./...) || exit 1; done
+	$(GO) test -tags live $(PKGS)
 

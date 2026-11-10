@@ -174,11 +174,26 @@ func (p *Pool) working(rc Receipt) bool {
 // recoverOne recovers one unsettled receipt no delegate of this pool
 // answers for.
 func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receipt) error {
-	p.mu.Lock()
-	creating := p.creating[rc.Child] > 0
-	p.mu.Unlock()
-	if creating {
-		return nil // a live delegation whose child is being made: not left behind
+	// One recovery per receipt at a time (claimRecovery), and the ledger
+	// read again under the claim: a Recover beside another, or beside a
+	// Cancel of the same orphan, finds what the first one made of it —
+	// settled, or a child this pool now answers for — and records
+	// nothing more. Unserialized, both settled it: two settlement
+	// entries, the child billed twice in the parent's Delegated.
+	release, err := p.claimRecovery(ctx, parent, rc.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	rc, found := lookup(parent, rc.ID)
+	if !found || rc.Settled() {
+		return nil
+	}
+	if p.working(rc) {
+		// A registered delegate (reattached by the recovery that held the
+		// claim before this one), or a live delegation whose child is
+		// being made: not left behind.
+		return nil
 	}
 	h, entries, _, err := parent.Storage().Load(ctx, rc.Child)
 	if rc.State == Accepted && noHeader(err) {
@@ -240,6 +255,38 @@ func (p *Pool) recoverOne(ctx context.Context, parent *thread.Session, rc Receip
 		usage = reread(ctx, parent.Storage(), rc.Child, usage)
 	}
 	return p.settleFromLedger(ctx, parent, rc, name, state, stop, usage)
+}
+
+// claimRecovery takes the one claim on recovering receipt of session
+// from its ledger — recoverOne's and endOne's, whoever calls them:
+// Recover, a Cancel of an orphan receipt, a recovery descending into a
+// child's own delegations. A second claimant waits for the first (ctx
+// bounds the wait) and then reads the ledger the first one left. The
+// returned function gives the claim up. Claims nest downward only — a
+// parent's receipt, then its child's own — so they cannot deadlock.
+func (p *Pool) claimRecovery(ctx context.Context, session *thread.Session, receipt string) (release func(), err error) {
+	key := session.ID() + "/" + receipt
+	for {
+		p.mu.Lock()
+		held, busy := p.recovering[key]
+		if !busy {
+			mine := make(chan struct{})
+			p.recovering[key] = mine
+			p.mu.Unlock()
+			return func() {
+				p.mu.Lock()
+				delete(p.recovering, key)
+				p.mu.Unlock()
+				close(mine)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-held:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // reread is a child's usage as classify reads it after its ledger
@@ -347,6 +394,25 @@ func (p *Pool) endDelegations(ctx context.Context, s *thread.Session) error {
 // Nothing is resolved: s's delegating calls were never parked, and s
 // does not run again.
 func (p *Pool) endOne(ctx context.Context, s *thread.Session, rc Receipt) error {
+	// Claimed and read again, as recoverOne: two recoveries descending
+	// into one child's ledger end each of its delegations once.
+	release, err := p.claimRecovery(ctx, s, rc.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	rc, found := lookup(s, rc.ID)
+	if !found || p.working(rc) {
+		return nil
+	}
+	if rc.Settled() {
+		// Settled by the recovery that held the claim: only its requests
+		// still offered in s are left to deny (endDelegations' rule).
+		if err := s.DenyMirrored(ctx, rc.Child, endedReason(rc.State)); err != nil {
+			return fmt.Errorf("thread/pool: requests of ended child %s: %w", rc.Child, err)
+		}
+		return nil
+	}
 	_, entries, _, err := s.Storage().Load(ctx, rc.Child)
 	if rc.State == Accepted && noHeader(err) {
 		err = neverCreated(ctx, s.Storage(), rc.Child)

@@ -222,11 +222,14 @@ func (s *Session) steerSendLocked(ctx context.Context, msg core.Message, opts []
 	q.aimOpts, q.aimCtx = s.aimLocked()
 	if err := s.flushLocked(ctx); err != nil {
 		// The receipt is written but not synced, and Send reports the
-		// failure — yet the entry is on disk, and a reopen would
-		// restore it to the steer queue. The live session must match:
-		// the steer defers now instead of waiting forever in a queued
-		// receipt nothing will drain.
-		s.settleSteerLocked(q)
+		// failure: a send its caller was told failed must not run — the
+		// caller retries, and the message would reach the model twice.
+		// The receipt is dropped again and the leaf moves back to where
+		// it stood (abandonLocked, best effort), the rule a queued
+		// send's failed acceptance follows (acceptLocked): neither this
+		// session nor a reopened one delivers it.
+		s.abandonLocked(context.WithoutCancel(ctx), e.ParentID, t.id)
+		t.finishAs(TurnDropped, nil, fmt.Errorf("%w: session %s: the steer was refused", ErrDropped, s.header.ID))
 		return nil, fmt.Errorf("thread: steer receipt flush: %w", err)
 	}
 	if !s.running && s.boundaryLocked() {

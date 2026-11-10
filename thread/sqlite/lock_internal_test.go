@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,7 +25,9 @@ func openBackend(t *testing.T, path string, opts ...thread.OpenOption) *backend 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return st.(*backend)
+	b := st.(*backend)
+	t.Cleanup(func() { _ = b.Close() }) // the handle goes with the test
+	return b
 }
 
 func entry(id string) thread.Entry {
@@ -506,5 +509,52 @@ func TestHostIdentityNamesThePIDNamespace(t *testing.T) {
 	b := openBackend(t, filepath.Join(t.TempDir(), "id.db"))
 	if b.host() != want {
 		t.Fatalf("the lock row's host = %q, want %q", b.host(), want)
+	}
+}
+
+// Close releases the database handle — a Storage is an io.Closer: no
+// connection stays open (the pinned keeper of a ":memory:" database
+// included), a second Close answers as the first did, the closed
+// Storage refuses work instead of reopening behind the caller, and the
+// file is a fresh Open's to read. Before Close existed every Open held
+// its connection and the file's descriptors for the life of the
+// process.
+func TestCloseReleasesTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "close.db")
+	for _, at := range []string{path, ":memory:"} {
+		st, err := Open(at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Create(ctx, thread.Header{ID: "s_close", Created: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Append(ctx, "s_close", entry("e_1")); err != nil {
+			t.Fatal(err)
+		}
+		c, ok := st.(io.Closer)
+		if !ok {
+			t.Fatalf("%T is not an io.Closer", st)
+		}
+		for i := 0; i < 2; i++ {
+			if err := c.Close(); err != nil {
+				t.Errorf("%s: Close #%d: %v", at, i+1, err)
+			}
+		}
+		if n := st.(*backend).db.Stats().OpenConnections; n != 0 {
+			t.Errorf("%s: %d connections open after Close, want 0", at, n)
+		}
+		if _, _, _, err := st.Load(ctx, "s_close"); err == nil {
+			t.Errorf("%s: Load on a closed Storage succeeded", at)
+		}
+		if err := st.Append(ctx, "s_close", entry("e_2")); err == nil {
+			t.Errorf("%s: Append on a closed Storage succeeded", at)
+		}
+	}
+	// What was committed is the next Open's: Close lost nothing.
+	fresh := openBackend(t, path)
+	if _, entries, _, err := fresh.Load(ctx, "s_close"); err != nil || len(entries) != 1 {
+		t.Errorf("after Close a fresh Open loads %d entries (err %v), want 1", len(entries), err)
 	}
 }

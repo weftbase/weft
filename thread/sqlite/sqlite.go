@@ -37,6 +37,11 @@
 // it (BreakLock). Readers never lock — Load and List always work. Between Sessions sharing one Storage the same rule is the
 // lease (the thread.Leaser capability): the instance remembers which
 // writer has the row it took.
+//
+// The Storage Open returns holds the database open — its connection
+// and the file's descriptors — until it is closed: it implements
+// io.Closer, st.(io.Closer).Close(). A process that opens one database
+// for its life need not call it; one that opens many does.
 package sqlite
 
 import (
@@ -103,6 +108,10 @@ const connParams = "_txlock=immediate" +
 //     A failed sync fails the commit, and the Append with it.
 //
 // ":memory:" has nothing to sync and ignores both.
+//
+// The returned Storage is also an io.Closer: Close releases the
+// database handle (see Close on the package's backend, reached as
+// st.(io.Closer)).
 //
 // path is a file name, taken literally: characters that mean something
 // in a SQLite URI ('?', '#', '%') are part of the name, never options.
@@ -315,6 +324,10 @@ type backend struct {
 
 	leaseMu sync.Mutex
 
+	// closing makes Close idempotent; closeErr is its one answer.
+	closing  sync.Once
+	closeErr error
+
 	mu   sync.Mutex
 	held map[string]*lease
 	// writes counts this instance's committed entry writes: an Acquire
@@ -336,6 +349,33 @@ type lease struct {
 	// was); zero when it does not parse.
 	created time.Time
 	stamped bool
+}
+
+// Close releases the database: the pinned connection of a ":memory:"
+// database first — the database dies with it — then the handle, which
+// waits for the statements in flight and closes the file's descriptors
+// (the -wal and -shm files' too). It is the io.Closer capability,
+// reached as st.(io.Closer): thread.Storage itself has no Close, and a
+// process that keeps one database for its life may never call it.
+//
+// Close gives up no writer lock: the lock rows of the sessions this
+// instance holds stay in the file, as they do when a process exits
+// without releasing — close the Sessions first (Session.Close releases
+// theirs), or a later writer in this process finds them held until the
+// process ends. After Close every method fails with the driver's
+// "database is closed" error; a tail (Watch) in flight ends with it.
+// Close is idempotent and safe for concurrent use: every call returns
+// the first call's result.
+func (b *backend) Close() error {
+	b.closing.Do(func() {
+		var errs []error
+		if b.keeper != nil {
+			errs = append(errs, b.keeper.Close())
+		}
+		errs = append(errs, b.db.Close())
+		b.closeErr = errors.Join(errs...)
+	})
+	return b.closeErr
 }
 
 // unknownEntries marks a held session whose entry rows have not been

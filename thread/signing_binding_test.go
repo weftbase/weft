@@ -568,3 +568,80 @@ func TestSignedRefusalsAreAuditedWithinBounds(t *testing.T) {
 		t.Fatalf("refusals kept for one request: %d, want the bound of 16", got)
 	}
 }
+
+// TestSignedRedeliveryOffItsLineIsNotApplied: a signed decision
+// delivered again reads "applied" only while the recorded decision is
+// in force. After a Branch back to before the decision's own entry the
+// request is pending again and no resume ever applied the decision:
+// answering the redelivery (nil, nil) would tell a reconciler the call
+// is decided while the boundary waits. It is ErrDecisionSpent, nothing
+// recorded, and a signature over a fresh challenge decides on the line.
+func TestSignedRedeliveryOffItsLineIsNotApplied(t *testing.T) {
+	ctx := context.Background()
+	agent, ran := runAgent(
+		wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command":"x","dir":"/ws"}`}),
+		wefttest.Say("done"),
+	)
+	ring, err := thread.NewKeyring(thread.Key{ID: "k1", Secret: []byte("secret"), Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := thread.Create(ctx, thread.Memory(), agent,
+		thread.WithKeyring(ring), thread.RequireSigned(), thread.AutoResume(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.Send(ctx, core.User("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	parked := s.Leaf()
+	req, err := s.Request(s.Pending()[0].CallID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := ring.Sign(req, thread.Approve(req.CallID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DecideSigned(ctx, sd); err != nil {
+		t.Fatal(err)
+	}
+	// In force: the redelivery is applied, nothing recorded.
+	if tn, err := s.DecideSigned(ctx, sd); tn != nil || err != nil {
+		t.Fatalf("redelivery of a decision in force = %v, %v; want nil, nil", tn, err)
+	}
+	if err := s.Branch(ctx, parked); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Pending()) != 1 {
+		t.Fatalf("pending after the Branch = %d, want the request back", len(s.Pending()))
+	}
+	before := len(s.Entries())
+	if _, err := s.DecideSigned(ctx, sd); !errors.Is(err, thread.ErrDecisionSpent) {
+		t.Fatalf("redelivery off the decision's line = %v, want ErrDecisionSpent", err)
+	}
+	if got := len(s.Entries()); got != before {
+		t.Fatalf("the refused redelivery wrote %d entries", got-before)
+	}
+	if len(s.Pending()) != 1 || len(*ran) != 0 {
+		t.Fatalf("pending %d, ran %q after the refused redelivery", len(s.Pending()), *ran)
+	}
+	// A fresh challenge decides on this line.
+	req, err = s.Request(req.CallID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sd, err = ring.Sign(req, thread.Approve(req.CallID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DecideSigned(ctx, sd); err != nil {
+		t.Fatalf("a fresh challenge on the line: %v", err)
+	}
+	if len(s.Pending()) != 0 {
+		t.Fatalf("pending after the fresh decision = %d", len(s.Pending()))
+	}
+}

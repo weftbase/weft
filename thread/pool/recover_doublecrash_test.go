@@ -140,6 +140,7 @@ func TestRecoverDoubleCrashContinuationEndsDone(t *testing.T) {
 // with nothing to decide. The call runs once more under its same key
 // and the delegation ends done.
 func TestRecoverDoubleCrashKeyedRetryRunsOnceMore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	charge := &keyedCharge{}
 	parent, image, r := crashInKeyedChild(t, charge, 2)
@@ -179,6 +180,7 @@ func TestRecoverDoubleCrashKeyedRetryRunsOnceMore(t *testing.T) {
 // for a person, mirrored onto the parent — the delegation stays open,
 // never failed.
 func TestRecoverKeyedRetriesSpentAcrossCrashesAsksAPerson(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	charge := &keyedCharge{}
 	parent, image, r := crashInKeyedChild(t, charge, 4) // the first run and three retries

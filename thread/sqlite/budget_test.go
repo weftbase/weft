@@ -56,6 +56,7 @@ func buildBigSession(tb testing.TB, st thread.Storage, id string, n int) {
 const budgetOpen100k = 30 * time.Second
 
 func TestBudgetOpen100k(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "big.db")
 	st, err := sqlite.Open(db) // a fixture: bulk-loaded
@@ -96,6 +97,7 @@ func TestBudgetOpen100k(t *testing.T) {
 const budgetList10k = 30 * time.Second
 
 func TestBudgetList10k(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "fleet.db")
 	// The fleet is a fixture, seeded before the clock starts: the

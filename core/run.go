@@ -1270,6 +1270,10 @@ type Run struct {
 	result  *RunResult
 	err     error
 	done    chan struct{}
+	// closed is closed by Close: the run was abandoned, and an event
+	// in flight to a consumer that will not take it is dropped.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 // Stream starts a run and returns its handle. The run is lazy: nothing
@@ -1284,7 +1288,7 @@ func (a *Agent) Stream(ctx context.Context, opts ...RunOption) *Run {
 	}
 	cfg.finish()
 	ctx, cancel := context.WithCancel(ctx)
-	return &Run{agent: a, ctx: ctx, cancel: cancel, cfg: cfg, done: make(chan struct{})}
+	return &Run{agent: a, ctx: ctx, cancel: cancel, cfg: cfg, done: make(chan struct{}), closed: make(chan struct{})}
 }
 
 // ID returns the run's identifier. It is fixed at Stream time, so it can be
@@ -1318,6 +1322,15 @@ func (r *Run) Events() iter.Seq2[Event, error] {
 		r.mu.Unlock()
 
 		ch := make(chan Event)
+		// gone is closed when the consumer leaves the range — it broke
+		// out, its loop body panicked, or its goroutine exited — and
+		// the run is canceled with it, so the producer never stays
+		// parked on an event nobody will take.
+		gone := make(chan struct{})
+		defer func() {
+			close(gone)
+			r.cancel()
+		}()
 		go func() {
 			// Defers run LIFO: close(ch) ends the consumer's range, then
 			// close(done) unblocks Wait, then the run's context is
@@ -1327,11 +1340,16 @@ func (r *Run) Events() iter.Seq2[Event, error] {
 			defer close(ch)
 			emit := func(ev Event) {
 				// The post-cancellation drop lives in execute's emit
-				// wrapper (one home for the rule); this select is what
-				// prevents blocking when the consumer has gone.
+				// wrapper (one home for the rule): an event that passed
+				// it was seen by the taps and the record, so a consumer
+				// still ranging receives it — a cancellation landing
+				// while the send waits must not lose a successful run's
+				// RunFinish. The select only prevents blocking when the
+				// consumer has gone or the run was closed.
 				select {
 				case ch <- ev:
-				case <-r.ctx.Done():
+				case <-gone:
+				case <-r.closed:
 				}
 			}
 			res, err := r.agent.execute(r.ctx, r.cfg, emit)
@@ -1342,8 +1360,7 @@ func (r *Run) Events() iter.Seq2[Event, error] {
 
 		for ev := range ch {
 			if !yield(ev, nil) {
-				r.cancel() // consumer stopped early; unblock the producer
-				return
+				return // consumer stopped early; the defer unblocks the producer
 			}
 		}
 		<-r.done
@@ -1360,7 +1377,10 @@ func (r *Run) Events() iter.Seq2[Event, error] {
 // It is for abandoned runs: a run you will consume needs no Close —
 // Events and Wait release everything themselves. Safe to call any
 // number of times, before or after consumption.
-func (r *Run) Close() { r.cancel() }
+func (r *Run) Close() {
+	r.closeOnce.Do(func() { close(r.closed) })
+	r.cancel()
+}
 
 // Wait blocks until the run finishes and returns its result. If Events has
 // not been consumed, Wait runs the agent itself, discarding events; it is

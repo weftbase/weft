@@ -171,6 +171,7 @@ func TestCloseGiveUpThenRecoverTurnWaitsForTheStillRunningHandler(t *testing.T) 
 // matches the run id and call id whatever session asks — and taken
 // once it returned: no second handler beside the first.
 func TestForkRefusesApprovingAStillRunningCall(t *testing.T) {
+	t.Parallel()
 	outlive(t, 10*time.Millisecond, func(timeout time.Duration) bool {
 		ship := &abandonedTool{release: make(chan struct{})}
 		released := false

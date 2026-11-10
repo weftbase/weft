@@ -33,17 +33,22 @@ func Close(s string) (closed string, valid bool) {
 	out := strings.TrimRight(b.String(), " \t\r\n")
 	// A trailing comma run, or a key with no value, cannot close as is.
 	out = strings.TrimRight(out, ",")
+	// One buffer for the closers: appending them to the string one at a
+	// time copied it once per open bracket — quadratic in the nesting
+	// depth, on bytes a model wrote.
+	buf := make([]byte, 0, len(out)+len("null")+len(stack))
+	buf = append(buf, out...)
 	if strings.HasSuffix(out, ":") {
-		out += "null"
+		buf = append(buf, "null"...)
 	}
 	for i := len(stack) - 1; i >= 0; i-- {
 		if stack[i] == '{' {
-			out += "}"
+			buf = append(buf, '}')
 		} else {
-			out += "]"
+			buf = append(buf, ']')
 		}
 	}
-	return out, json.Valid([]byte(out))
+	return string(buf), json.Valid(buf)
 }
 
 // OpenString reports whether s ends inside an open string — Close's

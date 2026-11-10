@@ -510,8 +510,12 @@ func assistantStep(es []thread.Entry) bool {
 // Rule A: a step whose assistant message cannot be written is retried
 // before its call that is not ReplaySafe runs; when the retry fails
 // too, the call fails closed — the handler never runs and the model
-// reads an error wrapping core.ErrNotDispatched — while a ReplaySafe
-// call in the same step runs. Both backends.
+// reads an error wrapping core.ErrNotDispatched. A ReplaySafe call in
+// the same step passes the gate (it starts no effect), but the refusal
+// also ends the turn's run (dispatchGate: a writer that cannot record
+// starts nothing more), and the two calls start side by side: the
+// sibling runs when it started before the run was canceled and never
+// starts otherwise — at most once, either way. Both backends.
 func TestFailedStepAppendFailsClosed(t *testing.T) {
 	for _, b := range durableBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
@@ -536,8 +540,8 @@ func TestFailedStepAppendFailsClosed(t *testing.T) {
 			if n := len(charge.ran()); n != 0 {
 				t.Fatalf("the handler ran %d times with its step not durable", n)
 			}
-			if len(look.ran()) != 1 {
-				t.Fatalf("the ReplaySafe sibling ran %d times, want once", len(look.ran()))
+			if n := len(look.ran()); n > 1 {
+				t.Fatalf("the ReplaySafe sibling ran %d times, want at most once", n)
 			}
 			if res != nil {
 				if r := toolResult(res, "c1"); !strings.Contains(r, core.ErrNotDispatched.Error()) || !strings.Contains(r, "not durable") {

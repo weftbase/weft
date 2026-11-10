@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/weftbase/weft/core"
+	"github.com/weftbase/weft/core/wefttest"
 	"github.com/weftbase/weft/thread"
 )
 
@@ -177,5 +179,48 @@ func TestBudgetList10k(t *testing.T) {
 	}
 	if seen != 10_000 {
 		t.Fatalf("walked %d sessions, want 10000", seen)
+	}
+}
+
+// budgetTurnPathCopies is how many times a turn may deep-copy what the
+// path already holds, measured in multiples of one large inline file on
+// it: once, for the context the run is handed (rawContext), measured
+// 2026-11-10 at 1.0 — it was 4.0 while the turn's read-only walks (the
+// branch metadata, the compaction trigger's two scans) each took a deep
+// copy of the whole path, file bytes included, under the session lock.
+// The bound leaves room for the allocator's noise, not for a second
+// copy.
+const budgetTurnPathCopies = 1.75
+
+func TestBudgetTurnCopiesThePathOnce(t *testing.T) {
+	ctx := context.Background()
+	const size = 8 << 20
+	agent := core.New(wefttest.Script(wefttest.Say("a"), wefttest.Say("b")), core.Name("budget"))
+	// A window, so the trigger's scans run; far too large to fire.
+	s, err := thread.Create(ctx, thread.Memory(), agent, thread.ContextWindow(1<<40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(msg core.Message) {
+		t.Helper()
+		turn, err := s.Send(ctx, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := turn.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WaitIdle(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(core.UserParts(core.TextPart{Text: "look"}, core.FilePart{MediaType: "image/png", Data: make([]byte, size)}))
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	send(core.User("and?"))
+	runtime.ReadMemStats(&after)
+	if got := float64(after.TotalAlloc-before.TotalAlloc) / size; got > budgetTurnPathCopies {
+		t.Errorf("a text-only turn allocated %.2f× the %d MiB file already on its path, budget %.2f×",
+			got, size>>20, budgetTurnPathCopies)
 	}
 }

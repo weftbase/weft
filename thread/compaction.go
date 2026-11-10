@@ -388,7 +388,7 @@ func (s *Session) applyCompactionLocked(ctx context.Context, c *Compaction) (Com
 	if err := s.compactGateLocked(c.runner); err != nil {
 		return CompactionEntry{}, nil, err
 	}
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only: the plan is checked against it, nothing of it is kept
 	if err != nil {
 		return CompactionEntry{}, nil, err
 	}
@@ -609,7 +609,7 @@ func (s *Session) Uncompact(ctx context.Context) error {
 	if s.running && s.inFlight != nil {
 		return fmt.Errorf("%w: session %s is running a turn; uncompact between turns", ErrBusy, s.header.ID)
 	}
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only: kinds and ids
 	if err != nil {
 		return err
 	}
@@ -1337,7 +1337,7 @@ func (s *Session) maybeAutoCompact(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only under the lock; what leaves it is copied below
 	if err != nil {
 		s.mu.Unlock()
 		return
@@ -1358,7 +1358,10 @@ func (s *Session) maybeAutoCompact(ctx context.Context) {
 			break
 		}
 		if m, ok := contextMessage(e); ok {
-			since = append(since, m) // branch summaries count: the context carries them
+			// Branch summaries count: the context carries them. The
+			// Estimator reads these outside the lock: its own copies,
+			// down to the bytes, never the tree's.
+			since = append(since, deepCloneMessage(m))
 		}
 	}
 	s.mu.Unlock()
@@ -1580,7 +1583,7 @@ func (s *Session) applyAuto(ctx context.Context) error {
 func (s *Session) rateLimitAllows() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only: kinds and reasons are counted
 	if err != nil {
 		return false
 	}

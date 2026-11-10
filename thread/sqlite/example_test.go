@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,6 +23,7 @@ func ExampleOpen() {
 		fmt.Println(err)
 		return
 	}
+	defer func() { _ = st.(io.Closer).Close() }() // the database handle, released
 	ctx := context.Background()
 	created := time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC)
 	if err := st.Create(ctx, thread.Header{ID: "s_demo", Created: created}); err != nil {

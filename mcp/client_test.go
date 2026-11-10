@@ -812,6 +812,61 @@ func TestToolsEmptyNameIsSkippedUnderPrefix(t *testing.T) {
 // both used to import and core.New panicked on the duplicate later.
 // The first occurrence stands, the repeat is reported, and the result
 // registers with New without incident.
+// A remote tool whose name no provider would accept as a function name
+// (a dot, a slash, more than 64 bytes — the prefix counted) is skipped
+// and reported, and the rest of the listing imports: one such tool
+// must not fail every run of the agent.
+func TestToolsSkipsUnportableNamesAndReportsThem(t *testing.T) {
+	ok := func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "x"}}}, nil
+	}
+	long := strings.Repeat("n", 62) // portable alone, too long under the prefix
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "fine-name_1", true, ok)
+		addRemoteTool(srv, long, true, ok)
+		// The Go SDK's server may vet names at AddTool; a non-Go
+		// server's listing is produced by renaming after registration.
+		odd := &sdk.Tool{Name: "zz_odd", Description: "a remote tool", InputSchema: json.RawMessage(foreignSchema)}
+		srv.AddTool(odd, ok)
+		odd.Name = "a.b/c"
+	})
+	defer stop()
+	tools, err := Tools(context.Background(), sess, Prefix("gh_"))
+	var ie *ImportError
+	if !errors.As(err, &ie) || len(ie.Skipped) != 2 {
+		t.Fatalf("err = %v, want an ImportError reporting two skipped tools", err)
+	}
+	for _, sk := range ie.Skipped {
+		if (sk.Name != "a.b/c" && sk.Name != long) || !strings.Contains(sk.Err.Error(), "not a portable tool name") {
+			t.Fatalf("skipped = %+v", sk)
+		}
+	}
+	if len(tools) != 1 || tools[0].Name != "gh_fine-name_1" {
+		t.Fatalf("tools = %v, want the one portable tool", tools)
+	}
+}
+
+// A listing past the bound is refused, not imported: a server whose
+// pages never end cannot grow an import without limit.
+func TestToolsRefusesAnOversizedListing(t *testing.T) {
+	old := maxListedTools
+	maxListedTools = 2
+	defer func() { maxListedTools = old }()
+	ok := func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "x"}}}, nil
+	}
+	sess, stop := served(t, func(srv *sdk.Server) {
+		addRemoteTool(srv, "a", true, ok)
+		addRemoteTool(srv, "b", true, ok)
+		addRemoteTool(srv, "c", true, ok)
+	})
+	defer stop()
+	tools, err := Tools(context.Background(), sess)
+	if err == nil || !strings.Contains(err.Error(), "more than 2 tools") || tools != nil {
+		t.Fatalf("Tools = %v, %v; want the oversized listing refused", tools, err)
+	}
+}
+
 func TestToolsDuplicateNameIsSkippedAndReported(t *testing.T) {
 	ok := func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "x"}}}, nil

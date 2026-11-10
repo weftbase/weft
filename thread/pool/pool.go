@@ -276,10 +276,18 @@ type Pool struct {
 	// Recover and Cancel, which would otherwise read the receipt as left
 	// behind by a process that is gone.
 	creating map[string]int
+	// created is closed, and dropped, whenever a creation's count goes
+	// (uncount): what a Cancel or a Wait that found a child still being
+	// created waits on (creatingWait). Nil while nobody waits.
+	created chan struct{}
 	// waiting holds the abandoned child handlers pumpWhenReturned
 	// already waits on, by their done channel: one waiter per handler,
 	// however many refused pumps ask.
 	waiting map[<-chan struct{}]bool
+	// recovering holds the ledger recoveries in flight, by parent
+	// session and receipt (claimRecovery): one at a time per receipt, so
+	// two callers never both settle it.
+	recovering map[string]chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -330,6 +338,11 @@ type Pool struct {
 	// in settle between the settled phase and the settlement receipt —
 	// the window a Forward read the ledger a step behind in.
 	testHookSettling func(*delegate)
+	// testHookWrapperRead, when set (by this package's tests only), runs
+	// in wrapperLanding before each read of the parent session's tree
+	// for the delegating call's turn — what awaitWrapper must not do on
+	// a timer.
+	testHookWrapperRead func(*delegate)
 	// testHookLedgerRead, when set (by this package's tests only), runs
 	// in Forward between letting the pool lock go and reading the
 	// ledger for a receipt no running child serves — the window a
@@ -388,6 +401,7 @@ func New(max int, opts ...Option) *Pool {
 		calls:         map[uint64]context.CancelFunc{},
 		waiting:       map[<-chan struct{}]bool{},
 		creating:      map[string]int{},
+		recovering:    map[string]chan struct{}{},
 		nestedEnd:     nestedEndWait,
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -508,7 +522,10 @@ func (p *Pool) Submit(ctx context.Context, parent *thread.Session, agent *core.A
 //     records the canceled turn, the receipt settles canceled on the
 //     run's goroutine — Cancel does not wait for it; Wait does — and
 //     a sync delegation's parent model reads SUBAGENT_CANCELED as the
-//     call's result. A run that reaches an approval boundary before
+//     call's result. A resume still queued — a parked child whose
+//     requests were decided, waiting for its slot — has started no
+//     turn: its boundary is closed as a parked child's is (below), its
+//     pending calls denied in its own session, and it settles canceled. A run that reaches an approval boundary before
 //     its cancellation stops it does not park: its boundary is closed
 //     as a parked child's is (below) and it settles canceled. A
 //     resumed sync child canceled before the parent's turn has parked
@@ -622,18 +639,19 @@ func (p *Pool) Cancel(ctx context.Context, parent *thread.Session, receiptID str
 		}
 		p.mu.Unlock()
 		rc, found := lookup(parent, receiptID)
+		making := p.creatingWait(rc.Child)
 		switch {
 		case !found:
 			return fmt.Errorf("%w: %s in session %s", ErrUnknownReceipt, receiptID, parent.ID())
 		case rc.Settled():
 			return &StateError{Receipt: receiptID, State: rc.State}
-		case p.isCreating(rc.Child):
+		case making != nil:
 			// Accepted, its child being created by this pool (the
 			// acceptance comes first): it is about to register, or to
-			// conclude — wait a moment, bounded by ctx, as Wait does,
+			// conclude — wait for that, bounded by ctx, as Wait does,
 			// then cancel what it became.
 			select {
-			case <-time.After(time.Millisecond):
+			case <-making:
 				attempt = -1 // the loop's increment: not a recovery attempt
 				continue
 			case <-ctx.Done():
@@ -650,12 +668,22 @@ func (p *Pool) Cancel(ctx context.Context, parent *thread.Session, receiptID str
 	}
 }
 
-// isCreating reports whether a delegation of this pool is creating the
-// child session child now: accepted, not yet registered or concluded.
-func (p *Pool) isCreating(child string) bool {
+// creatingWait returns what to wait on while a delegation of this pool
+// is creating the child session child — accepted, not yet registered
+// or concluded: a channel closed when a creation's count next goes
+// (the caller then reads the pool again); nil when none is creating
+// it. Read and closed under p.mu, so the end of the creation is never
+// missed, and nothing is read on a timer meanwhile.
+func (p *Pool) creatingWait(child string) <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.creating[child] > 0
+	if p.creating[child] <= 0 {
+		return nil
+	}
+	if p.created == nil {
+		p.created = make(chan struct{})
+	}
+	return p.created
 }
 
 // Wait blocks until the delegation behind receiptID is at rest in
@@ -689,13 +717,15 @@ func (p *Pool) Wait(ctx context.Context, parent *thread.Session, receiptID strin
 				p.forgetSettled(rc.Child)
 				return rc, nil
 			}
-			if !p.isCreating(rc.Child) {
+			making := p.creatingWait(rc.Child)
+			if making == nil {
 				return rc, nil
 			}
 			// Accepted, its child being created (the acceptance comes
-			// first): it is about to register — a moment's wait.
+			// first): it is about to register, or to conclude — wait for
+			// that, then read again.
 			select {
-			case <-time.After(time.Millisecond):
+			case <-making:
 				continue
 			case <-ctx.Done():
 				return Receipt{}, ctx.Err()
@@ -1113,6 +1143,10 @@ func (p *Pool) submit(ctx context.Context, parent *thread.Session, agent *core.A
 		if p.creating[childID]--; p.creating[childID] <= 0 {
 			delete(p.creating, childID)
 		}
+		if p.created != nil { // callers hold p.mu
+			close(p.created)
+			p.created = nil
+		}
 	}
 	created := func() {
 		p.mu.Lock()
@@ -1329,6 +1363,20 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 		t = p.sem.enqueue()
 	}
 	if err := t.wait(ctx); err != nil {
+		if r.resume {
+			// A resume canceled while it queued: the child is still at the
+			// boundary it parked on, the decisions that armed the resume
+			// not yet replayed into it. Close that boundary as a Cancel of
+			// a parked child does (cancelParked) — its pending calls denied
+			// in its own session, never to run on a later approval — before
+			// the delegation settles canceled. A boundary that cannot be
+			// closed (a cut-off child awaiting its recovery) is logged; the
+			// settlement stands either way.
+			if derr := d.child.CancelDelegated(ledger, cancelDenyReason); derr != nil {
+				d.agent.Logger().Warn("thread/pool: a canceled resume's boundary not closed in the child",
+					"receipt", d.receipt, "child", d.child.ID(), "err", derr)
+			}
+		}
 		p.conclude(ledger, d, Canceled, fmt.Sprintf("canceled before a slot was acquired: %v", err),
 			d.canceledText(), true)
 		return outcome{err: err, canceled: p.wasCanceled(d)}

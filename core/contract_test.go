@@ -8195,3 +8195,207 @@ func TestCallToolAfterTheOuterCallSettledIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// blockUntilReleased is a model that ignores its context until release
+// closes: a child run that outlives the Timeout of its Subagent call.
+type blockUntilReleased struct{ release chan struct{} }
+
+func (m blockUntilReleased) Stream(ctx context.Context, _ core.ModelRequest) iter.Seq2[core.ModelEvent, error] {
+	return func(yield func(core.ModelEvent, error) bool) {
+		<-ctx.Done()
+		<-m.release
+		yield(nil, ctx.Err())
+	}
+}
+
+// A parked call's nest closes with the park: a Subagent child the loop
+// gave up on (its Timeout, under ParkUnknown) records no usage into,
+// and emits no Nested event after, a step the run has already
+// returned. The step's SubagentUsage is the caller's once Generate
+// returns (the race detector holds the other half of this).
+func TestParkedSubagentRecordsNothingAfterTheRunReturned(t *testing.T) {
+	release, childDone := make(chan struct{}), make(chan struct{})
+	fast := core.New(wefttest.Script(wefttest.Say("ok")))
+	slow := core.New(blockUntilReleased{release},
+		core.OnRunEnd(func(context.Context, *core.RunResult, error) { close(childDone) }))
+	var mu sync.Mutex
+	finished, late := false, 0
+	parent := core.New(wefttest.Script(wefttest.ToolCalls(
+		wefttest.Call{Name: "fast", Args: `{"prompt":"a"}`},
+		wefttest.Call{Name: "slow", Args: `{"prompt":"b"}`})),
+		core.Subagent("fast", "f", fast),
+		core.Subagent("slow", "s", slow, core.Timeout(50*time.Millisecond)),
+		core.Tap(func(_ context.Context, ev core.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch ev.(type) {
+			case core.RunFinish:
+				finished = true
+			case core.Nested:
+				if finished {
+					late++
+				}
+			}
+		}))
+	res, err := parent.Generate(context.Background(), core.Prompt("go"), core.ParkUnknown())
+	if err != nil || len(res.Pending) != 1 {
+		t.Fatalf("Generate = %v, pending %d; want the slow call parked", err, len(res.Pending))
+	}
+	before := maps.Clone(res.Steps[0].SubagentUsage)
+	close(release)
+	<-childDone
+	if after := res.Steps[0].SubagentUsage; !maps.Equal(before, after) {
+		t.Fatalf("SubagentUsage changed after Generate returned: %v -> %v", before, after)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if late != 0 {
+		t.Fatalf("%d Nested events followed RunFinish", late)
+	}
+}
+
+// Rule 4 under Stream: an event the run delivered reaches a consumer
+// still ranging. A cancellation that lands while the producer waits on
+// the consumer does not turn a successful run into a range that ends
+// with neither RunFinish nor an error.
+func TestStreamDeliversRunFinishToAConsumerStillRanging(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tapped := make(chan struct{})
+	agt := core.New(wefttest.Script(wefttest.Say("hi")),
+		core.Tap(func(_ context.Context, ev core.Event) {
+			if _, ok := ev.(core.RunFinish); ok {
+				close(tapped)
+			}
+		}))
+	run := agt.Stream(ctx, core.Prompt("x"))
+	sawFinish := false
+	var streamErr error
+	for ev, err := range run.Events() {
+		if err != nil {
+			streamErr = err
+			break
+		}
+		switch ev.(type) {
+		case core.StepFinish:
+			<-tapped // RunFinish passed the taps: the producer is on its way to the send
+			cancel()
+			time.Sleep(20 * time.Millisecond)
+		case core.RunFinish:
+			sawFinish = true
+		}
+	}
+	if _, err := run.Wait(); err != nil {
+		t.Fatalf("Wait = %v; the run had finished", err)
+	}
+	if !sawFinish || streamErr != nil {
+		t.Fatalf("RunFinish seen %v, stream error %v; want the finish of a successful run", sawFinish, streamErr)
+	}
+}
+
+// A consumer whose loop body panics leaves the range without yield
+// returning false: the run is canceled all the same, and Wait returns.
+func TestStreamConsumerPanicReleasesTheRun(t *testing.T) {
+	run := core.New(wefttest.Script(wefttest.Say("hi"))).Stream(context.Background(), core.Prompt("x"))
+	func() {
+		defer func() { _ = recover() }()
+		for range run.Events() {
+			panic("consumer bug")
+		}
+	}()
+	done := make(chan struct{})
+	go func() { _, _ = run.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run leaked: Wait never returned after the consumer panicked")
+	}
+}
+
+// Close abandons a run whose consumer is stuck in its loop body: the
+// producer does not stay parked on the next event.
+func TestRunCloseReleasesAProducerWaitingOnItsConsumer(t *testing.T) {
+	run := core.New(wefttest.Script(wefttest.Say("hi"))).Stream(context.Background(), core.Prompt("x"))
+	entered, leave := make(chan struct{}), make(chan struct{})
+	go func() {
+		first := true
+		for range run.Events() {
+			if first {
+				first = false
+				close(entered)
+				<-leave
+			}
+		}
+	}()
+	<-entered
+	run.Close()
+	done := make(chan struct{})
+	go func() { _, _ = run.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not release the producer")
+	}
+	close(leave)
+}
+
+// isPanicsFor is an error whose Is panics for one target only — a
+// target the loop asks about after the error's facts were read.
+type isPanicsFor struct{ target error }
+
+func (isPanicsFor) Error() string { return "boom" }
+func (e isPanicsFor) Is(target error) bool {
+	if target == e.target {
+		panic("Is panicked")
+	}
+	return false
+}
+
+// Rule 1: a panic in the returned error's own methods is the tool's
+// failure wherever the loop reads them — the unknown-outcome reading
+// of a tool that is not ReplaySafe included.
+func TestErrorWhoseIsPanicsOnOutcomeUnknownIsAToolFailure(t *testing.T) {
+	tool := core.Tool("t", "d", func(context.Context, struct{}) (string, error) {
+		return "", isPanicsFor{core.ErrOutcomeUnknown}
+	})
+	agt := core.New(wefttest.Script(
+		wefttest.ToolCalls(wefttest.Call{Name: "t", Args: `{}`}), wefttest.Say("done")), tool)
+	res, err := agt.Generate(context.Background(), core.Prompt("x"))
+	if err != nil {
+		t.Fatalf("Generate = %v; a tool's error is data", err)
+	}
+	var got *core.ToolResultPart
+	for _, m := range res.Messages {
+		for _, p := range m.Content {
+			if r, ok := p.(core.ToolResultPart); ok {
+				got = &r
+			}
+		}
+	}
+	if got == nil || !got.IsError {
+		t.Fatalf("tool result = %+v; want an error result", got)
+	}
+}
+
+type recursiveMap map[string]recursiveMap
+type recursiveList []recursiveList
+
+// A named container that contains itself derives a schema (the
+// recursion is unconstrained where it re-enters), as a recursive
+// struct does; it used to overflow the stack at construction.
+func TestSchemaOfSelfReferentialContainers(t *testing.T) {
+	type in struct {
+		Tree recursiveMap  `json:"tree"`
+		List recursiveList `json:"list"`
+	}
+	def := core.Tool("t", "d", func(context.Context, in) (string, error) { return "ok", nil })
+	raw, err := json.Marshal(def.InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"tree":{"type":"object","additionalProperties":{}}`, `"list":{"type":"array","items":{}}`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("schema = %s; want %s", raw, want)
+		}
+	}
+}

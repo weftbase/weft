@@ -154,7 +154,7 @@ func (s *Session) sightLocked(id string) (runSight, bool) {
 // no run of this session produced any of the context. Callers hold
 // s.mu.
 func (s *Session) lastRunIDLocked() string {
-	path, err := s.pathLocked(s.leaf)
+	path, err := s.walkLocked(s.leaf) // read-only: the turn entries' run ids
 	if err != nil {
 		return ""
 	}

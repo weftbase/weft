@@ -47,6 +47,9 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 			calls  []core.ModelToolCall
 			usage  core.Usage
 			finish genai.FinishReason
+			// blocked is the prompt's block reason: Gemini answers a
+			// blocked prompt with promptFeedback and no candidate.
+			blocked genai.BlockedReason
 		)
 		for {
 			resp, idleHit, ok := reader.next()
@@ -76,6 +79,9 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 					CachedInputTokens: int64(um.CachedContentTokenCount),
 					ReasoningTokens:   int64(um.ThoughtsTokenCount),
 				}
+			}
+			if pf := resp.PromptFeedback; pf != nil && pf.BlockReason != "" {
+				blocked = pf.BlockReason
 			}
 			for _, cand := range resp.Candidates {
 				if cand.FinishReason != "" {
@@ -171,6 +177,13 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 			}
 		}
 		reason, raw := mapFinish(finish, len(calls) > 0)
+		if finish == "" && blocked != "" {
+			// A blocked prompt has no candidate and so no finish
+			// reason: without this it reads as an empty, successful
+			// answer. The vendor's word rides Raw, as a refusal's does
+			// on the anthropic adapter.
+			raw = "blocked:" + string(blocked)
+		}
 		yield(core.ModelFinish{Reason: reason, Usage: usage, Raw: raw}, nil)
 	}
 }

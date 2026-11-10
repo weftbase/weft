@@ -392,6 +392,10 @@ type Session struct {
 	inFlight    *Turn
 	between     bool
 	runnerMoved chan struct{}
+	// houseCancel cancels the runner's between-turn compaction while one
+	// runs (betweenTurnCompact): what a Close that gave up fells when no
+	// turn is in flight. nil otherwise.
+	houseCancel context.CancelCauseFunc
 	queue       []pendingSend
 	// The approval boundary's runner hand-off (ADR 0021 §1–§2): await
 	// holds the parked boundary's captured turn settings — the extra
@@ -407,6 +411,10 @@ type Session struct {
 	// (WatchMirrors), keyed by their owner: each is called, under mu,
 	// when a decision for a mirrored child request has been recorded.
 	mirrorWatch map[any]func(*slog.Logger)
+	// turnLanded is closed, and dropped, when the next turn entry joins
+	// the tree (adoptLocked): what thread/pool waits on for a delegating
+	// call's turn to end (DelegationLanded). Nil while nobody waits.
+	turnLanded chan struct{}
 
 	// The steering state (ADR 0019): steerQueue holds the steers
 	// accepted but not yet drained by a running turn, in acceptance
@@ -1709,8 +1717,10 @@ func (s *Session) writableLocked() error {
 //     hold through Releaser. Its error is Close's result.
 //
 // If ctx ends while Close is waiting, Close gives up: it cancels the
-// running turn, ends every queued Turn with ErrClosed, and returns
-// ctx.Err(). How the canceled turn records depends on what it was
+// running turn — or the automatic compaction the runner is making
+// before or after one, its summarizer's model call included (the
+// compaction is not written) — ends every queued Turn with ErrClosed,
+// and returns ctx.Err(). How the canceled turn records depends on what it was
 // doing (ADR 0032). A turn that had started no call of unknown outcome
 // records as canceled, its unanswered calls carrying the interruption
 // text. A turn felled under ErrShutdown (ctx's cause), or one whose
@@ -1758,6 +1768,11 @@ func (s *Session) Close(ctx context.Context) error {
 		// — each a signal, none a poll.
 		t, aborted := s.inFlight, s.closing == stateAborted
 		cause := s.fellCauseLocked()
+		if aborted {
+			// A Close that gave up left the runner's between-turn
+			// compaction to cancel too, should one have started since.
+			s.fellHousekeepingLocked()
+		}
 		moved := s.runnerMovedLocked()
 		s.mu.Unlock()
 		var landed <-chan struct{}
@@ -1890,6 +1905,9 @@ func (s *Session) abandon(cause error) {
 		ended = append(ended, rw.turn)
 	}
 	t, cause := s.inFlight, s.fellCauseLocked()
+	// The between-turn compaction, when that is what the runner is in:
+	// its summarizer's model call is canceled like a turn's run.
+	s.fellHousekeepingLocked()
 	s.mu.Unlock()
 	for _, e := range ended {
 		e.finish(nil, closed)
@@ -2137,6 +2155,12 @@ func (s *Session) adoptLocked(e Entry) {
 	}
 	if _, ok := e.(TurnEntry); ok {
 		s.turns++
+		if s.turnLanded != nil {
+			// A turn ended: whoever waits on it (DelegationLanded) reads
+			// the tree again. A close, not a call: nothing runs under mu.
+			close(s.turnLanded)
+			s.turnLanded = nil
+		}
 	}
 	// The state log's record (threadrec.go): every accepted entry that
 	// is a session fact is reported as it lands — observation only.

@@ -300,6 +300,19 @@ func TestStreamSafetyRaw(t *testing.T) {
 	}
 }
 
+// A blocked prompt comes back with promptFeedback and no candidate —
+// so no finish reason. It must not read as an empty, successful
+// answer: the block reason rides the finish's Raw.
+func TestStreamBlockedPromptRaw(t *testing.T) {
+	evs, err := collect(fixtureModel(t, "prompt_blocked"), basicReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fin := lastFinish(t, evs); fin.Reason != core.StopEndTurn || fin.Raw != "blocked:SAFETY" {
+		t.Errorf("finish = %+v, want stop + raw blocked:SAFETY", fin)
+	}
+}
+
 func TestStreamIdleTimeout(t *testing.T) {
 	srv := conformance.StallServer(t, stallChunk)
 	m := Model("m", Client(testClient(t, srv.URL)), IdleTimeout(150*time.Millisecond))

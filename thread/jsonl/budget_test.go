@@ -56,6 +56,7 @@ func buildBigSession(tb testing.TB, st thread.Storage, id string, n int) {
 const budgetOpen100k = 30 * time.Second
 
 func TestBudgetOpen100k(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	st, err := jsonl.Open(dir)

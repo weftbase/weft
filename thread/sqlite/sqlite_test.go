@@ -37,6 +37,7 @@ func openFile(t *testing.T) thread.Storage {
 // The conformance table (ADR 0011 §5's executable promises) runs whole
 // against a file database — corruption rows included, through Inject.
 func TestConformanceFile(t *testing.T) {
+	t.Parallel()
 	threadtest.Run(t, openFile)
 }
 
@@ -44,6 +45,7 @@ func TestConformanceFile(t *testing.T) {
 // with the same rules — the reference backends (Memory, jsonl) already
 // pin that backends do not get to differ per location.
 func TestConformanceMemory(t *testing.T) {
+	t.Parallel()
 	threadtest.Run(t, func(t *testing.T) thread.Storage {
 		st, err := sqlite.Open(":memory:")
 		if err != nil {
@@ -556,6 +558,7 @@ func TestNewerEnvelopeHeaderIsNewerFormat(t *testing.T) {
 // or a just-created header with no entries yet (Create and Append are
 // two commits); what it may never see is the mix.
 func TestLoadReadsOneSnapshot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	st, err := sqlite.Open(path)

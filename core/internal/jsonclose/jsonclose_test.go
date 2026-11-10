@@ -1,6 +1,9 @@
 package jsonclose
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The two consumers (partial_json.go, mw/repairjson.go) carry the
 // behavioural weight; this pins the contract the package itself
@@ -29,5 +32,17 @@ func TestClose(t *testing.T) {
 		if got != c.closed || valid != c.valid {
 			t.Errorf("Close(%q) = (%q, %v), want (%q, %v)", c.in, got, valid, c.closed, c.valid)
 		}
+	}
+}
+
+// Close is linear in the nesting depth: the closers are written once,
+// not appended to a string a copy at a time. A document this deep cost
+// seconds (and gigabytes of garbage) under the quadratic append.
+func TestCloseDeepNesting(t *testing.T) {
+	const depth = 200_000
+	got, _ := Close(strings.Repeat("[", depth) + `{"a":`)
+	want := strings.Repeat("[", depth) + `{"a":null}` + strings.Repeat("]", depth)
+	if got != want {
+		t.Fatalf("Close over %d open brackets: %d bytes, want %d", depth, len(got), len(want))
 	}
 }

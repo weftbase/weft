@@ -361,3 +361,202 @@ func TestForkDuringRunningTurn(t *testing.T) {
 		t.Errorf("the fork moved with the original: %v", got)
 	}
 }
+
+// TestForkCarriesRevocationOffThePath: a revocation holds for the whole
+// session, on whatever line it was appended, and a fork copies only a
+// path — so a grant on the copied path that the origin revoked on
+// another line (or after the fork point) is revoked in the fork too,
+// by a revocation entry appended after the copy. A fork is no way to
+// bring a revoked grant back. A revocation the path already holds is
+// not written twice.
+func TestForkCarriesRevocationOffThePath(t *testing.T) {
+	ctx := context.Background()
+	script := func() (*core.Agent, *[]string) {
+		return runAgent(
+			wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command":"go test ./...","dir":"/ws/pkg"}`}),
+			wefttest.Say("done"),
+		)
+	}
+	revocations := func(s *thread.Session, grant string) int {
+		n := 0
+		for _, e := range s.Entries() {
+			if r, ok := e.(thread.GrantRevokedEntry); ok && r.GrantID == grant {
+				n++
+			}
+		}
+		return n
+	}
+	origin, _ := script()
+	s, err := thread.Create(ctx, thread.Memory(), origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Grant(ctx, thread.Grant{Tool: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	grant := s.Leaf()
+	if err := s.Revoke(ctx, grant); err != nil {
+		t.Fatal(err)
+	}
+	revocation := s.Leaf()
+
+	// The fork point is the grant itself: the revocation comes after it.
+	forked, ran := script()
+	f, err := s.Fork(ctx, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := revocations(f, grant); got != 1 {
+		t.Fatalf("the fork holds %d revocations of the grant, want 1", got)
+	}
+	if err := f.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f, err = thread.Open(ctx, s.Storage(), f.ID(), forked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := f.Send(ctx, core.User("test it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if turn.Outcome() != thread.TurnParked || len(f.Pending()) != 1 || len(*ran) != 0 {
+		t.Fatalf("outcome %v, pending %d, ran %q: the revoked grant decided in the fork",
+			turn.Outcome(), len(f.Pending()), *ran)
+	}
+
+	// A fork whose path holds the revocation copies it and adds none.
+	f2, err := s.Fork(ctx, revocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := revocations(f2, grant); got != 1 {
+		t.Fatalf("a fork past the revocation holds %d revocations, want the copied one", got)
+	}
+	if f2.Leaf() != revocation {
+		t.Fatalf("a fork with nothing to settle moved its leaf to %q", f2.Leaf())
+	}
+}
+
+// TestForkCarriesGrantUsesOffThePath: a MaxUses grant's uses are counted
+// over the origin's whole file, and a fork copies only a path — so the
+// fork starts with the count the origin reads at the fork, the uses its
+// copied path lacks carried as grant-use audit entries. A grant used up
+// off the path is used up in the fork (its call parks), and a partly
+// used one has exactly the remainder: forking never refreshes a budget.
+func TestForkCarriesGrantUsesOffThePath(t *testing.T) {
+	ctx := context.Background()
+	call := wefttest.ToolCalls(wefttest.Call{Name: "run", Args: `{"command":"go test ./...","dir":"/ws/pkg"}`})
+	// send runs one turn (and the resume a grant's approval arms) and
+	// reports whether the call parked.
+	send := func(t *testing.T, s *thread.Session) (parked bool) {
+		t.Helper()
+		turn, err := s.Send(ctx, core.User("test it"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for ; turn != nil; turn = turn.Next() {
+			if _, err := turn.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.WaitIdle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return len(s.Pending()) > 0
+	}
+	carried := func(s *thread.Session, grant string) int {
+		n := 0
+		for _, e := range s.Entries() {
+			if a, ok := e.(thread.ApprovalAuditEntry); ok && a.Step == thread.StepGrant && a.GrantID == grant && a.Outcome == "carried" {
+				if a.CallID != "" || a.RunID != "" {
+					t.Fatalf("a carried use names a call or a run: %+v", a)
+				}
+				n++
+			}
+		}
+		return n
+	}
+	for _, tc := range []struct {
+		name      string
+		maxUses   int
+		used      int // by the origin, after the fork point
+		remaining int // what the fork may still match
+	}{
+		{"used up", 1, 1, 0},
+		{"partly used", 3, 1, 2},
+		{"unused", 2, 0, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var script []wefttest.Turn
+			for i := 0; i < tc.used; i++ {
+				script = append(script, call, wefttest.Say("done"))
+			}
+			origin, ran := runAgent(script...)
+			s, err := thread.Create(ctx, thread.Memory(), origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Grant(ctx, thread.Grant{Tool: "run", MaxUses: tc.maxUses}); err != nil {
+				t.Fatal(err)
+			}
+			grant := s.Leaf()
+			for i := 0; i < tc.used; i++ {
+				if send(t, s) {
+					t.Fatalf("the origin's use %d parked", i+1)
+				}
+			}
+			if len(*ran) != tc.used {
+				t.Fatalf("the origin ran %d calls, want %d", len(*ran), tc.used)
+			}
+
+			// The fork point is the grant itself: every use is off the path.
+			f, err := s.Fork(ctx, grant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := carried(f, grant); got != tc.used {
+				t.Fatalf("the fork carries %d uses, want %d", got, tc.used)
+			}
+			if tc.used == 0 && f.Leaf() != grant {
+				t.Fatalf("a fork with no use to carry moved its leaf to %q", f.Leaf())
+			}
+			if err := f.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			script = nil
+			for i := 0; i < tc.remaining; i++ {
+				script = append(script, call, wefttest.Say("done"))
+			}
+			script = append(script, call, wefttest.Say("spare"))
+			forked, ranFork := runAgent(script...)
+			f, err = thread.Open(ctx, s.Storage(), f.ID(), forked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < tc.remaining; i++ {
+				if send(t, f) {
+					t.Fatalf("the fork's use %d of %d remaining parked", i+1, tc.remaining)
+				}
+			}
+			if !send(t, f) {
+				t.Fatalf("the fork matched the grant past its MaxUses: ran %q", *ranFork)
+			}
+			if len(*ranFork) != tc.remaining {
+				t.Fatalf("the fork ran %d calls on the grant, want the remainder %d", len(*ranFork), tc.remaining)
+			}
+			// A fork of the fork reads the same count again: the carried
+			// uses are on its path now, and none is carried twice.
+			f2, err := f.Fork(ctx, grant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := carried(f2, grant); got != tc.maxUses {
+				t.Fatalf("a fork of the used-up fork carries %d uses, want %d", got, tc.maxUses)
+			}
+		})
+	}
+}

@@ -215,7 +215,18 @@ const forkedStop = "forked: the delegation belongs to the session this one was f
 //   - labels, custom entries, the turn ledger (Usage counts the
 //     copied turns, and the fork's run ids continue after them), and
 //     the compaction trigger's last measurement;
-//   - grants and their revocations, with the uses the path recorded;
+//   - grants and their revocations, with the uses the path recorded.
+//     A grant on the path that this session revoked on another line —
+//     or after entryID — is revoked in the fork too (one revocation
+//     entry each, appended after the copy): a revocation holds for the
+//     whole session, and a copy is no way around it. A MaxUses
+//     grant's uses are carried the same way: the fork starts with the
+//     count this session reads for it at the fork — over its whole
+//     file, whatever line recorded the use — as one grant-use audit
+//     entry (Outcome "carried", naming no call) per use the copied
+//     path lacks, so a grant used up here is used up in the fork and a
+//     partly used one has exactly the remainder. From there each
+//     session counts its own;
 //   - an open approval boundary: if the path ends on parked calls the
 //     fork parks on them too, with their requests and whatever
 //     decisions the path holds. Each session then resolves its own
@@ -289,6 +300,23 @@ func (s *Session) Fork(ctx context.Context, entryID string, opts ...SessionOptio
 	path, err := s.pathLocked(entryID)
 	st := s.storageLocked()
 	forkedRun := s.lastRunOnPathLocked(path)
+	// Revocations hold file-wide here (liveGrantsLocked), on whatever
+	// line they were appended: the fork carries each one its copied
+	// path does not.
+	// So do a grant's uses (its MaxUses is counted over the whole file):
+	// the fork carries the ones its copied path does not record.
+	revoked := map[string]bool{}
+	uses := map[string]int{}
+	for _, e := range s.order {
+		switch e := e.(type) {
+		case GrantRevokedEntry:
+			revoked[e.GrantID] = true
+		case ApprovalAuditEntry:
+			if grantUse(e) {
+				uses[e.GrantID]++
+			}
+		}
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -302,7 +330,7 @@ func (s *Session) Fork(ctx context.Context, entryID string, opts ...SessionOptio
 		h.RunMeta = rm
 	}
 
-	entries, err := forkEntries(&cfg, path)
+	entries, err := forkEntries(&cfg, path, revoked, uses, s.header.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -357,8 +385,14 @@ func (s *Session) writeFork(ctx context.Context, st Storage, cfg sessionConfig, 
 // mirrored child requests, each entry attached to the one before it
 // in the copy; then one settling entry per steer still queued, per
 // send accepted and not yet started, and per pool delegation still
-// unsettled on it, minted through the fork's own ids and clock.
-func forkEntries(cfg *sessionConfig, path []Entry) ([]Entry, error) {
+// unsettled on it, and per grant on it that revoked — the origin's
+// revocations, read from its whole file — names and the path does not
+// revoke; then, per MaxUses grant still live, one grant-use audit entry
+// for each use uses — the origin's count per grant, over its whole
+// file — holds beyond the ones the path records. All are minted through
+// the fork's own ids and clock; origin names the forked session in the
+// carried uses' Detail.
+func forkEntries(cfg *sessionConfig, path []Entry, revoked map[string]bool, uses map[string]int, origin string) ([]Entry, error) {
 	entries := make([]Entry, 0, len(path))
 	last := ""
 	for _, e := range path {
@@ -378,8 +412,16 @@ func forkEntries(cfg *sessionConfig, path []Entry) ([]Entry, error) {
 
 	settledSteer := map[string]bool{}
 	settledPool := map[string]bool{}
+	revokedOnPath := map[string]bool{}
+	usesOnPath := map[string]int{}
 	for _, e := range entries {
 		switch e := e.(type) {
+		case GrantRevokedEntry:
+			revokedOnPath[e.GrantID] = true
+		case ApprovalAuditEntry:
+			if grantUse(e) {
+				usesOnPath[e.GrantID]++
+			}
 		case ReceiptEntry:
 			if e.Receipt != "" {
 				settledSteer[e.Receipt] = true
@@ -431,6 +473,13 @@ func forkEntries(cfg *sessionConfig, path []Entry) ([]Entry, error) {
 				continue
 			}
 			settle = PoolReceiptEntry{Receipt: e.ID, Status: PoolCanceled, Child: e.Child, Stop: forkedStop}
+		case GrantEntry:
+			if !revoked[e.ID] || revokedOnPath[e.ID] {
+				continue
+			}
+			// Revoked in the origin, on a line the copy does not hold: a
+			// fork must not be a way to bring a revoked grant back.
+			settle = GrantRevokedEntry{GrantID: e.ID}
 		default:
 			continue
 		}
@@ -445,9 +494,46 @@ func forkEntries(cfg *sessionConfig, path []Entry) ([]Entry, error) {
 		case PoolReceiptEntry:
 			r.ID, r.ParentID, r.Created = id, last, cfg.now()
 			settle = r
+		case GrantRevokedEntry:
+			r.ID, r.ParentID, r.Created = id, last, cfg.now()
+			settle = r
 		}
 		entries = append(entries, settle)
 		last = id
 	}
+	// The uses the origin counts and the copied path does not record: a
+	// grant used — or used up — on another line, or after the fork
+	// point, reads the same count in the fork as in the origin at this
+	// moment (liveGrantsLocked counts these entries, one use each), so a
+	// fork never refreshes a MaxUses budget. A grant without MaxUses has
+	// no budget to keep, and a revoked one is dead whatever its count.
+	// Each carried use is an audit entry of the kind the chain writes
+	// for a match, naming no call and no run: it decided nothing here.
+	for _, e := range copied {
+		g, ok := e.(GrantEntry)
+		if !ok || g.MaxUses <= 0 || revoked[g.ID] || revokedOnPath[g.ID] {
+			continue
+		}
+		// Past MaxUses one more use changes nothing: the count is capped
+		// there, which also bounds what a damaged origin could ask for.
+		missing := min(uses[g.ID], g.MaxUses) - usesOnPath[g.ID]
+		for ; missing > 0; missing-- {
+			id, err := mint()
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, ApprovalAuditEntry{
+				ID: id, ParentID: last, Created: cfg.now(),
+				Step: StepGrant, Outcome: grantUseCarried, GrantID: g.ID,
+				Detail: "use of grant " + g.ID + " recorded off the forked path, in session " + origin,
+			})
+			last = id
+		}
+	}
 	return entries, nil
 }
+
+// grantUseCarried is the Outcome of the grant-use audit entries a fork
+// appends for uses its origin recorded off the copied path (forkEntries):
+// a use counted, no call decided.
+const grantUseCarried = "carried"

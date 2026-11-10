@@ -577,3 +577,157 @@ func TestCompactAfterCloseIsClosedBeforeAnyWork(t *testing.T) {
 		t.Fatalf("Compact after Close = %v, want ErrClosed", err)
 	}
 }
+
+// blockedSummarizer blocks its first call until its context ends or it is
+// released, and says which; later calls answer at once.
+type blockedSummarizer struct {
+	calls    atomic.Int32
+	entered  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+func newBlockedSummarizer() *blockedSummarizer {
+	return &blockedSummarizer{entered: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *blockedSummarizer) Summarize(ctx context.Context, _ thread.SummaryInput) (thread.Summary, error) {
+	if h.calls.Add(1) > 1 {
+		return thread.Summary{Text: "summary"}, nil
+	}
+	close(h.entered)
+	select {
+	case <-ctx.Done():
+		close(h.canceled)
+		return thread.Summary{}, ctx.Err()
+	case <-h.release:
+		return thread.Summary{Text: "summary"}, nil
+	}
+}
+
+func compactionEntries(s *thread.Session) int {
+	n := 0
+	for _, e := range s.Entries() {
+		if _, ok := e.(thread.CompactionEntry); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// TestCloseGivingUpCancelsBetweenTurnCompaction: the compaction the
+// runner makes after a turn runs under no caller's context — the turn
+// has landed — so a Close that gives up must be what cancels its
+// summarizer's model call. Otherwise a summarizer that hangs holds the
+// runner, and no Close could ever seal the session or release its
+// lease. The canceled compaction writes nothing, and the next Close
+// completes.
+func TestCloseGivingUpCancelsBetweenTurnCompaction(t *testing.T) {
+	ctx := context.Background()
+	sum := newBlockedSummarizer()
+	defer close(sum.release)
+	agent := core.New(wefttest.Script(wefttest.Say("a long enough answer to be worth keeping")), core.Name("close-test"))
+	st := thread.Memory()
+	s, err := thread.Create(ctx, st, agent,
+		thread.ContextWindow(100_000), thread.KeepRecent(1), thread.WithSummarizer(sum),
+		thread.TriggerFunc(func(thread.TriggerInput) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.Send(ctx, core.User("a long enough prompt to be worth summarizing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	waitStarted(t, sum.entered)
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := s.Close(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close over a held summarizer = %v, want its deadline", err)
+	}
+	select {
+	case <-sum.canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Close that gave up did not cancel the between-turn compaction's summarizer")
+	}
+	bounded, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel2()
+	if err := s.Close(bounded); err != nil {
+		t.Fatalf("the next Close: %v", err)
+	}
+	if n := compactionEntries(s); n != 0 {
+		t.Fatalf("the canceled compaction wrote %d entries", n)
+	}
+	// The lease is free: another Session writes.
+	s2, err := thread.Open(ctx, st, s.ID(), agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.Claim(ctx); err != nil {
+		t.Fatalf("the closed session still holds its lease: %v", err)
+	}
+}
+
+// TestInterruptCancelsPreRunCompaction: the compaction a turn makes
+// before its run is part of that turn — an Interrupt (or a Close that
+// gives up) fells its summarizer's model call with the turn, instead
+// of taking effect only once the summary has been paid for.
+func TestInterruptCancelsPreRunCompaction(t *testing.T) {
+	ctx := context.Background()
+	sum := newBlockedSummarizer()
+	defer close(sum.release)
+	agent := core.New(wefttest.Script(
+		wefttest.Say("a long enough answer to be worth keeping"),
+		wefttest.Say("the interrupting turn's answer"),
+		wefttest.Say("spare"),
+	), core.Name("close-test"))
+	var fired atomic.Bool
+	s, err := thread.Create(ctx, thread.Memory(), agent,
+		thread.ContextWindow(100_000), thread.KeepRecent(1), thread.WithSummarizer(sum),
+		// Before a run only: the delta is the new prompt. Once.
+		thread.TriggerFunc(func(in thread.TriggerInput) bool {
+			return in.Estimated > 0 && fired.CompareAndSwap(false, true)
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Send(ctx, core.User("a long enough prompt to be worth summarizing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WaitIdle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Send(ctx, core.User("and another long enough prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStarted(t, sum.entered)
+	third, err := s.Send(ctx, core.User("never mind, this instead"), thread.As(thread.Interrupt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sum.canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Interrupt did not cancel the pre-run compaction's summarizer")
+	}
+	if _, err := second.Wait(); err == nil || second.Outcome() != thread.TurnCanceled {
+		t.Fatalf("the interrupted turn = %v, outcome %v; want canceled", err, second.Outcome())
+	}
+	res, err := third.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text() != "the interrupting turn's answer" {
+		t.Fatalf("the interrupting turn answered %q", res.Text())
+	}
+	if n := compactionEntries(s); n != 0 {
+		t.Fatalf("the canceled compaction wrote %d entries", n)
+	}
+}

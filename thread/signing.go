@@ -440,9 +440,11 @@ func (s *Session) RequiresSigned() bool {
 // presented under a recorded nonce fails with ErrReplay, across
 // restarts, because recorded nonces are entries. The same signed
 // decision delivered again is applied — DecideSigned returns (nil,
-// nil) and records nothing — or, after a Branch back to the boundary
-// a resume applied it at, fails with ErrDecisionSpent: a challenge
-// from Request decides there. Request writes nothing for a live
+// nil) and records nothing — or, where the request reads pending
+// again and that decision is not in force (after a Branch back to the
+// boundary a resume applied it at, or off the line it was recorded
+// on), fails with ErrDecisionSpent: a challenge from Request decides
+// there. Request writes nothing for a live
 // request; it may be called any number of times, each call minting
 // another valid challenge for the same request.
 //
@@ -548,11 +550,13 @@ const maxSignedRefusals = 16
 //     whatever became of the call since — unless the signed decision
 //     is that recorded one again (same nonce, key, outcome and every
 //     signed field): a redelivery is applied, (nil, nil), nothing
-//     recorded and nothing audited. After a Branch back to the
-//     boundary a resume applied it at, where the request reads pending
-//     again, the redelivery is ErrDecisionSpent instead — unrecorded,
-//     unaudited, nothing run, as Decide answers an identical unsigned
-//     decision there; a signature over a fresh challenge
+//     recorded and nothing audited. Where the request reads pending
+//     again and the recorded decision is not in force — after a Branch
+//     back to the boundary a resume applied it at, or back to before
+//     the decision's own entry, off the line it was recorded on — the
+//     redelivery is ErrDecisionSpent instead — unrecorded, unaudited,
+//     nothing run: "applied" is never the answer while the boundary
+//     still waits; a signature over a fresh challenge
 //     (Session.Request) decides on that line.
 //   - the request past its own expiry — ErrExpired. The session
 //     enforces the request's expiry, not the one the signature
@@ -711,15 +715,17 @@ func (s *Session) verifySignedLocked(ctx context.Context, sd SignedDecision) sig
 	for i, e := range s.order {
 		if d, ok := e.(ApprovalDecisionEntry); ok && d.Nonce != "" && d.Nonce == sd.Nonce {
 			if sameSigned(d, sd) {
-				if r := v.request; r != nil && r.ID == sd.RequestID && i > s.inheritedIndexLocked() && s.approvalWalkLocked().spent[d.ID] {
-					// Applied by a resume on another line, which a Branch
-					// has since left: the request reads pending here
-					// again. A redelivery must not run the call a second
-					// time, nor read as applied while the boundary waits:
-					// refused, nothing recorded, nothing audited — the
-					// signature is genuine. A fresh challenge decides on
-					// this line.
-					v.err = fmt.Errorf("%w: call %q (request %s): this exact signed decision was already applied on another line; sign a fresh challenge (Session.Request) to decide on this one",
+				if r := v.request; r != nil && r.ID == sd.RequestID && i > s.inheritedIndexLocked() && !decisionInForce(s.approvalWalkLocked(), d) {
+					// The request reads pending here and the recorded
+					// decision is not in force on this line: a resume
+					// applied it on another line, which a Branch has since
+					// left, or it was recorded on a line the leaf has left
+					// and no resume ever applied it. A redelivery must not
+					// run the call a second time, nor read as applied while
+					// the boundary waits: refused, nothing recorded, nothing
+					// audited — the signature is genuine. A fresh challenge
+					// decides on this line.
+					v.err = fmt.Errorf("%w: call %q (request %s): this exact signed decision is on file for another line and is not in force on this one; sign a fresh challenge (Session.Request) to decide here",
 						ErrDecisionSpent, sd.CallID, sd.RequestID)
 					return v
 				}
@@ -823,6 +829,17 @@ func (s *Session) auditSignedRefusalLocked(ctx context.Context, sd SignedDecisio
 		s.agent.Logger().Warn("thread: refused signed decision not audited",
 			"session", s.header.ID, "call", callID, "err", err)
 	}
+}
+
+// decisionInForce reports whether the recorded decision d is among the
+// decisions in force for its call on the leaf's path (walk).
+func decisionInForce(walk approvalWalk, d ApprovalDecisionEntry) bool {
+	for _, have := range walk.decisions[d.CallID] {
+		if have.ID == d.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // sameSigned reports whether a recorded decision is the one sd signs:

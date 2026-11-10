@@ -224,6 +224,7 @@ func assertParkedOnTheMirror(t *testing.T, s *thread.Session, mirror thread.Requ
 func TestPoolDecideRefusesApprovingAStillRunningChildCall(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		t.Run(sc.name, func(t *testing.T) {
+			t.Parallel()
 			outlive(t, 100*time.Millisecond, func(timeout time.Duration) bool {
 				ctx := context.Background()
 				p, s, ship, mirror, ok := stillRunningDelegation(t, sc.st(t), timeout)
@@ -277,6 +278,7 @@ func TestPoolDecideRefusesApprovingAStillRunningChildCall(t *testing.T) {
 func TestRefusedChildReplayKeepsTheDelegationParked(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		t.Run(sc.name, func(t *testing.T) {
+			t.Parallel()
 			outlive(t, 100*time.Millisecond, func(timeout time.Duration) bool {
 				ctx := context.Background()
 				p, s, ship, mirror, ok := stillRunningDelegation(t, sc.st(t), timeout)

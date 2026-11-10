@@ -1057,18 +1057,19 @@ func (f *flushFailStorage) Flush(ctx context.Context, session string) error {
 	return nil
 }
 
-// A steer whose receipt flush fails is written but unsynced: Send
-// reports the failure, and the live session must match what a reopen
-// would do with the same on-disk state (resurrectSteers defers the
-// orphan) — the steer defers and runs, rather than sitting in a
-// queued receipt no running turn will ever drain.
-func TestSteerFlushFailureStillSettles(t *testing.T) {
+// A steer whose receipt flush fails is written but unsynced, and Send
+// reports the failure: a send its caller was told failed never runs.
+// The receipt is dropped again — the rule a queued send's failed
+// acceptance follows — so the message reaches no model, in this
+// session or a reopened one, and a caller that retries delivers it
+// once, not twice.
+func TestSteerFlushFailureIsDropped(t *testing.T) {
 	ctx := context.Background()
 	st := &flushFailStorage{Storage: thread.Memory()}
 	model := wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "echo"}),
 		wefttest.Say("done"),
-		wefttest.Say("followed"),
+		wefttest.Say("spare"),
 	)
 	echo := core.Tool("echo", "", func(_ context.Context, _ struct{}) (string, error) {
 		return "ok", nil
@@ -1097,19 +1098,41 @@ func TestSteerFlushFailureStillSettles(t *testing.T) {
 	if _, err := t1.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	// The receipt reaches a final state and the message runs — exactly
-	// what a reopen would resurrect from the written entry.
-	waitUntil(t, "the flush-failed steer never reached a final receipt state", func() bool {
-		for _, r := range receipts(s) {
-			if r.Status == thread.ReceiptDeferred {
-				return true
-			}
+	if err := s.WaitIdle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The receipt's one fate is "dropped": nothing deferred it into a
+	// follow-up, nothing delivered it, and nothing waits in a queue.
+	var fates []string
+	for _, r := range receipts(s) {
+		if r.Receipt != "" {
+			fates = append(fates, r.Status)
 		}
-		return false
-	})
-	waitUntil(t, "the flush-failed steer never ran its message", func() bool {
-		return steerInContext(s, "steer past the flush failure")
-	})
+	}
+	if len(fates) != 1 || fates[0] != thread.ReceiptDropped {
+		t.Fatalf("the failed steer's receipt fates = %v, want one dropped", fates)
+	}
+	if q := s.Queue(); len(q) != 0 {
+		t.Fatalf("the failed steer left work queued: %+v", q)
+	}
+	if steerInContext(s, "steer past the flush failure") {
+		t.Fatal("a steer whose Send failed reached the model's context")
+	}
+	// The turn it was aimed at kept its line: its answer is the leaf's.
+	if msgs := s.Context(); len(msgs) == 0 || msgs[len(msgs)-1].Text() != "done" {
+		t.Fatalf("the running turn lost its line to the failed steer: %+v", msgs)
+	}
+	// A reopen restores nothing either.
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := thread.Open(ctx, st, s.ID(), agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := s2.Queue(); len(q) != 0 {
+		t.Fatalf("a reopen restored the failed steer: %+v", q)
+	}
 }
 
 // failDeferredStorage fails, once, the Append of a deferred receipt

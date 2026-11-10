@@ -1342,64 +1342,69 @@ func (p *Pool) arm(d *delegate, gen uint64, replay []thread.ApprovalDecisionEntr
 // call parked, when the delegating turn ended without parking it
 // (canceled, failed: there is nothing to resolve), or when ctx ends.
 func (p *Pool) awaitWrapper(ctx context.Context, d *delegate) bool {
-	backoff := 200 * time.Microsecond
 	for {
-		if p.wrapperParked(d) {
+		landed, next := p.wrapperLanding(d)
+		if landed {
 			return true
 		}
-		timer := time.NewTimer(backoff)
+		// The session closes next when its next turn entry lands — read
+		// under the lock the answer above was read by, so no landing is
+		// missed — and the wait reads nothing meanwhile. The re-check is
+		// a backstop only: no resume may hang on a notification.
+		recheck := time.NewTimer(wrapperRecheck)
 		select {
-		case <-timer.C:
-			backoff = min(2*backoff, 10*time.Millisecond)
+		case <-next:
+			recheck.Stop()
+		case <-recheck.C:
 		case <-ctx.Done():
-			timer.Stop()
+			recheck.Stop()
 			return p.wrapperParked(d)
 		}
 	}
 }
 
+// wrapperRecheck is awaitWrapper's backstop: how long it waits on the
+// parent session's turn notification before reading the tree again
+// anyway. The wait lasts as long as the parent's step does — a sibling
+// call may run for minutes — and used to read (and deep-copy) the
+// parent's whole ledger on a timer, a hundred times a second.
+const wrapperRecheck = 30 * time.Second
+
 // wrapperParked reports, without waiting, whether a resolution of d's
 // delegating call can land now: d delegates by no call (a Submit),
 // the parent's turn has been seen to land, or it has landed now.
 func (p *Pool) wrapperParked(d *delegate) bool {
+	landed, _ := p.wrapperLanding(d)
+	return landed
+}
+
+// wrapperLanding is wrapperParked with what to wait on when the answer
+// is no: the parent session's channel for its next turn entry
+// (thread.Session.DelegationLanded). The turn that delegated to the
+// child has ended when the first turn entry after the child's first
+// mirror is on file — one runner per session — and it either lists the
+// wrapper among its pending calls (parked) or does not (the turn died;
+// the call was never parked and never will be). No mirror at all — a
+// boundary the child's expiry settled before anything was mirrored, a
+// parent branch that left the entries behind — is nothing to wait for.
+func (p *Pool) wrapperLanding(d *delegate) (bool, <-chan struct{}) {
 	p.mu.Lock()
 	seen := d.wrapper == "" || d.wrapperSeen
 	p.mu.Unlock()
 	if seen {
-		return true
+		return true, nil
 	}
-	if !wrapperLanded(d.parent, d.child.ID(), d.wrapper) {
-		return false
+	if p.testHookWrapperRead != nil {
+		p.testHookWrapperRead(d)
+	}
+	landed, next := d.parent.DelegationLanded(d.child.ID(), d.wrapper)
+	if !landed {
+		return false, next
 	}
 	p.mu.Lock()
 	d.wrapperSeen = true
 	p.mu.Unlock()
-	return true
-}
-
-// wrapperLanded reports whether the turn that delegated to child has
-// ended: the first turn entry after the child's first mirror is that
-// turn's — one runner per session — and it either lists the wrapper
-// among its pending calls (parked) or does not (the turn died; the
-// call was never parked and never will be).
-func wrapperLanded(parent *thread.Session, child, wrapper string) bool {
-	mirrored := false
-	for _, e := range parent.Entries() {
-		switch e := e.(type) {
-		case thread.ApprovalRequestEntry:
-			if e.Child == child && e.Wrapper == wrapper {
-				mirrored = true
-			}
-		case thread.TurnEntry:
-			if mirrored {
-				return true
-			}
-		}
-	}
-	// No mirror at all — a boundary the child's expiry settled before
-	// anything was mirrored, a parent branch that left the entries
-	// behind: nothing to wait for.
-	return !mirrored
+	return true, nil
 }
 
 // delegateFor returns the bridge for an unsettled receipt's child:

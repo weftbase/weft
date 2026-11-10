@@ -188,7 +188,10 @@ var (
 	// decision (a reconciler, a redelivery) never runs the call a
 	// second time. To run it on this line, decide again with a new
 	// decision — another Who or reason; for a signed one, a fresh
-	// challenge (Session.Request).
+	// challenge (Session.Request). DecideSigned answers the same way a
+	// redelivered signature whose recorded decision is on a line the
+	// leaf has left, applied by a resume or not: the request reads
+	// pending, and the redelivery is not in force for it.
 	ErrDecisionSpent = errors.New("thread: this exact decision was already applied on another line")
 
 	// ErrArgsChanged is returned by DecideSigned when the signed

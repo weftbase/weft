@@ -1151,6 +1151,7 @@ func (s *Session) recoverContinueLocked(ctx, persist context.Context, x cutOff) 
 func (s *Session) recoveryEntries(c core.ToolCallPart, run string, args []byte, settings *core.RunSettings, quorum int, start callStart, rc map[string]reconciled) []Entry {
 	def := s.toolLocked(c.Name)
 	policy := s.replayAtDispatchLocked(c, run)
+	args = storedArgs(args) // the bytes the entry holds, and the hash over them
 	req := ApprovalRequestEntry{
 		CallID: c.ID, Tool: c.Name, Args: slices.Clone(args), ArgsSHA256: hashArgs(args),
 		RunID: run, Run: settings.Clone(), SchemaSHA256: schemaHashOf(def),

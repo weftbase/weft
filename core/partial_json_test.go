@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -297,42 +299,74 @@ func TestClosedPrefixStringsGrowByPrefix(t *testing.T) {
 	if testing.Short() {
 		n = 2000
 	}
+	// The documents come off the one seeded generator in order, so a
+	// failure names the same document every run; the checks, which
+	// are the cost (every prefix of every document, decoded twice),
+	// are spread over the processors.
+	docs := make(chan string, 64)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for doc := range docs {
+				checkClosedPrefixGrowth(t, doc)
+			}
+		}()
+	}
 	for range n {
-		doc := `{"root":` + genPartialDoc(r, 0) + "}"
-		if !json.Valid([]byte(doc)) {
-			t.Fatalf("generator wrote invalid JSON %q", doc)
+		if t.Failed() {
+			break
 		}
-		// The whole document closes to itself, and every partial is a
-		// state the whole grows from (strings by prefix, fields kept).
-		var whole any
-		if err := json.Unmarshal([]byte(doc), &whole); err != nil {
-			t.Fatal(err)
+		docs <- `{"root":` + genPartialDoc(r, 0) + "}"
+	}
+	close(docs)
+	wg.Wait()
+}
+
+// checkClosedPrefixGrowth holds one document to the property. It
+// reports with Errorf: it runs off the test's goroutine.
+func checkClosedPrefixGrowth(t *testing.T, doc string) {
+	if !json.Valid([]byte(doc)) {
+		t.Errorf("generator wrote invalid JSON %q", doc)
+		return
+	}
+	// The whole document closes to itself, and every partial is a
+	// state the whole grows from (strings by prefix, fields kept).
+	var whole any
+	if err := json.Unmarshal([]byte(doc), &whole); err != nil {
+		t.Error(err)
+		return
+	}
+	var full any
+	if err := json.Unmarshal([]byte(closedPrefix(doc)), &full); err != nil || !reflect.DeepEqual(full, whole) {
+		t.Errorf("closedPrefix(%q) = %q, not the document itself", doc, closedPrefix(doc))
+		return
+	}
+	var prev any
+	for i := 0; i <= len(doc); i++ {
+		part := closedPrefix(doc[:i])
+		if part == "" {
+			if prev != nil && !grownFrom(prev, map[string]any{}) {
+				t.Errorf("prefix %q of %q closes to nothing after %#v", doc[:i], doc, prev)
+				return
+			}
+			continue
 		}
-		var full any
-		if err := json.Unmarshal([]byte(closedPrefix(doc)), &full); err != nil || !reflect.DeepEqual(full, whole) {
-			t.Fatalf("closedPrefix(%q) = %q, not the document itself", doc, closedPrefix(doc))
+		var v any
+		if err := json.Unmarshal([]byte(part), &v); err != nil {
+			t.Errorf("prefix %q of %q closes to undecodable %q", doc[:i], doc, part)
+			return
 		}
-		var prev any
-		for i := 0; i <= len(doc); i++ {
-			part := closedPrefix(doc[:i])
-			if part == "" {
-				if prev != nil && !grownFrom(prev, map[string]any{}) {
-					t.Fatalf("prefix %q of %q closes to nothing after %#v", doc[:i], doc, prev)
-				}
-				continue
-			}
-			var v any
-			if err := json.Unmarshal([]byte(part), &v); err != nil {
-				t.Fatalf("prefix %q of %q closes to undecodable %q", doc[:i], doc, part)
-			}
-			if !grownFrom(v, whole) {
-				t.Fatalf("prefix %q of %q closes to %#v, which the whole %#v does not grow from", doc[:i], doc, v, whole)
-			}
-			if prev != nil && !grownFrom(prev, v) {
-				t.Fatalf("prefix %q of %q took back what an earlier one had:\n%#v\nthen\n%#v", doc[:i], doc, prev, v)
-			}
-			prev = v
+		if !grownFrom(v, whole) {
+			t.Errorf("prefix %q of %q closes to %#v, which the whole %#v does not grow from", doc[:i], doc, v, whole)
+			return
 		}
+		if prev != nil && !grownFrom(prev, v) {
+			t.Errorf("prefix %q of %q took back what an earlier one had:\n%#v\nthen\n%#v", doc[:i], doc, prev, v)
+			return
+		}
+		prev = v
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 func TestPoolClosedFirstParksTheDelegatingCall(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		t.Run(sc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			st := sc.st(t)
 			entered := make(chan struct{}, 4)

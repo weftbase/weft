@@ -6,6 +6,54 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+A review pass over the whole repository — correctness, reliability, security and cost — with every confirmed finding fixed and pinned by a test, and a faster local gate.
+
+### Security
+
+- thread: a call whose arguments hold two keys differing only by case, or one key twice, is no longer decided by any grant — it parks for a person. A predicate read one key by its exact name while the tool's decoder (`encoding/json` folds case, last key wins) read the other: `{"command":"go test ./...","Command":"rm -rf /"}` satisfied `ArgGlob("/command", "go test*")` and ran the second value, `StrictInput` or not.
+- thread: `Fork` carries the origin's grant revocations that are off the copied path, so a fork can no longer bring a revoked grant back. It carries a `MaxUses` grant's uses recorded off the copied path too (as grant-use audit entries, outcome `carried`), so a grant used up or partly used in the origin is not refreshed by forking.
+- thread: a `Branch` onto a completed resume's own audit or dispatch entry no longer lets the boundary resume on the approval that resume already spent — the approved call ran a second time on one approval. The call reads pending and takes a new decision.
+- thread: `DecideSigned` no longer answers a redelivered signature as applied while its request reads pending on the current line (after a `Branch` back before the decision); it returns `ErrDecisionSpent` and a fresh challenge decides.
+- mcp: `Tools` refuses a listing of more than 10,000 tools instead of growing the import for as long as a server keeps paginating.
+- mcp (behaviour change): `Tools` skips, and reports in its `*ImportError`, a remote tool whose name — the `Prefix` included — no provider accepts as a function name (anything but ASCII letters, digits, `_` and `-`, or longer than 64 bytes). Such a tool used to import and then fail every model request of the agent that held it; the rest of the listing still imports.
+
+### Fixed
+
+- core: a parked call's nest was never closed, so a `Subagent` child the loop had given up on (its `Timeout`, under `ParkUnknown` — what every `weft/thread` turn runs with) wrote its usage into `RunResult.Steps[i].SubagentUsage` and emitted `Nested` events after the run had returned: a data race on a map the caller holds. The nest now closes with the park.
+- core: under `Stream`, a cancellation landing while the producer waited on the consumer dropped an event the taps and the record had already seen — a successful run could end `Events()` with neither `RunFinish` nor an error (rule 4). A consumer still ranging now receives it.
+- core: a panic (or `runtime.Goexit`, `t.FailNow`) in the body of a `for range run.Events()` loop leaked the run: its goroutine stayed parked, its context and span open, and `Wait` never returned. Leaving the range for any reason now cancels the run. `Run.Close` also releases a producer whose consumer is stuck in its loop body.
+- core: an error whose `Is`/`As` panics only for a target the loop asks about late (`ErrOutcomeUnknown`) crashed the process from the tool goroutine; it is the tool's failure, as rule 1 says. `Agent.CallTool`'s own reads are contained the same way.
+- core: a self-referential named slice or map input type (`type Tree map[string]Tree`) overflowed the stack at `Tool`/`Output` construction; it derives a schema, unconstrained where it re-enters, as a recursive struct does.
+- core: closing truncated JSON (`mw.RepairJSON`, `OutputDecoder.Feed`) was quadratic in nesting depth on bytes a model wrote — seconds and gigabytes of garbage for arguments that are a long run of `[`. It is linear.
+- anthropic: a gap in the stream's content-block indexes (a gateway numbering from one, or stripping a block) silently dropped every tool call after it — a `tool_use` finish with no call. Calls are emitted for the indexes the stream carried.
+- anthropic: a response body that ended cleanly before a stop reason or `message_stop` (a proxy closing mid-stream) was reported as a normal `end_turn` over the partial text, a half-written tool call included. It is an error wrapping `io.ErrUnexpectedEOF` (rule 8).
+- google: a blocked prompt (`promptFeedback.blockReason`, no candidate) read as an empty successful answer; the finish's `Raw` now says `blocked:<reason>`.
+- otel: records a slow (not failing) destination still had queued when `Shutdown`'s context ended were neither exported nor counted, and `Shutdown` did not return `ErrRecordsLost`. They are counted per destination; a record emitted after the chain shut down takes no queue place.
+- thread: a `Close` that gives up, an `Interrupt` and a `Rollback` now cancel the automatic compaction's summarizer call (before a run and between turns) instead of waiting it out; a hung summarizer no longer keeps a session from sealing and releasing its lease.
+- thread (behaviour change): a `Steer` send whose receipt flush fails is dropped, not deferred — a `Send` that returned an error never runs its message, as a queued send already behaved.
+- thread: decision, edit, always-grant and expiry entries vet their minted ids like every other append; a repeating `IDs` function fails the write instead of writing a file that no longer opens.
+- thread: a newly parked request's `Args` are the bytes the session file stores and `ArgsSHA256` hashes exactly those, so the hash matches `Args` before and after a reopen (it stopped matching whenever the model wrote a space or `<`, `>`, `&`). `Request.Args` is therefore compact from the moment of parking; requests parked by earlier builds keep their recorded hash.
+- thread/pool: concurrent recoveries of one unsettled receipt (two `Recover` calls, or `Recover` beside a `Cancel` of an orphan) settle or reattach it once; each used to write a settlement, and the child was billed twice in `Usage.Delegated`.
+- thread/pool: canceling a parked child whose resume was already queued now denies its pending calls in the child session, as canceling a parked child does.
+- thread/jsonl: a `Watch` that had read the lines of an append that then failed and was cut back ends with an error saying the history was cut back, instead of `ErrNotFound` (a cut that removes every line the watcher had read still reads as a replacement; stated on `Watch`).
+- thread/jsonl: `Delete` fsyncs the session directory, so a deleted session does not reappear after a power loss.
+- thread (tests): `TestFailedStepAppendFailsClosed` required the `ReplaySafe` sibling of a refused call to run, but the refusal also ends the run and the two calls start side by side — it failed about one run in sixteen. It asserts what the gate promises: the refused call never runs, the sibling at most once.
+- scripts: the layering guard passed when `go list` itself failed (`layering: ok (0 packages…)`); it fails closed, and lists each module's dependencies once instead of once per package.
+
+### Added
+
+- thread/sqlite: the Storage returned by `Open` implements `io.Closer`; `Close` releases the database handle and its file descriptors (previously held for the life of the process).
+- `make check`: the local gate in one command — vet, lint, layering, the race suite.
+
+### Changed
+
+- thread: a turn deep-copies its path once instead of four times; read-only walks no longer clone the transcript (inline file bytes included) under the session lock.
+- thread/pool: a resume waiting for its delegating call to park, and a `Cancel` or `Wait` on a child still being created, wait on a notification instead of polling; the pool no longer deep-copies the parent session's entries on a timer while a sibling call runs.
+- otel: a record that needs no redaction and is under the content cap is no longer decoded and re-encoded per destination.
+- The gate is faster: `make build`, `vet`, `test`, `offline` and `live` run every workspace module in one `go` invocation (CI calls the same targets), the store × policy test matrices and the independent slow tests run in parallel, and core's JSON-prefix property test spreads its checks over the processors — `make test` went from about two and a half minutes to under one on a 16-thread workstation, with the same tests.
+
 ## 0.24.1 — 2026-11-06
 
 A patch: the bugs the architecture guide's examples found.

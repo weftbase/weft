@@ -438,6 +438,47 @@ func (s *Session) WatchMirrors(owner any, fn func(log *slog.Logger)) {
 	s.mirrorWatch[owner] = fn
 }
 
+// DelegationLanded reports whether the turn that delegated to child
+// under the call wrapper has ended (ADR 0022 §7): the first turn entry
+// after the child's first mirror naming that call is that turn's — one
+// runner per session — whether it parked the call or died without
+// parking it. A session that holds no such mirror at all has nothing
+// to wait for and reads landed: a boundary the child's expiry settled
+// before anything was mirrored, a branch that left the entries behind.
+//
+// When the turn has not landed, next is a channel closed when the
+// session next records a turn entry — read under the same lock as the
+// answer, so a turn that ends after this call always closes it. The
+// pool waits on it instead of reading the tree on a timer; it is the
+// live Session's, as WatchMirrors' notification is. Nothing is copied:
+// the walk reads the tree in place.
+//
+// Pool plumbing (thread/pool); applications never call it.
+func (s *Session) DelegationLanded(child, wrapper string) (landed bool, next <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mirrored := false
+	for _, e := range s.order {
+		switch e := e.(type) {
+		case ApprovalRequestEntry:
+			if e.Child == child && e.Wrapper == wrapper {
+				mirrored = true
+			}
+		case TurnEntry:
+			if mirrored {
+				return true, nil
+			}
+		}
+	}
+	if !mirrored {
+		return true, nil
+	}
+	if s.turnLanded == nil {
+		s.turnLanded = make(chan struct{})
+	}
+	return false, s.turnLanded
+}
+
 // MirrorWatchers returns the owners holding a WatchMirrors
 // notification on this session, in no order: the pools delegating
 // from it (or handed it by Decide, DecideSigned or Recover). A pool

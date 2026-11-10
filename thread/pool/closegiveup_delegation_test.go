@@ -49,6 +49,7 @@ func TestCloseGiveUpSyncDelegationIsNotOfferedAsARetry(t *testing.T) {
 					name += "/recoverturn-first"
 				}
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					closeGiveUpDelegation(t, sc.st(t), shutdown, poolFirst)
 				})
 			}

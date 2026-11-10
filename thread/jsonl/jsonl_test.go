@@ -31,6 +31,7 @@ func open(t *testing.T) thread.Storage {
 // the RawInjector hooks unlock for a backend that holds real files,
 // and the Watch table, which Run adds for a thread.Watcher.
 func TestConformance(t *testing.T) {
+	t.Parallel()
 	threadtest.Run(t, open)
 }
 
