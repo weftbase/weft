@@ -16,6 +16,10 @@ module, ADR 0005).
 - core: a `BeforeDispatch` gate whose error wraps `ErrApprovalRequired` **parks** the call (pending, handler never run) instead of failing it with `ErrNotDispatched` (ADR 0031, 2026-11-10). The core always matched it through the wrapped error; it is now the contract, pinned by `TestBeforeDispatchParkParksTheCall`.
 - thread/pool: a mirrored child request carries the child's key (`ApprovalRequestEntry.IdempotencyKey`, additive; `Request.IdempotencyKey` on the parent names it). The parent's own call to a tool whose child handler still runs parks behind the gate, and with the same arguments, once it has returned, runs under the child's key.
 
+### Security
+
+- thread/pool: `ApproveAlways` on a pool child's mirrored request minted a grant in the **parent** session, bound to the parent's own tool of the same name — another system — whose next matching call then ran unasked; the "always" the person meant never reached the next delegation. The parent now mints nothing for a mirror; the decision's `Always` wish replays into the child, which mints its own grant (`TestApproveAlwaysOnAMirrorMintsNoParentGrant`).
+
 ### Fixed
 
 - thread (tests; no behaviour change): `TestShutdownCauseOnTheTurnContext` read `Ready()` the moment the cut-off turn's `Wait` returned, while the turn's runner was still alive — `Ready` is nil then, as its godoc says — and failed about one run in four under the race detector on two cores (CI's, on a 0.24.1 release commit). It waits for the session to be idle first (`WaitIdle`).

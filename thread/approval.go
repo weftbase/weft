@@ -942,7 +942,12 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 		_, wasDecided := effectiveDecision(before, quorum)
 		all := append(before, e)
 		held[d.CallID] = all
-		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) {
+		// A mirrored child request mints nothing here: the standing
+		// approval is the child's — the decision's Always wish replays
+		// into the child, which mints its own — and a grant on the
+		// parent would bind the parent's own tool of that name, another
+		// system (review finding A1).
+		if eff, ok := effectiveDecision(all, quorum); !wasDecided && ok && eff.Outcome == OutcomeApprove && anyAlways(all) && req.Child == "" {
 			g := alwaysGrant(schemaHashOf(s.toolLocked(req.Tool)), req.Tool, req.Args, e)
 			if id, err = mint(); err != nil {
 				return err
