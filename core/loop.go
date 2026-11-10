@@ -36,7 +36,26 @@ type rblock struct {
 // execute runs the agent loop: model call, tool fan-out, repeat until the
 // model stops requesting tools or the step budget runs out. Every notable
 // moment is reported through emit, which must be safe for concurrent use.
-func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*RunResult, error) {
+//
+// A panic in user code the loop calls on this goroutine is the run's
+// failure, never a crash (ErrRunPanicked): runLoop's guard contains
+// every panic once the run span has started; this outer guard contains
+// the rest — user code reached before the span exists (a model's Info,
+// a UseModel run's middleware constructors) — as a *RunError with no
+// span to end and no OnRunEnd, like any failure before the run starts.
+// Stream runs execute on a goroutine of its own, where nothing of the
+// caller's could recover; Generate gets the same error (R14).
+func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (res *RunResult, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			res, err = nil, &RunError{Err: &PanicError{Value: p, Stack: debug.Stack()}, Result: &RunResult{ID: cfg.id}}
+		}
+	}()
+	return a.runLoop(ctx, cfg, sink)
+}
+
+// runLoop is execute's body; its result is execute's.
+func (a *Agent) runLoop(ctx context.Context, cfg runConfig, sink func(Event)) (outRes *RunResult, outErr error) {
 	// This agent now runs on this context: the ancestry chain grows by
 	// one per nesting level, and a Subagent handler refuses a delegation
 	// whose child is already on it (the cycle guard, ADR 0014).
@@ -191,27 +210,47 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 		}
 		endRunSpan(r, err, end)
 	}
-	// A panic nothing contains — PrepareStep functions are arbitrary
-	// user code; model, tool, and tap panics are contained further down
-	// — must not leak the run span: this guard ends it with the panic
-	// as its outcome and re-panics, so the caller still crashes and the
-	// trace still closes (ADR 0016).
+	// A panic nothing nearer contains — PrepareStep, a ToolSource read,
+	// a StopWhen condition, a SteerFunc are arbitrary user code; model,
+	// tool, and tap panics are contained further down — is the run's
+	// failure (ErrRunPanicked): this guard fails the run through fail,
+	// so the span ends with error.type run_panicked, OnRunEnd sees the
+	// *RunError and the partial transcript rides on it (ADR 0016,
+	// amendment 2026-11-10). It never re-panics: under Stream this is
+	// the producer's own goroutine, and a re-panic would end the process.
+	// A runtime.Goexit (p == nil: a test's FailNow in user code) cannot
+	// be stopped; the span still ends on its way out.
 	var spanEnded bool
 	var res *RunResult
+	var failPanic func(step int, err error) (*RunResult, error)
 	defer func() {
-		if spanEnded {
+		p := recover()
+		if res == nil {
+			res = &RunResult{ID: cfg.id}
+		}
+		if p == nil {
+			if !spanEnded {
+				spanEnded = true
+				endSpan(res, fmt.Errorf("%w: the run's goroutine exited", ErrRunPanicked), runEnd{})
+			}
 			return
 		}
-		p := recover()
-		r := res
-		if r == nil {
-			r = &RunResult{}
+		pe := &PanicError{Value: p, Stack: debug.Stack()}
+		if spanEnded {
+			// The panic came while the run was ending (a user error's
+			// own Is, read to classify the outcome): the span's end was
+			// already under way; the caller still gets the run error.
+			outRes, outErr = nil, &RunError{Step: len(res.Steps), Err: pe, Result: res}
+			return
 		}
-		spanEnded = true
-		endSpan(r, fmt.Errorf("%w: %v", errRunPanicked, p), runEnd{})
-		if p != nil {
-			panic(p)
+		if failPanic == nil {
+			spanEnded = true
+			re := &RunError{Step: len(res.Steps), Err: pe, Result: res}
+			endSpan(res, re, runEnd{})
+			outRes, outErr = nil, re
+			return
 		}
+		outRes, outErr = failPanic(len(res.Steps), pe)
 	}()
 	// Every event passes through here exactly once: the taps observe it
 	// (synchronously, in emission order, on the emitting goroutine), the
@@ -249,8 +288,8 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 	seq := new(atomic.Int64)
 	// The OnRunEnd observers report the run's outcome exactly once —
 	// endRun's undelivered-RunFinish path routes through fail, and the
-	// run must read as ended once, with the failure. They do not run on
-	// the panic path below: a panicked run did not end, it crashed.
+	// run must read as ended once, with the failure. A contained panic
+	// (the guard above) is such a failure: they see its *RunError.
 	observed := false
 	observeRunEnd := func(err error) {
 		if observed {
@@ -280,6 +319,7 @@ func (a *Agent) execute(ctx context.Context, cfg runConfig, sink func(Event)) (*
 		observeRunEnd(re)
 		return nil, re
 	}
+	failPanic = fail
 	// Every successful exit ends here — four sites share the shape, and
 	// a field added to RunFinish must not miss any of them. One check
 	// decides both the event's delivery and the run's outcome: a

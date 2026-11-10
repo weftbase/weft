@@ -6,8 +6,8 @@ import "context"
 // must not block: drain a queue, do not wait on one — the loop calls it
 // between steps, so a source that waits stalls the run. A source with
 // nothing to deliver returns nil. A panic in a SteerFunc fails the run
-// like a panic in a PrepareStep function (the deferred recover ends the
-// run span and re-panics): it is arbitrary user code the caller owns.
+// like a panic in a PrepareStep function (a *RunError wrapping
+// ErrRunPanicked): it is arbitrary user code the caller owns.
 //
 // The returned messages become ordinary transcript messages — the
 // transcript, the record, and the next turn all see them — and are

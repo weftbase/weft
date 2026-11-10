@@ -180,7 +180,7 @@ recorded exception, not the type. The tokens (pinned by
 | `ErrStreamIdle` | `stream_idle` |
 | `ErrUnsupported` | `unsupported` |
 | `ErrModelRequestsDenied` | `model_requests_denied` |
-| `errRunPanicked` (the loop's own, unexported) | `run_panicked` |
+| `ErrRunPanicked` (exported since the 2026-11-10 amendment) | `run_panicked` |
 
 Tool error results: the `ToolError` code (`ORDER_NOT_FOUND`), `timeout`
 for a timed-out call (the loop's timeout error is a typed error with
@@ -749,3 +749,35 @@ destinations never receive the event (`TestPanicStackUnderDevDetail`,
 
 The core imports nothing new (`runtime`, `runtime/debug`, `reflect`
 are stdlib).
+
+## Amendment (2026-11-10 — a contained loop panic is a run failure)
+
+The run guard above ended the run span on an uncontained panic and
+re-panicked, "so the crash still reaches the caller". Under `Stream`
+there is no caller to reach: `Run.Events` runs the loop on a goroutine
+of its own, so a panic in a `PrepareStep` function, a `ToolSource`
+read, a `StopWhen` condition, a `SteerFunc` or a `UseModel` model's
+`Info` ended the process — and every `weft/thread` turn runs under
+`Stream`. The same code had two outcomes depending on where it ran.
+
+Now the guard fails the run instead of re-panicking: the run returns a
+`*RunError` whose cause is a `*PanicError` (`Value`, `Stack`; its
+`Unwrap` is the now exported `ErrRunPanicked`), with the partial
+transcript on `Result` — `Generate`'s return value and `Stream`'s final
+element alike. The span ends exactly as before (`error.type
+run_panicked`; its text, `weft: run panicked: <value>`, is unchanged).
+`OnRunEnd` now fires with that error: a contained panic is an outcome
+like any other failure (the former rule "a crash is not an outcome"
+assumed the crash reached someone). User code reached before the span
+starts (a `UseModel` model's `Info`, its middleware constructors) is
+contained by an outer guard as the same error, with no span and no
+`OnRunEnd`, like any failure before a run starts. A `runtime.Goexit`
+cannot be stopped; the span still ends on its way out. The stack rides
+the Go value only — no span or record gains it.
+
+Model-visible consequence (rule 5): a `Subagent` child run whose loop
+panics no longer unwinds through the delegating tool's handler (which
+read `OUTCOME_UNKNOWN: tool "x" panicked before it answered …` for a
+tool that is not `ReplaySafe`); the child fails like any child run, and
+the parent's model reads `SUBAGENT_FAILED: agent "x" failed at step N:
+weft: run panicked: <value>`. Pinned by `core/panic_stream_test.go`.

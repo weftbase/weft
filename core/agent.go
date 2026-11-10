@@ -177,8 +177,10 @@ func (o prepareStepOption) apply(a *Agent) {
 // transcript in RunResult is never affected; only the request is. It
 // runs before the model seam, so WrapModel middleware sees the
 // prepared request. Several PrepareStep options run in order, each
-// receiving the previous one's result. A nil function is ignored.
-// Like ToolSource, it is one of the two knobs that can break a
+// receiving the previous one's result. A nil function is ignored. A
+// panic in it fails the run with a *RunError wrapping ErrRunPanicked,
+// under Generate and Stream alike. Like ToolSource, it is one of the
+// two knobs that can break a
 // prompt-cache prefix — trim deliberately.
 func PrepareStep(fn func(ctx context.Context, step int, req ModelRequest) (ModelRequest, error)) Option {
 	return prepareStepOption{fn}
@@ -477,9 +479,9 @@ func (o onRunEndOption) apply(a *Agent) {
 // transcript (ADR 0002) — the same value RunError.Result holds; on
 // cancellation err is the RunError wrapping the ctx error. For a
 // Subagent's child run it fires inside the parent's tool call, like
-// the child's events, and res.ID names the child. A run that panics
-// (a PrepareStep function is arbitrary user code) never fires it: the
-// run crashed, it did not end — the panic still reaches the caller.
+// the child's events, and res.ID names the child. A run that fails
+// with a contained panic (ErrRunPanicked: a PrepareStep function is
+// arbitrary user code) fires it like any other failure.
 // Like Tap it observes and cannot change anything (ADR 0006's note:
 // not a third seam — a seam wraps a call, this observes an outcome);
 // like Tap a panic in it is contained and counted (TapPanics).
@@ -804,7 +806,9 @@ func isNilModel(m Model) bool {
 // name fails the run with ErrDuplicateTool and one with a nil entry
 // with ErrNilTool (the runtime analogues of New's duplicate-name
 // panic) rather than silently dropping the second tool or advertising a
-// dereference. A nil function (the default) keeps the static
+// dereference. A panic in the function fails a run with ErrRunPanicked
+// (in a manual Agent.CallTool it reaches CallTool's caller). A nil
+// function (the default) keeps the static
 // construction-time list — Tool/option registration is then the only
 // source of tools, byte-identical to an agent without a source.
 // Manifest and Agent.Tools still report the static construction-time

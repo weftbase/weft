@@ -131,6 +131,37 @@ var (
 	ErrContextOverflow = errors.New("weft: request exceeds the model's context window")
 )
 
+// ErrRunPanicked is the cause of the *RunError a run fails with when
+// user code the loop calls on its own goroutine panics and nothing
+// nearer contains it: a PrepareStep function, a ToolSource read, a
+// StopWhen condition, a SteerFunc, a model middleware's constructor (a
+// UseModel run), a Model's Info or Describe. Model, tool, observer and
+// provider panics are contained where they happen (rules 1 and 7; the
+// run goes on or fails with their own error) and never reach here.
+//
+// The run ends like any other failure: the run span ends with
+// error.type run_panicked, OnRunEnd sees the error (when the span had
+// started), RunError.Result carries the partial transcript, and the
+// error is Generate's return value or Stream's final element alike —
+// a panic on Stream's producer goroutine never crashes the process.
+// A *PanicError underneath carries the panic value and stack.
+var ErrRunPanicked = errors.New("weft: run panicked")
+
+// PanicError is the contained panic under ErrRunPanicked: Value is what
+// the user code panicked with, Stack the panicking goroutine's stack at
+// the point it was recovered. Error reads "weft: run panicked: <value>";
+// the stack is never in the text. errors.Is(err, ErrRunPanicked) holds.
+type PanicError struct {
+	Value any
+	Stack []byte
+}
+
+func (e *PanicError) Error() string { return fmt.Sprintf("%v: %v", ErrRunPanicked, e.Value) }
+
+// Unwrap returns ErrRunPanicked. The panic value is reported, never
+// unwrapped, even when it is an error.
+func (e *PanicError) Unwrap() error { return ErrRunPanicked }
+
 // ErrInvalidRunOption marks a per-run configuration the agent refuses:
 // an unknown tool name in OnlyTools, or a MaxSteps/Parallelism raise
 // (per run they may only lower). Returned wrapped in *RunError before

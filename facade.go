@@ -97,8 +97,10 @@ func UsageLimit(max Usage) Option { return core.UsageLimit(max) }
 // transcript in RunResult is never affected; only the request is. It
 // runs before the model seam, so WrapModel middleware sees the
 // prepared request. Several PrepareStep options run in order, each
-// receiving the previous one's result. A nil function is ignored.
-// Like ToolSource, it is one of the two knobs that can break a
+// receiving the previous one's result. A nil function is ignored. A
+// panic in it fails the run with a *RunError wrapping ErrRunPanicked,
+// under Generate and Stream alike. Like ToolSource, it is one of the
+// two knobs that can break a
 // prompt-cache prefix — trim deliberately.
 func PrepareStep(fn func(ctx context.Context, step int, req ModelRequest) (ModelRequest, error)) Option {
 	return core.PrepareStep(fn)
@@ -284,9 +286,9 @@ func Tap(fn func(ctx context.Context, ev Event)) Option { return core.Tap(fn) }
 // transcript (ADR 0002) — the same value RunError.Result holds; on
 // cancellation err is the RunError wrapping the ctx error. For a
 // Subagent's child run it fires inside the parent's tool call, like
-// the child's events, and res.ID names the child. A run that panics
-// (a PrepareStep function is arbitrary user code) never fires it: the
-// run crashed, it did not end — the panic still reaches the caller.
+// the child's events, and res.ID names the child. A run that fails
+// with a contained panic (ErrRunPanicked: a PrepareStep function is
+// arbitrary user code) fires it like any other failure.
 // Like Tap it observes and cannot change anything (ADR 0006's note:
 // not a third seam — a seam wraps a call, this observes an outcome);
 // like Tap a panic in it is contained and counted (TapPanics).
@@ -391,7 +393,9 @@ func New(m Model, opts ...Option) *Agent { return core.New(m, opts...) }
 // name fails the run with ErrDuplicateTool and one with a nil entry
 // with ErrNilTool (the runtime analogues of New's duplicate-name
 // panic) rather than silently dropping the second tool or advertising a
-// dereference. A nil function (the default) keeps the static
+// dereference. A panic in the function fails a run with ErrRunPanicked
+// (in a manual Agent.CallTool it reaches CallTool's caller). A nil
+// function (the default) keeps the static
 // construction-time list — Tool/option registration is then the only
 // source of tools, byte-identical to an agent without a source.
 // Manifest and Agent.Tools still report the static construction-time
@@ -642,6 +646,28 @@ var (
 	// reachable underneath for errors.As.
 	ErrContextOverflow = core.ErrContextOverflow
 )
+
+// ErrRunPanicked is the cause of the *RunError a run fails with when
+// user code the loop calls on its own goroutine panics and nothing
+// nearer contains it: a PrepareStep function, a ToolSource read, a
+// StopWhen condition, a SteerFunc, a model middleware's constructor (a
+// UseModel run), a Model's Info or Describe. Model, tool, observer and
+// provider panics are contained where they happen (rules 1 and 7; the
+// run goes on or fails with their own error) and never reach here.
+//
+// The run ends like any other failure: the run span ends with
+// error.type run_panicked, OnRunEnd sees the error (when the span had
+// started), RunError.Result carries the partial transcript, and the
+// error is Generate's return value or Stream's final element alike —
+// a panic on Stream's producer goroutine never crashes the process.
+// A *PanicError underneath carries the panic value and stack.
+var ErrRunPanicked = core.ErrRunPanicked
+
+// PanicError is the contained panic under ErrRunPanicked: Value is what
+// the user code panicked with, Stack the panicking goroutine's stack at
+// the point it was recovered. Error reads "weft: run panicked: <value>";
+// the stack is never in the text. errors.Is(err, ErrRunPanicked) holds.
+type PanicError = core.PanicError
 
 // ErrInvalidRunOption marks a per-run configuration the agent refuses:
 // an unknown tool name in OnlyTools, or a MaxSteps/Parallelism raise
@@ -1813,8 +1839,8 @@ func ParseSchema(b json.RawMessage) (*Schema, error) { return core.ParseSchema(b
 // must not block: drain a queue, do not wait on one — the loop calls it
 // between steps, so a source that waits stalls the run. A source with
 // nothing to deliver returns nil. A panic in a SteerFunc fails the run
-// like a panic in a PrepareStep function (the deferred recover ends the
-// run span and re-panics): it is arbitrary user code the caller owns.
+// like a panic in a PrepareStep function (a *RunError wrapping
+// ErrRunPanicked): it is arbitrary user code the caller owns.
 //
 // The returned messages become ordinary transcript messages — the
 // transcript, the record, and the next turn all see them — and are
