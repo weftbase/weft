@@ -16,14 +16,34 @@ import (
 // cutOffDelegation builds a sync delegation whose child's turn a
 // shutdown close of the parent session cut off in-process — the pool
 // stays open — its ship handler still held. It returns the pool, the
-// storage, the parent reopened (s2), the receipt, and release (closes
-// the held handler; idempotent).
+// storage, the parent reopened (s2), the receipt, and release: it lets
+// the held handler go and returns once the handler has returned as the
+// process sees it (thread.AbandonedHandler's channel closed), so a
+// recovery started after release finds no handler running and retries
+// the call by its key. Closing the hold alone only makes the handler's
+// goroutine runnable: a recovery racing it on a busy machine still
+// reads the handler as running and parks the call for a person, which
+// is the product's rule and not what a test of the unparked path wants.
+// release is idempotent.
 func cutOffDelegation(t *testing.T, st thread.Storage) (*pool.Pool, *thread.Session, pool.Receipt, func()) {
 	t.Helper()
 	ctx := context.Background()
 	hold := make(chan struct{})
 	var once sync.Once
-	release := func() { once.Do(func() { close(hold) }) }
+	var returned <-chan struct{} // the held handler's, set once its cut-off landed
+	release := func() {
+		once.Do(func() {
+			close(hold)
+			if returned == nil {
+				return // the helper failed before the cut-off landed
+			}
+			select {
+			case <-returned:
+			case <-time.After(10 * time.Second):
+				t.Error("the released ship handler never returned")
+			}
+		})
+	}
 	t.Cleanup(release)
 	started := make(chan struct{}, 8)
 	var mu sync.Mutex
@@ -69,16 +89,29 @@ func cutOffDelegation(t *testing.T, st thread.Storage) (*pool.Pool, *thread.Sess
 	_, _ = turn.Wait()
 	_ = s.Close(ctx)
 	deadline := time.Now().Add(10 * time.Second)
-	for {
+	childRun := ""
+	for childRun == "" {
 		if rs := pool.Receipts(s); len(rs) == 1 {
-			if _, es, _, err := st.Load(ctx, rs[0].Child); err == nil && turnLanded(es) {
-				break
+			if _, es, _, err := st.Load(ctx, rs[0].Child); err == nil {
+				for _, e := range es {
+					if te, ok := e.(thread.TurnEntry); ok {
+						childRun = te.RunID
+					}
+				}
 			}
+		}
+		if childRun != "" {
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the child's cut-off turn never landed")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	// The cut-off filed the held handler before it was durable: the
+	// process knows it is still running, and release waits on it.
+	if returned = thread.AbandonedHandler(childRun, "s1"); returned == nil {
+		t.Fatalf("the cut-off of run %s left no abandoned handler on file for its held call s1", childRun)
 	}
 	s2, err := thread.Open(ctx, st, s.ID(), core.New(wefttest.Script(wefttest.Say("parent done"), wefttest.Say("parent done")),
 		p.MustWrap("worker", "w", child)))
@@ -185,7 +218,7 @@ func TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				p, s2, rc, release := cutOffDelegation(t, sc.st(t))
-				release() // the abandoned handler returns: the child's recovery retries by key, no park
+				release() // the abandoned handler has returned: the child's recovery retries by key, no park
 				recoverTurn := func() {
 					if _, err := s2.RecoverTurn(ctx); err != nil {
 						t.Fatalf("RecoverTurn: %v", err)

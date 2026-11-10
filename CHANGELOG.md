@@ -6,6 +6,13 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
+## Unreleased
+
+### Fixed
+
+- thread (tests; no behaviour change): `TestShutdownCauseOnTheTurnContext` read `Ready()` the moment the cut-off turn's `Wait` returned, while the turn's runner was still alive — `Ready` is nil then, as its godoc says — and failed about one run in four under the race detector on two cores (CI's, on a 0.24.1 release commit). It waits for the session to be idle first (`WaitIdle`).
+- thread/pool (tests; no behaviour change): two tests of a cut-off delegation assumed an order nothing gives them, and failed on a machine with two cores — CI's, on the 0.24.1 and 0.24.2 release commits. `TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall` let the held handler go and recovered at once: closing the hold only makes the handler's goroutine runnable, so the recovery still read it as running and parked the call for a person, as it must, and the test waited 15 s for a keyed retry that was never due. Its helper's release now returns once the handler has returned as the process sees it (`thread.AbandonedHandler`). `TestCloseGiveUpSyncDelegationIsNotOfferedAsARetry` shared one script among the child's runs, so the child asked for `ship` again once its mirror was denied — a new call under its own key — and that raced the test's own release ("2 ship handlers ran at once"); the child's model now asks once per conversation, so a second handler can only be a second delegation's or a retry. `Recover`'s godoc said a handler the cut-off left running "is waited for by the child's own recovery"; it says what happens: the call parks for a person while the handler runs, and an approval waits for it.
+
 ## 0.24.2 — 2026-11-10
 
 A review pass over the whole repository — correctness, reliability, security and cost — with every confirmed finding fixed and pinned by a test, and a faster local gate.

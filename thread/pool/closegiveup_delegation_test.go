@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"sync"
 	"testing"
@@ -32,9 +33,14 @@ import (
 //     its life: d1 stayed offered as its boundary's dangling call and
 //     nothing ever settled the receipt (L1).
 //
-// The child model's script is shared by every run of the child, so a
-// second "ship" can come from it; the delegation receipts are what
-// say whether the call delegated twice.
+// The child's model asks for "ship" once per conversation (shipOnce),
+// so a second handler can only be a second delegation's or a retry of
+// the call: neither may run beside the first one, still held. A script
+// shared by every run of the child asked for "ship" again once the
+// mirror was denied — a new call of the resumed child, under its own
+// key, that nothing orders behind the held handler: the test raced its
+// own release against it (lost on two cores, "2 ship handlers ran at
+// once"). The delegation receipts say whether the call delegated twice.
 func TestCloseGiveUpSyncDelegationIsNotOfferedAsARetry(t *testing.T) {
 	for _, sc := range poolStores(t) {
 		for _, shutdown := range []bool{false, true} {
@@ -93,12 +99,7 @@ func closeGiveUpDelegation(t *testing.T, st thread.Storage, shutdown, poolFirst 
 		defer cancel()
 		_ = p.Close(cctx)
 	}()
-	child := core.New(wefttest.Script(
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-		wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`}),
-		wefttest.Say("child done"),
-		wefttest.Say("child done"),
-	), ship)
+	child := core.New(shipOnce{}, ship)
 	s, err := thread.Create(ctx, st, core.New(wefttest.Script(
 		wefttest.ToolCalls(wefttest.Call{Name: "worker", ID: "d1", Args: wefttest.Args(struct{ Prompt string }{"go"})}),
 		wefttest.Say("parent done"),
@@ -224,6 +225,22 @@ func closeGiveUpDelegation(t *testing.T, st thread.Storage, shutdown, poolFirst 
 	if m := mostAtOnce(); m > 1 {
 		t.Fatalf("%d ship handlers ran at once", m)
 	}
+}
+
+// shipOnce is a child's model that asks for "ship" (call s1) until its
+// conversation holds a tool result — the call's answer, or a denial —
+// and then says "child done". Stateless: every child session, and
+// every run of one, reads its own conversation, so a fresh delegation
+// ships and a resumed child does not ask again.
+type shipOnce struct{}
+
+func (shipOnce) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[core.ModelEvent, error] {
+	for _, msg := range req.Messages {
+		if msg.Role == core.RoleTool {
+			return wefttest.Script(wefttest.Say("child done")).Stream(ctx, req)
+		}
+	}
+	return wefttest.Script(wefttest.ToolCalls(wefttest.Call{Name: "ship", ID: "s1", Args: `{}`})).Stream(ctx, req)
 }
 
 // waitMirror waits for a mirrored child request on s and returns its

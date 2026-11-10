@@ -100,9 +100,13 @@ import (
 // pool outlived a parent session closed under thread.ErrShutdown: the
 // child turns that close cut off are let go by the pool (their
 // receipts unsettled, no delegate claiming them), and a Recover of the
-// reopened parent recovers them — a handler the cut-off left running
-// is waited for by the child's own recovery. Until then Wait returns
-// such a receipt as it stands, and Cancel recovers it first.
+// reopened parent recovers them. A handler the cut-off left running is
+// not waited for: while it runs (thread.AbandonedHandler) the child's
+// recovery parks its call for a person, mirrored to the parent, and an
+// approval is refused until it has returned; a call whose handler has
+// returned by then is recovered on the ladder (a ReplayKeyed one is
+// retried under its key). Until Recover, Wait returns such a receipt
+// as it stands, and Cancel recovers it first.
 //
 // A child whose agent the pool does not hold is reported with
 // ErrNoAgent and left for a later call; the rest are recovered. The error is every failure joined. Recover on a

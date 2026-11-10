@@ -1572,9 +1572,10 @@ func (p *Pool) run(ctx context.Context, d *delegate, r runHandle, start func(con
 // left unsettled, as the ledger says, and no delegate of this pool
 // claims it any more, so the next Recover of the parent (a reopened
 // parent session included) reads it as left behind and recovers the
-// child on its own ladder (recoverCutOff; a handler the cut-off left
-// running is waited for there), and a Cancel recovers and then cancels
-// it. Kept registered, the delegate would claim the receipt for the
+// child on its own ladder (recoverCutOff; the call of a handler the
+// cut-off left running parks for a person there, and an approval waits
+// for the handler), and a Cancel recovers and then cancels it. Kept
+// registered, the delegate would claim the receipt for the
 // pool's life: Recover would skip it as live, Cancel would stop a run
 // that is over, Wait would read a running receipt nothing settles, and
 // Delegated would never bill it. A closed pool keeps it: Close's drain

@@ -133,6 +133,11 @@ func TestShutdownCauseOnTheTurnContext(t *testing.T) {
 	if _, err := t2.Wait(); !errors.Is(err, thread.ErrShutdown) {
 		t.Fatalf("turn error = %v", err)
 	}
+	// Wait returns when the turn is decided; its runner is alive a
+	// moment longer (between-turn work), and Ready is nil while it is.
+	if err := s.WaitIdle(bg); err != nil {
+		t.Fatal(err)
+	}
 	if r := s.Ready(); len(r) != 1 || r[0].Kind != thread.ReadyRecover || r[0].RunID != t2.RunID() {
 		t.Fatalf("Ready() = %+v", r)
 	}
