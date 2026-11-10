@@ -120,6 +120,27 @@ func returnHandler(ship *keyedShip, r thread.Request) {
 	}
 }
 
+// repeatTimedOut reports whether call id parked because its own
+// handler outlived the test's short Timeout — an unknown outcome, a
+// recovery request: a timing artifact of a loaded machine, and outlive
+// tries again with twice the Timeout. A park with the still-running
+// gate's reason after the first handler returned is a failure.
+func repeatTimedOut(t *testing.T, s *thread.Session, id string) bool {
+	t.Helper()
+	for _, r := range s.Pending() {
+		if r.CallID != id {
+			continue
+		}
+		if r.Recovery {
+			return true
+		}
+		if strings.HasPrefix(r.Reason, "an earlier call of this tool is still running") {
+			t.Fatalf("%s parked by the still-running gate after the first handler returned: %+v", id, r)
+		}
+	}
+	return false
+}
+
 // keyRecords returns the session's key records (StepKey).
 func keyRecords(s *thread.Session) []thread.ApprovalAuditEntry {
 	var out []thread.ApprovalAuditEntry
@@ -156,11 +177,15 @@ func TestRepeatAfterSkipInheritsTheKey(t *testing.T) {
 				if err != nil || rt == nil {
 					t.Fatalf("Decide(deny) = %v, %v", rt, err)
 				}
-				if res, err := rt.Wait(); err != nil || res.Text() != "done" {
-					t.Fatalf("resume = %v, %v", res, err)
+				res, err := rt.Wait()
+				if err != nil {
+					t.Fatal(err)
 				}
-				if gateTimedOut(s) {
+				if gateTimedOut(s) || repeatTimedOut(t, s, "s2") {
 					return false
+				}
+				if res.Text() != "done" {
+					t.Fatalf("resume = %v", res)
 				}
 				keys, most := ship.snapshot()
 				if len(keys) != 2 || keys[1] != keys[0] || keys[0] != r.IdempotencyKey || most != 1 {
@@ -238,11 +263,15 @@ func TestRepeatParksWhileTheFirstHandlerRuns(t *testing.T) {
 						if err != nil || rt == nil {
 							t.Fatalf("Decide(approve) after the handler returned = %v, %v", rt, err)
 						}
-						if res, err := rt.Wait(); err != nil || res.Text() != "done" {
-							t.Fatalf("resume = %v, %v", res, err)
+						res, err := rt.Wait()
+						if err != nil {
+							t.Fatal(err)
 						}
-						if gateTimedOut(s) {
+						if gateTimedOut(s) || repeatTimedOut(t, s, "s2") {
 							return false
+						}
+						if res.Text() != "done" {
+							t.Fatalf("resume = %v", res)
 						}
 						keys, most := ship.snapshot()
 						if len(keys) != 2 || most != 1 || (keys[1] == keys[0]) != tc.inherit {
@@ -379,7 +408,7 @@ func TestForkInheritsOpenUnknownOutcomes(t *testing.T) {
 						if _, err := turn.Wait(); err != nil {
 							t.Fatal(err)
 						}
-						if gateTimedOut(f) {
+						if gateTimedOut(f) || repeatTimedOut(t, f, "f1") || repeatTimedOut(t, f, "s1") {
 							return false
 						}
 						keys, _ := ship.snapshot()
@@ -464,6 +493,9 @@ func TestRepeatRacingTheHandlersReturn(t *testing.T) {
 		if done != nil {
 			<-done
 		}
+		if p := s.Pending(); len(p) == 1 && p[0].Recovery {
+			return false // s2's own handler outlived the short Timeout: again, with twice it
+		}
 		if p := s.Pending(); len(p) == 1 {
 			// The gate won: s2 parked. Its handler has returned now.
 			rt, err := s.Decide(bg, thread.Approve("s2").Bind(p[0]))
@@ -472,6 +504,9 @@ func TestRepeatRacingTheHandlersReturn(t *testing.T) {
 			}
 			if _, err := rt.Wait(); err != nil {
 				t.Fatal(err)
+			}
+			if p := s.Pending(); len(p) == 1 && p[0].Recovery {
+				return false // the approved s2 outlived the short Timeout
 			}
 		}
 		if gateTimedOut(s) {
