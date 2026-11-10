@@ -116,9 +116,11 @@ func argumentBytes(req *sdk.CallToolRequest) json.RawMessage {
 // (core.Name is required) that runs it on a prompt and returns its
 // final text or submitted output, plus the agent's tools, each
 // dispatched through the agent's tool chain (Agent.CallTool) so
-// middleware and approval policy apply — an approval-gated tool
-// answers with the ErrApprovalRequired text rather than running, loud
-// where AddTools refuses outright. Each of those tools' calls runs as the
+// middleware and approval policy apply — an approval-gated tool, or one
+// the agent's ParkSource names (read per call; a source that panics
+// parks every call, failing closed as in a run — ADR 0030), answers
+// with the ErrApprovalRequired text rather than running, loud where
+// AddTools refuses outright. Each of those tools' calls runs as the
 // loop would run it (core.Agent.ServeCall): under the tool's Timeout, else the agent's
 // ("tool X timed out after d"; "OUTCOME_UNKNOWN: …" for a tool that is
 // not ReplaySafe — its handler is abandoned and may still complete),
@@ -256,7 +258,8 @@ func servedCallID(req *sdk.CallToolRequest, key string, state *serveState) strin
 // agent's chain under the run policy (core.Agent.ServeCall): WrapTools
 // middleware runs (mw.Allow, mw.Audit see the call), StrictInput
 // applies at both levels, the tool's Timeout and result cap hold, and a
-// RequireApproval tool returns the ErrApprovalRequired error, which
+// RequireApproval tool (or one the agent's ParkSource names) returns
+// the ErrApprovalRequired error, which
 // becomes an isError result reading `weft: tool call requires approval:
 // tool "x"` — loud, never a bypass.
 func chainHandler(a *core.Agent, t *core.ToolDef, state *serveState) sdk.ToolHandler {
