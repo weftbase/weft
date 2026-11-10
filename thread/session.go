@@ -1716,11 +1716,14 @@ func (s *Session) writableLocked() error {
 //     never held the lease lets go of nobody else's), or the storage's
 //     hold through Releaser. Its error is Close's result.
 //
-// If ctx ends while Close is waiting, Close gives up: it cancels the
+// If ctx ends while Close is waiting — for the turn, or for the
+// session's lock, which a writer holds across a storage call (a hung
+// disk under the dispatch gate's record) — Close gives up: it cancels the
 // running turn — or the automatic compaction the runner is making
 // before or after one, its summarizer's model call included (the
 // compaction is not written) — ends every queued Turn with ErrClosed,
-// and returns ctx.Err(). How the canceled turn records depends on what it was
+// and returns ctx.Err() (when the lock was what it waited for, the
+// cancellation happens once the storage call returns). How the canceled turn records depends on what it was
 // doing (ADR 0032). A turn that had started no call of unknown outcome
 // records as canceled, its unanswered calls carrying the interruption
 // text. A turn felled under ErrShutdown (ctx's cause), or one whose
@@ -1743,7 +1746,15 @@ func (s *Session) writableLocked() error {
 // the turn that is calling it.
 func (s *Session) Close(ctx context.Context) error {
 	for {
-		s.mu.Lock()
+		if !s.lockWithin(ctx) {
+			// The lock is held across a storage write that has not
+			// returned (the dispatch gate's record, a hung disk): give
+			// up now, as the doc says, and fell the turn once the write
+			// returns — nothing can be felled or recorded before (R12,
+			// review finding D2).
+			go s.abandon(context.Cause(ctx))
+			return ctx.Err()
+		}
 		if s.closing == stateSealed {
 			done := s.closeDone
 			s.mu.Unlock()
@@ -1800,6 +1811,31 @@ func (s *Session) Close(ctx context.Context) error {
 			s.abandon(context.Cause(ctx))
 			return ctx.Err()
 		}
+	}
+}
+
+// lockWithin takes s.mu, unless ctx ends first: false then, and the
+// lock is not held (a goroutine left waiting for it lets it go at
+// once). Close waits for the session's lock this way, for a writer may
+// hold it across a storage call that hangs.
+func (s *Session) lockWithin(ctx context.Context) bool {
+	if s.mu.TryLock() {
+		return true
+	}
+	got := make(chan struct{})
+	go func() {
+		s.mu.Lock()
+		close(got)
+	}()
+	select {
+	case <-got:
+		return true
+	case <-ctx.Done():
+		go func() {
+			<-got
+			s.mu.Unlock()
+		}()
+		return false
 	}
 }
 
