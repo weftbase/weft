@@ -135,7 +135,7 @@ func TestGenerateContainsLoopPanic(t *testing.T) {
 			if res != nil {
 				t.Errorf("res = %v, want nil beside the run error", res)
 			}
-			checkRunPanic(t, name, err)
+			_ = checkRunPanic(t, name, err)
 		})
 	}
 }
@@ -151,7 +151,7 @@ func TestOnRunEndSeesContainedPanic(t *testing.T) {
 		}),
 		core.OnRunEnd(func(_ context.Context, _ *core.RunResult, err error) { got = append(got, err) }))
 	_, err := agt.Stream(context.Background(), core.Prompt("hi")).Wait()
-	checkRunPanic(t, "prepare_step", err)
+	_ = checkRunPanic(t, "prepare_step", err)
 	if len(got) != 1 || got[0] != err {
 		t.Errorf("OnRunEnd saw %v, want exactly the run's error %v", got, err)
 	}
