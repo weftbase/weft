@@ -951,7 +951,9 @@ key gets an answer of its own.
   not path order: a `Branch` navigates the conversation, not the world —
   an effect that may have happened on one line may have happened for
   every line. Deterministic from the file: every worker, every reopen,
-  every restart computes the same key (R3).
+  every restart computes the same key (R3). The walk is incremental — the
+  file only grows (T4), so a lookup reads only the entries appended since
+  the last one (`TestEffectIndexIsIncremental`), not the whole file.
 - **Recorded before acting.** When the gate lets a call start under an
   inherited key it appends a key record — an `approval_audit` entry with
   step `key`, naming the call (`call_id`, `entry`), the tool, the

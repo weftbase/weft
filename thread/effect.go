@@ -178,129 +178,153 @@ func (s *Session) inheritsLocked(tool string) bool {
 // effectIndexLocked walks the file once, in order (see the comment at
 // the top of this file). Callers hold s.mu.
 func (s *Session) effectIndexLocked() effectIndex {
-	return s.effectIndexOfLocked(s.order)
+	// Incremental: the file only grows (entries are appended, never
+	// rewritten — T4), so the walk resumes where it stopped, and a
+	// lookup costs the entries appended since — not the whole file.
+	if s.effWalk == nil {
+		s.effWalk = newEffectWalker()
+	}
+	for s.effWalk.n < len(s.order) {
+		s.effWalk.feed(s, s.order[s.effWalk.n])
+		s.effWalk.n++
+	}
+	return s.effWalk.idx
 }
 
-// effectIndexOfLocked is effectIndexLocked over order, a prefix of the
-// file (a Fork reads the file up to its fork point). Callers hold s.mu.
+// effectIndexOfLocked is the walk over order, a prefix of the file (a
+// Fork reads the file up to its fork point), from the start. Callers
+// hold s.mu.
 func (s *Session) effectIndexOfLocked(order []Entry) effectIndex {
-	idx := effectIndex{keys: map[string]string{}, open: map[string]openEffect{}}
-	occEff := map[string]string{} // occurrence → the effect it runs (edits move it)
-	edited := map[string]string{} // occurrence → its edited arguments' canonical hash
-	explicit := map[string]bool{} // occurrence → its key is a key record's
-	inherit := map[string]bool{}  // tool → inheritsLocked, memoized
-	inherits := func(tool string) bool {
-		v, ok := inherit[tool]
-		if !ok {
-			v = s.inheritsLocked(tool)
-			inherit[tool] = v
-		}
-		return v
-	}
-	keyOf := func(occ, entry, callID string) string {
-		if k, ok := idx.keys[occ]; ok {
-			return k
-		}
-		return IdempotencyKey(s.header.ID, entry, callID, edited[occ])
-	}
+	w := newEffectWalker()
 	for _, e := range order {
-		switch e := e.(type) {
-		case MessageEntry:
-			switch e.Message.Role {
-			case core.RoleAssistant:
-				for _, p := range e.Message.Content {
-					c, ok := p.(core.ToolCallPart)
-					if !ok {
-						continue
-					}
-					occ := occurrence(e.ID, c.ID)
-					eff := effectID(c.Name, effectHash(c.Args))
-					occEff[occ] = eff
-					if o, ok := idx.open[eff]; ok && inherits(c.Name) && !explicit[occ] {
-						idx.keys[occ] = o.key
-					}
-				}
-			case core.RoleTool:
-				for _, p := range e.Message.Content {
-					r, ok := p.(core.ToolResultPart)
-					if !ok {
-						continue
-					}
-					entry := s.callAncestorLocked(e.ParentID, r.CallID)
-					if entry == "" {
-						continue
-					}
-					occ := occurrence(entry, r.CallID)
-					eff, ok := occEff[occ]
-					if !ok {
-						continue
-					}
-					key := keyOf(occ, entry, r.CallID)
-					if isOutcomeUnknown(r) {
-						tool, hash, _ := strings.Cut(eff, "\x00")
-						idx.open[eff] = openEffect{key: key, entry: entry, callID: r.CallID, tool: tool, hash: hash}
-					} else if o, ok := idx.open[eff]; ok && o.key == key {
-						delete(idx.open, eff)
-					}
-				}
-			}
-		case ApprovalRequestEntry:
-			switch {
-			case e.Child != "":
-				// A pool child's request mirrored here: a recovery
-				// request opens its effect under the child's key, so the
-				// parent's own identical call inherits it (the pool's
-				// mirror gives the same answer as the child).
-				if e.Recovery && e.IdempotencyKey != "" {
-					hash := effectHash(e.Args)
-					idx.open[effectID(e.Tool, hash)] = openEffect{key: e.IdempotencyKey, callID: e.CallID, tool: e.Tool, hash: hash}
-				}
-			case e.RevisionOf != "":
-				// An edit's revision: the call runs on the edited
-				// arguments — a different effect, under a key of its own
-				// unless that effect is open.
-				entry := s.callAncestorLocked(e.ParentID, e.CallID)
-				if entry == "" {
-					continue
-				}
-				occ := occurrence(entry, e.CallID)
-				hash := effectHash(e.Args)
-				eff := effectID(e.Tool, hash)
-				occEff[occ] = eff
-				edited[occ] = canonicalHash(e.Args)
-				if explicit[occ] {
-					continue
-				}
-				if o, ok := idx.open[eff]; ok && inherits(e.Tool) {
-					idx.keys[occ] = o.key
-				} else {
-					delete(idx.keys, occ)
-				}
-			case e.Recovery:
-				entry := s.callAncestorLocked(e.ParentID, e.CallID)
-				if entry == "" {
-					continue
-				}
-				occ := occurrence(entry, e.CallID)
-				hash := effectHash(e.Args)
-				eff := effectID(e.Tool, hash)
-				occEff[occ] = eff
-				idx.open[eff] = openEffect{key: keyOf(occ, entry, e.CallID), entry: entry, callID: e.CallID, tool: e.Tool, hash: hash}
-			}
-		case ApprovalAuditEntry:
-			if e.Step != StepKey || e.Key == "" {
-				continue
-			}
-			occ := occurrence(e.Entry, e.CallID)
-			idx.keys[occ] = e.Key
-			explicit[occ] = true
-			if _, held := s.byID[e.Entry]; held {
-				occEff[occ] = effectID(e.Tool, e.ArgsSHA256)
-			}
-			idx.open[effectID(e.Tool, e.ArgsSHA256)] = openEffect{key: e.Key, entry: e.Entry, callID: e.CallID, tool: e.Tool, hash: e.ArgsSHA256}
-		}
+		w.feed(s, e)
 	}
-	return idx
+	return w.idx
+}
+
+// effectWalker is the walk's state: the index so far, what it knows of
+// each occurrence, and how many entries of the file it has read.
+type effectWalker struct {
+	idx      effectIndex
+	occEff   map[string]string // occurrence → the effect it runs (edits move it)
+	edited   map[string]string // occurrence → its edited arguments' canonical hash
+	explicit map[string]bool   // occurrence → its key is a key record's
+	n        int               // entries of s.order read (effectIndexLocked)
+}
+
+func newEffectWalker() *effectWalker {
+	return &effectWalker{
+		idx:    effectIndex{keys: map[string]string{}, open: map[string]openEffect{}},
+		occEff: map[string]string{}, edited: map[string]string{}, explicit: map[string]bool{},
+	}
+}
+
+// keyOf is the key occurrence occ runs under so far: inherited or a
+// key record's, else derived.
+func (w *effectWalker) keyOf(s *Session, occ, entry, callID string) string {
+	if k, ok := w.idx.keys[occ]; ok {
+		return k
+	}
+	return IdempotencyKey(s.header.ID, entry, callID, w.edited[occ])
+}
+
+// feed reads one entry of the file, in order. Callers hold s.mu.
+func (w *effectWalker) feed(s *Session, e Entry) {
+	switch e := e.(type) {
+	case MessageEntry:
+		switch e.Message.Role {
+		case core.RoleAssistant:
+			for _, p := range e.Message.Content {
+				c, ok := p.(core.ToolCallPart)
+				if !ok {
+					continue
+				}
+				occ := occurrence(e.ID, c.ID)
+				eff := effectID(c.Name, effectHash(c.Args))
+				w.occEff[occ] = eff
+				if o, ok := w.idx.open[eff]; ok && s.inheritsLocked(c.Name) && !w.explicit[occ] {
+					w.idx.keys[occ] = o.key
+				}
+			}
+		case core.RoleTool:
+			for _, p := range e.Message.Content {
+				r, ok := p.(core.ToolResultPart)
+				if !ok {
+					continue
+				}
+				entry := s.callAncestorLocked(e.ParentID, r.CallID)
+				if entry == "" {
+					continue
+				}
+				occ := occurrence(entry, r.CallID)
+				eff, ok := w.occEff[occ]
+				if !ok {
+					continue
+				}
+				key := w.keyOf(s, occ, entry, r.CallID)
+				if isOutcomeUnknown(r) {
+					tool, hash, _ := strings.Cut(eff, "\x00")
+					w.idx.open[eff] = openEffect{key: key, entry: entry, callID: r.CallID, tool: tool, hash: hash}
+				} else if o, ok := w.idx.open[eff]; ok && o.key == key {
+					delete(w.idx.open, eff)
+				}
+			}
+		}
+	case ApprovalRequestEntry:
+		switch {
+		case e.Child != "":
+			// A pool child's request mirrored here: a recovery
+			// request opens its effect under the child's key, so the
+			// parent's own identical call inherits it (the pool's
+			// mirror gives the same answer as the child).
+			if e.Recovery && e.IdempotencyKey != "" {
+				hash := effectHash(e.Args)
+				w.idx.open[effectID(e.Tool, hash)] = openEffect{key: e.IdempotencyKey, callID: e.CallID, tool: e.Tool, hash: hash}
+			}
+		case e.RevisionOf != "":
+			// An edit's revision: the call runs on the edited
+			// arguments — a different effect, under a key of its own
+			// unless that effect is open.
+			entry := s.callAncestorLocked(e.ParentID, e.CallID)
+			if entry == "" {
+				return
+			}
+			occ := occurrence(entry, e.CallID)
+			hash := effectHash(e.Args)
+			eff := effectID(e.Tool, hash)
+			w.occEff[occ] = eff
+			w.edited[occ] = canonicalHash(e.Args)
+			if w.explicit[occ] {
+				return
+			}
+			if o, ok := w.idx.open[eff]; ok && s.inheritsLocked(e.Tool) {
+				w.idx.keys[occ] = o.key
+			} else {
+				delete(w.idx.keys, occ)
+			}
+		case e.Recovery:
+			entry := s.callAncestorLocked(e.ParentID, e.CallID)
+			if entry == "" {
+				return
+			}
+			occ := occurrence(entry, e.CallID)
+			hash := effectHash(e.Args)
+			eff := effectID(e.Tool, hash)
+			w.occEff[occ] = eff
+			w.idx.open[eff] = openEffect{key: w.keyOf(s, occ, entry, e.CallID), entry: entry, callID: e.CallID, tool: e.Tool, hash: hash}
+		}
+	case ApprovalAuditEntry:
+		if e.Step != StepKey || e.Key == "" {
+			return
+		}
+		occ := occurrence(e.Entry, e.CallID)
+		w.idx.keys[occ] = e.Key
+		w.explicit[occ] = true
+		if _, held := s.byID[e.Entry]; held {
+			w.occEff[occ] = effectID(e.Tool, e.ArgsSHA256)
+		}
+		w.idx.open[effectID(e.Tool, e.ArgsSHA256)] = openEffect{key: e.Key, entry: e.Entry, callID: e.CallID, tool: e.Tool, hash: e.ArgsSHA256}
+	}
 }
 
 // callAncestorLocked returns the id of the nearest assistant message
