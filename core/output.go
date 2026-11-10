@@ -215,13 +215,16 @@ func OutputOf[Out any](res *RunResult) (Out, error) {
 // result) and returns ErrNoOutput when none finished. Never
 // model-visible: the decoder reads the stream and writes nothing back.
 //
-// Cost: every delta rescans the buffered arguments (the close is
-// linear in what has arrived), so a submission's decode cost grows
-// with the square of its size — the price of a fresh partial on every
-// delta. At tool-argument scale (a few KiB) it is noise; a UI feeding
-// very large submissions can trade freshness for linearity by calling
-// Feed less often — the decoder keeps the last good partial across
-// the deltas it skips.
+// Cost: a decode attempt rescans the buffered arguments (the close is
+// linear in what has arrived), so the decoder spaces its attempts:
+// every args delta is decoded while the submission is small (4 KiB),
+// and past that a delta is decoded once the arguments have grown by an
+// eighth since the last attempt. A submission's total decode work is
+// then linear in its size, never its square; a large submission's
+// partials arrive at that spacing (each still the longest closed
+// prefix at its delta, still only growing), and the whole-call
+// ToolStart that follows the deltas is always decoded, so the last
+// partial is the complete submission. Result is exact either way.
 type OutputDecoder[Out any] struct {
 	buf       strings.Builder
 	lastGood  string
@@ -229,7 +232,18 @@ type OutputDecoder[Out any] struct {
 	changed   bool // attempt's verdict, carried to Feed's return
 	closed    bool // a ToolFinish closed the current buffer
 	candidate []byte
+	// scanned counts the buffered bytes every decode attempt read:
+	// the decoder's total work, which a test bounds (S3).
+	scanned int
+	// attemptedAt is the buffer's length at the last decode attempt
+	// (due's spacing); 0 after a reset.
+	attemptedAt int
 }
+
+// outputDecodeEager is the buffered size up to which every args delta
+// is decoded; past it, a delta is decoded once the buffer has grown by
+// an eighth since the last attempt.
+const outputDecodeEager = 4 << 10
 
 // NewOutputDecoder returns a decoder ready to feed a run's events.
 func NewOutputDecoder[Out any]() *OutputDecoder[Out] {
@@ -254,7 +268,7 @@ func (d *OutputDecoder[Out]) Feed(ev Event) (partial Out, ok bool) {
 	case StepStart:
 		d.buf.Reset()
 		d.lastGood = ""
-		d.closed = false
+		d.closed, d.attemptedAt = false, 0
 	case ToolStart:
 		if e.Name == outputToolName {
 			// Calls arrive whole: the assembled args may be the first
@@ -263,7 +277,7 @@ func (d *OutputDecoder[Out]) Feed(ev Event) (partial Out, ok bool) {
 			// the same prefix reports no change.
 			d.buf.Reset()
 			d.buf.Write(cloneRaw(e.Args))
-			d.closed = false
+			d.closed, d.attemptedAt = false, 0
 			d.attempt()
 		}
 	case ToolArgsDelta:
@@ -271,7 +285,9 @@ func (d *OutputDecoder[Out]) Feed(ev Event) (partial Out, ok bool) {
 			return d.partial, false
 		}
 		d.buf.WriteString(e.Args)
-		d.attempt()
+		if d.due() {
+			d.attempt()
+		}
 	case ToolFinish:
 		if e.Name != outputToolName || e.IsError {
 			return d.partial, false
@@ -282,6 +298,16 @@ func (d *OutputDecoder[Out]) Feed(ev Event) (partial Out, ok bool) {
 	return d.partial, d.changed
 }
 
+// due reports whether an args delta's decode attempt is due: always
+// while the buffer is small, then once it has grown by an eighth since
+// the last attempt — geometric spacing, so the attempts' total reading
+// is a constant multiple of the submission (each attempt rescans the
+// whole buffer), never its square.
+func (d *OutputDecoder[Out]) due() bool {
+	n := d.buf.Len()
+	return n <= outputDecodeEager || n-d.attemptedAt >= d.attemptedAt/8
+}
+
 // attempt decodes the buffer's closed prefix, keeping the last good
 // partial on failure. ok is decided on bytes: the prefix must differ
 // from the last one that decoded (Out need not be comparable).
@@ -290,6 +316,8 @@ func (d *OutputDecoder[Out]) attempt() {
 	if d.buf.Len() == 0 {
 		return
 	}
+	d.scanned += d.buf.Len()
+	d.attemptedAt = d.buf.Len()
 	prefix := closedPrefix(d.buf.String())
 	if prefix == "" || prefix == d.lastGood {
 		return
