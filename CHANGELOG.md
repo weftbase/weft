@@ -6,7 +6,7 @@ is pre-1.0; since 0.9.0 a release is one tag for the framework plus
 `core/vX.Y.Z` for the loop module (ADR 0027; before it, one tag per
 module, ADR 0005).
 
-## Unreleased
+## 0.24.2 — 2026-11-10
 
 A review pass over the whole repository — correctness, reliability, security and cost — with every confirmed finding fixed and pinned by a test, and a faster local gate.
 
