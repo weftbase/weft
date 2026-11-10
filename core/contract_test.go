@@ -4572,27 +4572,6 @@ func TestOnRunEndFiresOnCancellation(t *testing.T) {
 	}
 }
 
-// A run that panics did not end — OnRunEnd never fires, and the panic
-// still reaches the caller (the span guard re-panics; the observer
-// must not launder a crash into an outcome).
-func TestOnRunEndDoesNotFireOnPanic(t *testing.T) {
-	calls := 0
-	agt := core.New(wefttest.Script(wefttest.Say("ok")),
-		core.PrepareStep(func(_ context.Context, _ int, req core.ModelRequest) (core.ModelRequest, error) {
-			panic("user code bug")
-		}),
-		core.OnRunEnd(func(context.Context, *core.RunResult, error) { calls++ }))
-	defer func() {
-		if recover() == nil {
-			t.Fatal("the PrepareStep panic should have reached the caller")
-		}
-		if calls != 0 {
-			t.Errorf("OnRunEnd fired %d times on a panicked run; a crash is not an outcome", calls)
-		}
-	}()
-	_, _ = agt.Generate(context.Background(), core.Prompt("hi"))
-}
-
 // A child run's OnRunEnd fires inside the parent's tool call — before
 // the parent's — with the child's own id on res, the same visibility
 // rule as the child's events (ADR 0014).
@@ -6993,12 +6972,17 @@ func TestUserErrorPanicsAreNotProviderPanics(t *testing.T) {
 			t.Errorf("a user error's panic named as a provider's: %s", warns)
 		}
 	})
-	// A model error whose Is panics: the panic reaches the caller, and no
-	// provider panic is counted on the way.
+	// A model error whose Is panics: the run fails with the contained
+	// panic (ErrRunPanicked, never a crash), and no provider panic is
+	// counted on the way.
 	t.Run("Is", func(t *testing.T) {
-		p, agt, warns, _ := run(t, panicIsErr{})
-		if p != "panicIsErr.Is" {
-			t.Errorf("panic = %v, want panicIsErr.Is", p)
+		p, agt, warns, err := run(t, panicIsErr{})
+		if p != nil {
+			t.Fatalf("Generate panicked: %v", p)
+		}
+		var pe *core.PanicError
+		if !errors.As(err, &pe) || pe.Value != "panicIsErr.Is" {
+			t.Errorf("err = %v, want the run's *PanicError with panicIsErr.Is", err)
 		}
 		if n := agt.TapPanics(); n != 0 {
 			t.Errorf("TapPanics = %d, want 0", n)

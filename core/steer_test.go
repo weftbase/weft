@@ -366,23 +366,21 @@ func TestSteeringNilOptionIsNoop(t *testing.T) {
 	}
 }
 
-// A SteerFunc panic reaches the caller like a PrepareStep panic: the
-// span guard re-panics, OnRunEnd never fires — a crash is not an
-// outcome (ADR 0016's rule, applied to the drain point).
-func TestSteeringPanicReachesCaller(t *testing.T) {
+// A SteerFunc panic fails the run like a PrepareStep panic: a
+// *RunError wrapping ErrRunPanicked, which OnRunEnd sees once (ADR
+// 0016's rule, amendment 2026-11-10, applied to the drain point).
+func TestSteeringPanicFailsRun(t *testing.T) {
 	calls := 0
 	agt := core.New(wefttest.Script(wefttest.Say("ok")),
 		core.OnRunEnd(func(context.Context, *core.RunResult, error) { calls++ }))
-	defer func() {
-		if recover() == nil {
-			t.Fatal("the SteerFunc panic should have reached the caller")
-		}
-		if calls != 0 {
-			t.Errorf("OnRunEnd fired %d times on a panicked run; a crash is not an outcome", calls)
-		}
-	}()
-	_, _ = agt.Generate(context.Background(), core.Prompt("hi"), core.Steering(
+	_, err := agt.Generate(context.Background(), core.Prompt("hi"), core.Steering(
 		func(context.Context, core.SteerPoint) []core.Message { panic("user code bug") }))
+	if !errors.Is(err, core.ErrRunPanicked) {
+		t.Errorf("err = %v, want ErrRunPanicked", err)
+	}
+	if calls != 1 {
+		t.Errorf("OnRunEnd fired %d times, want once with the run's failure", calls)
+	}
 }
 
 // A steered conversation's transcript is pinned: a delivered steer is a

@@ -383,7 +383,9 @@ ignore it.
    failure, context cancellation, `MaxSteps`, and a malformed
    tool-source snapshot (`ErrDuplicateTool`, `ErrNilTool`) return an
    error, always `*RunError` with the partial transcript in `.Result`.
-   Use `errors.Is`.
+   So does a panic in loop-level user code (`PrepareStep`, `ToolSource`,
+   `StopWhen`, `Steering`): `ErrRunPanicked`, under `Generate` and
+   `Stream` alike — never a crash. Use `errors.Is`.
 2. **Messages are `role` + typed parts, events are tagged structs**, both
    with a `type` discriminator on the wire (`weft.UnmarshalEvent` restores
    events; unknown types are errors, never drops). Roles: `user`,

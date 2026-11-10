@@ -861,9 +861,9 @@ func TestSpansEmptyReasonKeepsUsage(t *testing.T) {
 	}
 }
 
-// S1: a panic nothing contains — a PrepareStep function is arbitrary
-// user code — ends the run span on its way out; the crash itself still
-// reaches the caller, and the span reports run_panicked.
+// S1: a panic nothing nearer contains — a PrepareStep function is
+// arbitrary user code — fails the run (ErrRunPanicked) and ends the run
+// span, which reports run_panicked.
 func TestSpansRunSpanEndsOnPanic(t *testing.T) {
 	tp := newRecProvider()
 	agt := core.New(wefttest.Script(wefttest.Say("x")),
@@ -871,14 +871,9 @@ func TestSpansRunSpanEndsOnPanic(t *testing.T) {
 		core.PrepareStep(func(_ context.Context, _ int, req core.ModelRequest) (core.ModelRequest, error) {
 			panic("prepare exploded")
 		}))
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("the panic did not reach the caller")
-			}
-		}()
-		_, _ = agt.Generate(context.Background(), core.Prompt("p"))
-	}()
+	if _, err := agt.Generate(context.Background(), core.Prompt("p")); !errors.Is(err, core.ErrRunPanicked) {
+		t.Errorf("err = %v, want ErrRunPanicked", err)
+	}
 	span := tp.find(t, "invoke_agent boom")
 	ended, status, _, events := span.state()
 	if !ended {

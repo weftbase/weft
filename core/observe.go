@@ -858,12 +858,6 @@ func cancelCause(ctx context.Context) string {
 	return ""
 }
 
-// errRunPanicked types the run span's outcome when a panic nothing
-// contains — a PrepareStep function is arbitrary user code — unwinds
-// execute: the guard there ends the span with it and re-panics, so the
-// crash still reaches the caller and the span still ends (ADR 0016).
-var errRunPanicked = errors.New("weft: run panicked")
-
 // errorTypes maps weft's run-level sentinels onto their error.type
 // tokens (ADR 0016): low-cardinality identifiers backends group on,
 // never the sentinel's text. A sentinel missing here reports as
@@ -883,7 +877,7 @@ var errorTypes = []struct {
 	{ErrStreamIdle, "stream_idle"},
 	{ErrUnsupported, "unsupported"},
 	{ErrModelRequestsDenied, "model_requests_denied"},
-	{errRunPanicked, "run_panicked"}, // the loop's own, not a public sentinel
+	{ErrRunPanicked, "run_panicked"},
 }
 
 // runErrorType classifies a run or model error for error.type: the
