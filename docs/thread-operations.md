@@ -932,6 +932,48 @@ build them on `List` + `Delete` (and `pool.Descendants` for children).
 A session grows for as long as it is used, and so does the cost of
 opening it (§9).
 
+### What `Delete` erases
+
+A `Delete` that returns nil has removed the session from everything
+the backend reads and writes — for an erasure request, that is the
+storage's share, not the whole job:
+
+- **jsonl** removes the session's file and fsyncs the directory, so
+  the name does not come back after a power cut. The bytes are no
+  longer reachable through the directory; a process that already had
+  the file open (a `Watch` or a `Load` in flight in another process)
+  can read it until it closes it, and the filesystem's freed blocks
+  are not overwritten.
+- **sqlite** deletes the rows with `secure_delete` on (the deleted
+  cells and every page the delete frees are overwritten with zeros)
+  and then runs `PRAGMA wal_checkpoint(TRUNCATE)`, which copies the
+  zeroed pages over the database file and empties the write-ahead log
+  — whose older frames held every version of the session's pages. A
+  nil return means none of the session's bytes are left in the
+  database file or its `-wal`. The checkpoint cannot finish while
+  another connection reads the log (a watcher, an Inspector, another
+  process's `Load`); it waits up to the busy timeout (30 s) or until
+  `ctx` ends, and then `Delete` returns an error wrapping
+  `sqlite.ErrErasureIncomplete`: the session is deleted (`Load`
+  answers `ErrNotFound`, a second `Delete` too) but its bytes may
+  still be in the log. Call `sqlite.Checkpoint(ctx, st)` once the
+  reader is gone; it fails the same way while one is still there.
+  The cost: every delete in the database (a torn row's, a lock row's)
+  writes zeros over what it frees, and each `Delete` copies the log
+  into the main file and fsyncs it. A database written before this
+  release may still hold earlier deletes' bytes in its free pages —
+  run `VACUUM` on it once.
+- **`thread.Memory()`** drops the session from the map; the bytes are
+  garbage for the Go runtime to reclaim.
+
+No backend reaches what lies outside its own files: backups and
+snapshots of them, copies anyone made (an export, a file sync, a
+replica), the filesystem's journal and freed blocks, the device's own
+remapped sectors, and every record the observability pipeline already
+sent (§13: transcripts and content went to each destination under its
+own content policy — erase there too). Encrypt the volume, or keep
+personal data out of sessions, where that matters.
+
 ## 13. Observability
 
 Every run a session starts carries these as run metadata — on every

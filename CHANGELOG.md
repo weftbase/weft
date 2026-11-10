@@ -8,6 +8,10 @@ module, ADR 0005).
 
 ## Unreleased
 
+### Security
+
+- thread/sqlite (behaviour change): `thread.Delete` erases the session's bytes, not only its rows. The deleted conversation stayed readable on disk with a hex dump — the freed pages kept their cells, and the write-ahead log kept every frame that had ever held them (a test found the deleted text 275 times in the `-wal` while the Storage was open, 25 times in the main file after `Close`). Every connection now runs `secure_delete=ON` (deleted cells and freed pages are zeroed), and `Delete` runs `PRAGMA wal_checkpoint(TRUNCATE)` after its commit, so a nil return means none of the session's bytes are left in the database file or its log. A reader holding the log past the 30 s busy timeout (or `ctx` ending) makes `Delete` return an error wrapping the new `sqlite.ErrErasureIncomplete` — the session is deleted (`Load` answers `ErrNotFound`), its bytes may still be in the log — and the new `sqlite.Checkpoint(ctx, st)` finishes the erasure once the reader is gone. Cost: every delete in the database writes zeros over what it frees, and every `Delete` checkpoints and fsyncs the main file. Migration: a caller that treated any `Delete` error as "nothing deleted" checks `errors.Is(err, sqlite.ErrErasureIncomplete)` and calls `sqlite.Checkpoint` (a retried `Delete` answers `ErrNotFound`); a database written by an earlier build may still hold earlier deletes' bytes in its free pages — `VACUUM` it once. `docs/thread-operations.md` §12 says what `Delete` erases on each backend and what it cannot (backups, copies, the filesystem's blocks).
+
 ### Fixed
 
 - thread (tests; no behaviour change): `TestShutdownCauseOnTheTurnContext` read `Ready()` the moment the cut-off turn's `Wait` returned, while the turn's runner was still alive — `Ready` is nil then, as its godoc says — and failed about one run in four under the race detector on two cores (CI's, on a 0.24.1 release commit). It waits for the session to be idle first (`WaitIdle`).
