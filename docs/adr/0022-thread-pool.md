@@ -738,8 +738,11 @@ nil having stopped a run that was over, `Wait` returned the stale
 `running` at once and `Delegated` never billed it, for the pool's
 life. The pool now lets such a delegate go (a closed pool keeps it:
 its drain owns it), so a `Recover` of the reopened parent recovers the
-child on its own ladder — a handler the cut-off left running is waited
-for there — and `Cancel` recovers it, then cancels it. Nothing re-runs
+child on its own ladder — a handler the cut-off left running is not
+waited for: its call parks for a person there (mirrored to the parent),
+an approval is refused until the handler has returned, and a call whose
+handler has returned by then is recovered on the ladder — and `Cancel`
+recovers it, then cancels it. Nothing re-runs
 recovery automatically: the parent `Session` the delegate held is
 closed, and the reopened one is the application's to hand to
 `Recover`.

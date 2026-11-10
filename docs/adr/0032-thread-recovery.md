@@ -909,3 +909,164 @@ Tests: `TestCutOffDelegateRecoveredUnparkedResolvesTheParentCall`
 (pool first and session first; memory, jsonl, sqlite),
 `TestRecoverResolvesADanglingCallFromItsSettledReceipt`,
 `TestPoolClosedFirstParksTheDelegatingCall` (thread/pool).
+
+## Amendment (2026-11-10 — rule D: the key names the effect; the still-running gate)
+
+**The gap.** A call to a tool that is not `ReplaySafe` times out; its
+handler is abandoned and still running; at the turn's end it parks as a
+recovery request (`reasonStillRunning`); a person denies it (skip) and
+the model reads `OUTCOME_UNKNOWN: tool "ship" may have run; it was
+skipped, not retried: do not repeat it`. If the model asks for `ship`
+again anyway, the new call sits in a new assistant entry, so
+`IdempotencyKey(session, entry, call)` gave it a new key and it ran
+beside the still-running first handler: the tool could not tell it was
+the same effect. The key was deterministic (R3) but named an
+*occurrence*, not an *effect*. Two parts close it: a key that follows the
+effect while its outcome is unknown, and a gate for what a key cannot
+cover — a second handler of the tool, whatever its arguments, while the
+first still runs.
+
+**Key inheritance.** Once a call's outcome is unknown in a session, a
+later call in that session to the same tool with the same canonical
+arguments runs under the earlier call's key, until a call under that
+key gets an answer of its own.
+
+- *Unknown* is read from the journal, never from memory: a recovery
+  request (the session's own, or a pool child's mirrored with its key,
+  below), a tool result reading `OUTCOME_UNKNOWN` (a skipped recovery
+  request — a person's deny, an expiry, an interrupt, a pool cancel),
+  or a key record (below). An answer that is not `OUTCOME_UNKNOWN`, for
+  a call running under the open key (the inherited repeat's own
+  result, a person's `Resolve`, a `Reconcile` "found", a retry that
+  answered), closes it.
+- Only a tool that is not `ReplaySafe` inherits (a tool the agent no
+  longer holds counts as not `ReplaySafe`). A `ReplayKeyed` repeat is
+  then deduplicated by the receiver; a `ReplayNever` repeat at least
+  reaches the receiver under the key the first attempt used.
+- Not every call is keyed on tool + arguments: a deliberate second
+  identical order in a later turn, once the first answered, is a new
+  effect with a key of its own. Inheritance applies only while an
+  unknown outcome is open.
+- The rule is one walk of the file in **file order** (`effectIndex`),
+  not path order: a `Branch` navigates the conversation, not the world —
+  an effect that may have happened on one line may have happened for
+  every line. Deterministic from the file: every worker, every reopen,
+  every restart computes the same key (R3).
+- **Recorded before acting.** When the gate lets a call start under an
+  inherited key it appends a key record — an `approval_audit` entry with
+  step `key`, naming the call (`call_id`, `entry`), the tool, the
+  effect-canonical argument hash (`args_sha256`) and the `key` — beside
+  its dispatch record, flushed before the handler runs. A restart, a
+  reopen, a resume and a recovery retry of that call read the key from
+  the record (`stepKeyLocked`: a key record wins over the walk).
+  `Request.IdempotencyKey` and `core.Call.IdempotencyKey` name it.
+- **Format 7.** A key record is written with `"v":7`: a format-6 reader
+  (0.24) refuses the session (`ErrNewerFormat`) instead of retrying the
+  call under its occurrence key. Sessions without one keep their
+  versions.
+
+**Canonical arguments** (`effectHash`, pinned by
+`TestEffectHashCanonical`): the arguments the call runs on — an edit's
+revision's edited arguments, a recovery retry's recorded ones — decoded
+as one JSON value and encoded again with object keys sorted,
+insignificant space dropped, strings in one escaping, and every number
+by its exact value (`1`, `1.0`, `1e0`, `10e-1` are one number; `0.5`,
+`0.50`, `5e-1` another; exact, not float64: two 23-digit integers that
+differ in the last digit stay two). A number whose exponent has more than
+three digits keeps its spelling (no expansion work bomb; two spellings of
+it are two effects — the safe side for identity is "same only when
+provably the same"). `"1"` (a string) is not `1`; `null` is not an absent
+field (a tool may read them differently). Bytes that are not one JSON
+value hash as they are. Edited arguments matching an open effect inherit
+its key instead of the edited-arguments key (ADR 0031 decision 2): they
+are that effect.
+
+**Fork inherits** the origin's open unknown outcomes. The fork's history
+holds the call whose outcome is unknown: a repeat of it in the fork is
+the same effect in the world, so it must reach the receiver under the
+same key. `Fork` appends a key record, with the origin's key, for every
+effect open at the fork point and for every copied call that may run
+again under its key — no result on the copied path, and dispatched,
+parked as a recovery request, or running under an inherited key. This
+also closes a gap the review found in the fork itself: a fork derived
+every copied call's key from its own session id, so a fork's
+`RecoverTurn` retried a cut-off `ReplayKeyed` call under a key the
+receiver never saw, asked `Reconcile` under it (answer: "missing", so the
+call reran), and a person's retry of a copied recovery request did the
+same. A call that never started and inherits nothing — an ordinary
+pending request — keeps a key of its own in the fork, as before (ADR
+0031: a forked call is the fork's).
+
+**The still-running gate.** While an abandoned handler of a tool that is
+not `ReplaySafe` still runs in this process, for a call this session
+holds a recovery request of (its own, a reopen's, a fork's copy, or a
+pool child's mirrored here), a new call to that tool in the session
+parks for a person, whatever its arguments, with the pinned reason `an
+earlier call of this tool is still running: its handler was abandoned
+and has not returned; approve once it has returned, deny to skip this
+call`. The gate is the dispatch gate's (rule A), checked before the
+dispatch record, so a gated call never started. It parks through the
+core's approval boundary (ADR 0031's 2026-11-10 amendment: a gate error
+wrapping `ErrApprovalRequired` parks). Like a delegated call it goes
+straight to the park: no grant and no Approver is consulted — either
+would only run it beside the handler. A call dispatched with `CallTool`
+by a handler is held the same way; the core reads that park as the
+outer call's failure (a dispatched call is never parked for one). The
+gate is in-process state only: a restart ends every abandoned handler,
+and the call becomes an ordinary parked request. `ReplaySafe` tools are
+never gated, and a gated tool's siblings of other tools run.
+
+What a person's decision means for a gated call:
+
+| Decision | While the earlier handler runs | Once it has returned |
+|---|---|---|
+| Approve, ApproveAlways | refused, `ErrStillRunning`, nothing recorded | runs; same canonical arguments as an open effect → under its key |
+| Edit | refused, `ErrStillRunning` (an edit approves the revision) | the revision runs on the edited arguments, inheriting when they match an open effect |
+| Deny | taken: the model reads the ordinary `DENIED: <reason>` — true, the call never started | same |
+| Resolve, ResolveError | taken: the supplied result is the call's | same |
+| Expiry, an interrupt, a pool cancel | a deny of its channel, as for any ordinary request | same |
+
+`Decide` refuses an approval or an edit of any of the session's own
+requests (not only gated ones) while an abandoned handler of the same
+tool runs: approving would run the call beside it, the hazard the gate
+exists for. A mirrored child request is the child's to refuse, as
+before (the release-gate amendment, P1-B: the child refuses the replay,
+the pool keeps the delegation parked and replays once the handler has
+returned).
+
+**Through the pool's mirror.** A mirror of a child's request now carries
+the child's key (`ApprovalRequestEntry.IdempotencyKey`, additive; the
+parent's `Request.IdempotencyKey` names it). So the parent gives the same
+answers as the child: while the child's abandoned `ship` handler runs, the
+parent's own call to `ship` parks with the gate's reason (the mirror's
+call id names the child's call in the child's terms — each suffix past a
+session prefix is tried, as `childHandler` does); and once it has
+returned, the parent's call with the same canonical arguments runs under
+the child's key. A child's call is gated by its own session's file: a
+child does not see its parent's abandoned handlers (the parent's turn
+holding one is parked on its recovery request until a person decides).
+
+**Model-visible text.** The inherited key and the key record are not
+model-visible. The gate's reason is the person's (requests never enter
+the model's context); a denied gated call reads the ordinary `DENIED:`
+text, which is honest: it never ran. No result text changes.
+
+Principles: R1 (the key record is written and flushed before the handler
+runs), R3 (the key derives from the file alone), R4 (an inherited key
+makes the receiver's dedupe the first rung for a repeat too), R5 (the key
+record and the gate's reason say what happened), R9 (the gate parks; an
+unrecordable key record fails the call closed), R10 (format 7), R14 (the
+gate is in-process by necessity, like the registry it reads — after a
+restart no handler runs).
+
+Tests: `TestRepeatAfterSkipInheritsTheKey`,
+`TestRepeatParksWhileTheFirstHandlerRuns` (other and same arguments),
+`TestInheritanceSurvivesARestartAndClosesOnAnAnswer`,
+`TestForkInheritsOpenUnknownOutcomes`,
+`TestForkRecoverTurnRetriesUnderTheOriginsKey`,
+`TestReplaySafeIsNeitherGatedNorInherited`,
+`TestRepeatRacingTheHandlersReturn` (memory, jsonl, sqlite where it
+applies; the race test under `-race -count=50` and `make stress`),
+`TestEffectHashCanonical`, `TestKeyRecordFormatGolden` (thread);
+`TestPoolMirrorGatesAndKeysTheParentsRepeat` (thread/pool);
+`TestBeforeDispatchParkParksTheCall` (core).

@@ -86,6 +86,22 @@ type stepPersist struct {
 	// the loop abandoned at its Timeout or a cancellation may still be
 	// running. Guarded by s.mu.
 	running map[string]*handlerRun
+	// gated holds, by the same key as started, the calls the
+	// still-running gate parked (an abandoned handler of the same tool
+	// still runs): the turn's end parks them for a person with that
+	// reason, never through a grant or the Approver. Guarded by s.mu.
+	gated map[string]bool
+}
+
+// wasGated reports whether the still-running gate parked callID in
+// this attempt. A nil sp gated nothing.
+func (sp *stepPersist) wasGated(s *Session, callID string) bool {
+	if sp == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sp.gated[sp.calls[callID]+"\x00"+callID]
 }
 
 // handlerRun counts one call's handlers in flight (a middleware may
@@ -205,7 +221,7 @@ func (sp *stepPersist) stillRunning(s *Session, ids []string, bound time.Duratio
 // a resume attempt knows its boundary's calls from the start. Callers
 // hold s.mu.
 func (s *Session) newStepPersistLocked(resume bool) *stepPersist {
-	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}, inner: map[string]bool{},
+	sp := &stepPersist{startLeaf: s.leaf, resume: resume, calls: map[string]string{}, started: map[string]bool{}, inner: map[string]bool{}, gated: map[string]bool{},
 		running: map[string]*handlerRun{}}
 	if resume {
 		for _, c := range s.danglingCallsLocked() {

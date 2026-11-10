@@ -355,6 +355,14 @@ type ApprovalRequestEntry struct {
 	// refused. Reason says what is known of its outcome. An entry
 	// carrying it is written with "v":6.
 	Recovery bool `json:"recovery,omitempty"`
+	// IdempotencyKey is a mirrored pool child request's key, as the
+	// child session names it (Request.IdempotencyKey there): a mirror
+	// of a recovery request opens its effect on the parent under the
+	// child's key, so the parent's own identical call inherits it (ADR
+	// 0032, the 2026-11-10 amendment). Empty on every request the
+	// session parks itself — its key is derived from the file.
+	// Additive: an older reader ignores it.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// RevisionOf is the id of the request this one revises: an edit
 	// (OutcomeEdit) closed that request and opened this one on the
 	// edited arguments (Args, ArgsSHA256). An entry carrying it is
@@ -466,6 +474,20 @@ type ApprovalAuditEntry struct {
 	// KeyID names the keyring key a refused signed decision claimed
 	// (StepSigned), when the ring holds it.
 	KeyID string `json:"key_id,omitempty"`
+	// Entry, Tool, ArgsSHA256 and Key are a key record's (StepKey, ADR
+	// 0032's 2026-11-10 amendment): the call CallID of the assistant
+	// entry Entry runs under Key, the key of an earlier call to Tool
+	// whose outcome is unknown, with the same arguments — ArgsSHA256
+	// is their effect-canonical hash (numbers by value, keys sorted).
+	// The dispatch gate appends one, flushed, before such a call's
+	// handler runs; a Fork appends one per copied effect of unknown
+	// outcome, carrying the origin's key. An entry carrying them is
+	// written with "v":7, so a reader from before inheritance fails
+	// loudly instead of retrying the call under another key.
+	Entry      string `json:"entry,omitempty"`
+	Tool       string `json:"tool,omitempty"`
+	ArgsSHA256 string `json:"args_sha256,omitempty"`
+	Key        string `json:"key,omitempty"`
 	// Decisions lists the decision entries a resume applied
 	// (StepResume, outcome "started"). A decision is spent by the
 	// resume that applied it: it resolves its call on that resume's
@@ -904,6 +926,13 @@ const trimRecordV = 5
 // original arguments.
 const recoveryV = 6
 
+// effectKeyV is the entry version a key record (an ApprovalAuditEntry
+// with step StepKey) carries on the wire (ADR 0011 §6, ADR 0032's
+// 2026-11-10 amendment): format 7, so a reader from before key
+// inheritance fails loudly on such a session instead of retrying a call
+// under its occurrence key while an earlier call's key is the effect's.
+const effectKeyV = 7
+
 // MarshalJSON encodes the entry with its "type" discriminator. A step
 // whose dispatches are recorded (DispatchRecorded) carries "v":6, its
 // minimum reader version; every other message entry is a format-1
@@ -1034,11 +1063,15 @@ func (e ApprovalDecisionEntry) MarshalJSON() ([]byte, error) {
 
 // MarshalJSON encodes the entry with its "type" discriminator and
 // "v":2 — "v":6 on a dispatch record (StepDispatch), so a reader from
-// before recovery refuses a session whose call may have started.
+// before recovery refuses a session whose call may have started; "v":7
+// on a key record (StepKey).
 func (e ApprovalAuditEntry) MarshalJSON() ([]byte, error) {
 	v := approvalEntryV
-	if e.Step == StepDispatch {
+	switch e.Step {
+	case StepDispatch:
 		v = recoveryV
+	case StepKey:
+		v = effectKeyV
 	}
 	return json.Marshal(struct {
 		Type string `json:"type"`
@@ -1118,8 +1151,8 @@ func kindVersion(kind string) (int, bool) {
 		// Born in format 2; read up to the edit's version.
 		return recoveryV, true
 	case kindApprovalAudit:
-		// Born in format 2; read up to the dispatch record's version.
-		return recoveryV, true
+		// Born in format 2; read up to the key record's version.
+		return effectKeyV, true
 	case kindGrant, kindGrantRevoked:
 		return approvalEntryV, true
 	case kindReceipt:

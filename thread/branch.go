@@ -230,7 +230,17 @@ const forkedStop = "forked: the delegation belongs to the session this one was f
 //   - an open approval boundary: if the path ends on parked calls the
 //     fork parks on them too, with their requests and whatever
 //     decisions the path holds. Each session then resolves its own
-//     copy — a call approved in both runs in both.
+//     copy — a call approved in both runs in both;
+//   - the identity of every effect that may still be in the world
+//     (ADR 0032, 2026-11-10): a key record (an ApprovalAuditEntry with
+//     step StepKey), with this session's key, for each effect of
+//     unknown outcome open at entryID, and for each copied call that
+//     may run again under its key — no result on the path, and
+//     dispatched, parked as a recovery request, or running under an
+//     inherited key. The fork's RecoverTurn, a retry decided there and
+//     a repeat of such an effect run under this session's key, never
+//     one derived from the fork's id. A call that never started and
+//     inherits nothing keeps a key of its own in the fork.
 //
 // And what it does not — the fork copies nothing that would start a
 // run, and nothing that reaches into this session's work:
@@ -298,6 +308,10 @@ func (s *Session) Fork(ctx context.Context, entryID string, opts ...SessionOptio
 		}
 	}
 	path, err := s.pathLocked(entryID)
+	var keyRecs []ApprovalAuditEntry
+	if err == nil {
+		keyRecs = s.forkKeyRecordsLocked(entryID, path)
+	}
 	st := s.storageLocked()
 	forkedRun := s.lastRunOnPathLocked(path)
 	// Revocations hold file-wide here (liveGrantsLocked), on whatever
@@ -332,6 +346,9 @@ func (s *Session) Fork(ctx context.Context, entryID string, opts ...SessionOptio
 
 	entries, err := forkEntries(&cfg, path, revoked, uses, s.header.ID)
 	if err != nil {
+		return nil, err
+	}
+	if entries, err = appendForkKeys(&cfg, entries, keyRecs); err != nil {
 		return nil, err
 	}
 	if err := st.Create(ctx, h); err != nil {
@@ -537,3 +554,38 @@ func forkEntries(cfg *sessionConfig, path []Entry, revoked map[string]bool, uses
 // appends for uses its origin recorded off the copied path (forkEntries):
 // a use counted, no call decided.
 const grantUseCarried = "carried"
+
+// appendForkKeys chains a Fork's key records (forkKeyRecordsLocked)
+// behind its entries, each under a fresh id: the fork runs the origin's
+// effects of unknown outcome, and its calls that may run again, under
+// the origin's keys (ADR 0032, 2026-11-10).
+func appendForkKeys(cfg *sessionConfig, entries []Entry, recs []ApprovalAuditEntry) ([]Entry, error) {
+	if len(recs) == 0 {
+		return entries, nil
+	}
+	held := make(map[string]bool, len(entries)+len(recs))
+	for _, e := range entries {
+		held[idOf(e)] = true
+	}
+	last := ""
+	if len(entries) > 0 {
+		last = idOf(entries[len(entries)-1])
+	}
+	for _, r := range recs {
+		id := NewEntryID()
+		if cfg.ids != nil {
+			id = cfg.ids()
+		}
+		if !ValidID(id) {
+			return nil, fmt.Errorf("thread: invalid entry id %q", id)
+		}
+		if held[id] {
+			return nil, fmt.Errorf("thread: entry id %q already held by the forked path", id)
+		}
+		held[id] = true
+		r.ID, r.ParentID, r.Created = id, last, cfg.now()
+		entries = append(entries, r)
+		last = id
+	}
+	return entries, nil
+}

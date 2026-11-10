@@ -22,8 +22,20 @@ import (
 // because all of them run the call from the same recorded assistant
 // message — on any worker, with no store. A call the model issues anew
 // — even with the same call id, in a later turn — sits in another
-// message entry and gets another key. A Fork copies entries under new
-// ids, so a forked call has a key of its own.
+// message entry and gets another key: a second identical order is a
+// second effect. A forked call has a key of its own: the fork is
+// another session.
+//
+// The one exception is an effect whose outcome is unknown (ADR 0032,
+// the 2026-11-10 amendment). Once a call's outcome is unknown in a
+// session — its abandoned handler may still run, a person skipped its
+// recovery request, the model read OUTCOME_UNKNOWN — a later call in
+// the session to the same tool (not ReplaySafe) with the same
+// canonical arguments runs under that call's key, not this one, until
+// a call under the key gets an answer of its own; a Fork carries the
+// open ones with the origin's keys. The session records each such key
+// (an ApprovalAuditEntry with step StepKey) before the call runs, and
+// names it in core.Call.IdempotencyKey and Request.IdempotencyKey.
 //
 // Request.IdempotencyKey carries it for a parked call; a platform
 // computes it itself only to name a key outside the session.
@@ -36,10 +48,17 @@ func IdempotencyKey(sessionID, entryID, callID, editedArgsSHA256 string) string 
 	return hex.EncodeToString(h[:16])
 }
 
-// callKeyLocked is the key a call runs under: from the entry holding it
-// and, when its request runs it on edited arguments, their hash.
+// callKeyLocked is the key a call runs under: an inherited key the
+// file names for it (effectIndexLocked), else its derived one.
 // Callers hold s.mu.
 func (s *Session) callKeyLocked(entry, callID string) string {
+	return s.stepKeyLocked(entry, callID, true)
+}
+
+// derivedKeyLocked is the call's occurrence key: from the entry
+// holding it and, when its request runs it on edited arguments, their
+// hash. Callers hold s.mu.
+func (s *Session) derivedKeyLocked(entry, callID string) string {
 	edited := ""
 	if c, ok := s.callInEntryLocked(entry, callID); ok {
 		if _, sha, isEdited, _ := editedArgsOf(s.approvalWalkLocked().requests[callID], c); isEdited {
@@ -83,10 +102,8 @@ func (s *Session) idempotencyKeys(sp *stepPersist) core.RunOption {
 		if entry == "" {
 			return ""
 		}
-		if !sp.resume {
-			return IdempotencyKey(s.header.ID, entry, c.CallID, "") // the step's own call: never edited
-		}
-		return s.callKeyLocked(entry, c.CallID)
+		// The step's own call is never edited; either may inherit.
+		return s.stepKeyLocked(entry, c.CallID, sp.resume)
 	})
 }
 
@@ -118,7 +135,7 @@ func (s *Session) callEntryLocked(callID string) string {
 // Callers hold s.mu.
 func (s *Session) requestKeyLocked(r *Request) {
 	if r.Child != "" {
-		return
+		return // requestFromEntry carried the child's own
 	}
 	if entry := s.callEntryLocked(r.CallID); entry != "" {
 		r.IdempotencyKey = s.callKeyLocked(entry, r.CallID)

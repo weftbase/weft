@@ -78,9 +78,11 @@ func TestRecoveryFormatGoldens(t *testing.T) {
 		if !bytes.Contains(b, []byte(`"v":6`)) {
 			continue
 		}
-		newer := bytes.Replace(b, []byte(`"v":6`), []byte(`"v":7`), 1)
+		// v8: newer than any kind this build reads (the audit kind
+		// reads up to the key record's 7, ADR 0032 2026-11-10).
+		newer := bytes.Replace(b, []byte(`"v":6`), []byte(`"v":8`), 1)
 		if _, err := thread.UnmarshalEntry(newer); !errors.Is(err, thread.ErrNewerFormat) {
-			t.Errorf("%s at v=7: %v, want ErrNewerFormat", c.file, err)
+			t.Errorf("%s at v=8: %v, want ErrNewerFormat", c.file, err)
 		}
 	}
 	// A plain turn and a plain request keep the versions older readers read.

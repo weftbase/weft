@@ -60,6 +60,7 @@ const (
 	StepSigned   = "signed"   // a signed decision refused; Detail names why, no decision recorded
 	StepRecover  = "recover"  // RecoverTurn: per run, Outcome continued (Detail: the new run), parked, resumed or closed; per call, "retry" (Detail: the replay class) beside the session's own approval
 	StepDispatch = "dispatch" // the dispatch gate let a call that is not ReplaySafe start: appended and flushed before its handler runs (ADR 0032)
+	StepKey      = "key"      // a call runs under an inherited key — an earlier call's to the same tool with the same arguments, whose outcome is unknown (Entry, Tool, ArgsSHA256, Key); the gate's before the handler runs, or a Fork's carrying the origin's key (ADR 0032, 2026-11-10)
 )
 
 // The channels a decision entry's Via names. Decide records "user",
@@ -803,6 +804,18 @@ func (s *Session) recordDecisionsLocked(ctx context.Context, batch []recordedDec
 			return fmt.Errorf("%w: call %q (request %s): editing it runs it again; decide it once its handler has returned",
 				ErrStillRunning, d.CallID, req.ID)
 		}
+		if (d.Kind == OutcomeApprove || d.Kind == OutcomeEdit) && req.Child == "" && s.toolRunningLocked(req.Tool) {
+			// An abandoned handler of the same tool still runs in this
+			// process (the still-running gate, ADR 0032 2026-11-10):
+			// whatever its arguments, this call would run beside it,
+			// and the tool cannot tell whether it repeats that effect.
+			// Deny and Resolve are taken. A mirrored child request is
+			// the child's to refuse: its replay is refused there and
+			// the pool keeps it parked until the handler returns (ADR
+			// 0032's release-gate amendment, P1-B).
+			return fmt.Errorf("%w: call %q (request %s): an earlier call of tool %q is still running; approve once it has returned",
+				ErrStillRunning, d.CallID, req.ID, req.Tool)
+		}
 		if (d.Kind == OutcomeApprove || d.Kind == OutcomeEdit) && req.Child == "" && s.delegationOpenLocked(d.CallID) {
 			// Its thread/pool delegation is still open (a cut-off
 			// turn's delegating call, left to the pool): approving —
@@ -1387,6 +1400,16 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 	// ignores), and a system of record asked now could answer
 	// "missing" for an effect about to land — the rerun would be a
 	// second one.
+	// The calls the still-running gate parked (an abandoned handler
+	// of the same tool still runs): like a delegated call, straight to
+	// the park — a grant or the Approver approving one would only
+	// run it beside the handler — with the gate's reason.
+	gated := map[string]bool{}
+	for _, c := range calls {
+		if sp.wasGated(s, c.ID) {
+			gated[c.ID] = true
+		}
+	}
 	unknown := map[string][]Entry{}
 	var waitFor []string
 	for _, c := range calls {
@@ -1436,8 +1459,9 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		// they hold the call's effective verdict.
 		var steps []Entry
 		resolved := false
-		if wrappers[c.ID] != "" || open[c.ID] {
-			// Delegated: straight to the park.
+		if wrappers[c.ID] != "" || open[c.ID] || gated[c.ID] {
+			// Delegated, or held by the still-running gate: straight to
+			// the park.
 		} else if d, ref, ok := s.matchGrant(ctx, c, uses); ok {
 			// The chain's first step decides at once, audited — the
 			// audit names the grant (GrantShared marking a store's, so
@@ -1522,6 +1546,8 @@ func (s *Session) runChain(ctx context.Context, t *Turn, opts []core.RunOption, 
 		reason := parkingReason(currentTool(s.agent, c.Name))
 		if open[c.ID] {
 			reason = reasonDelegationOpen
+		} else if gated[c.ID] {
+			reason = reasonEarlierRunning
 		}
 		cr.entries = append(cr.entries, ApprovalRequestEntry{
 			CallID: c.ID, Tool: c.Name, Args: args, ArgsSHA256: hashArgs(args),
@@ -1891,6 +1917,7 @@ func requestFromEntry(session string, e ApprovalRequestEntry) Request {
 		Args: slices.Clone(e.Args), ArgsSHA256: e.ArgsSHA256,
 		RunID: e.RunID, Reason: e.Reason, Expiry: e.Expiry, Created: e.Created,
 		Child: e.Child, Quorum: e.Quorum, Recovery: e.Recovery, RevisionOf: e.RevisionOf,
+		IdempotencyKey: e.IdempotencyKey, // a mirror's: the child's own; the session fills its own (requestKeyLocked)
 	}
 	if e.Run != nil && len(e.Run.Metadata) > 0 {
 		r.Metadata = maps.Clone(e.Run.Metadata)

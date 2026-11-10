@@ -842,9 +842,40 @@ not the numbers themselves.
   a crash, a restart, a resume on another worker and a recovery retry;
   `Request.IdempotencyKey` names it on a parked call. A call the model
   re-issues under the same id in a later turn sits in another entry
-  and gets another key; a fork gets new keys. A `weft.Subagent`'s child
-  run does not inherit them: its calls carry run-scoped keys, new on
-  every re-run of the child.
+  and gets another key — a second identical order is a second effect.
+  A `weft.Subagent`'s child run does not inherit them: its calls carry
+  run-scoped keys, new on every re-run of the child.
+- **The key follows an unknown outcome (ADR 0032, 2026-11-10).** Once a
+  call's outcome is unknown — its abandoned handler may still run, a
+  person skipped its recovery request, the model read `OUTCOME_UNKNOWN`
+  — a later call in the session to the same tool (not `ReplaySafe`)
+  with the same canonical arguments (keys sorted, numbers by value:
+  `1` is `1.0`; an edit's edited arguments) runs under the earlier
+  call's key, until a call under it answers. The receiver that
+  deduplicates sees one effect. The session records each such key (an
+  `approval_audit` entry with step `key`, format 7: a 0.24 reader
+  refuses the session) before the call runs; `Audit()` lists it. The
+  rule reads the file in order, so it survives a restart and holds
+  across a `Branch`. A `Fork` carries the open ones, and every copied
+  call that may run again (cut off, parked for recovery, inherited),
+  under the origin's keys — a fork's `RecoverTurn` or retry never runs
+  an effect under a key the receiver never saw. A call that never
+  started keeps a key of its own in the fork.
+- **The still-running gate.** While an abandoned handler of a tool
+  (not `ReplaySafe`) still runs in this process for a call the session
+  holds, a new call to that tool parks — whatever its arguments — with
+  the reason `an earlier call of this tool is still running: …`, never
+  through a grant or the Approver. `Decide` refuses approving or
+  editing any of the session's requests of that tool with
+  `ErrStillRunning` until the handler returns; `Deny` (the model reads
+  `DENIED:`, true: it never ran) and `Resolve` are taken. Once the
+  handler has returned an approval runs it, under the earlier key when
+  its arguments match. A pool parent sees its children's abandoned
+  handlers through their mirrors (which now carry the child's key) and
+  answers the same way. A restart ends every abandoned handler: the
+  call becomes an ordinary parked request. Wait for the return with
+  `thread.AbandonedHandler(req.RunID, req.CallID)` of the earlier
+  call's recovery request.
 - **Keys.** A `thread.Keyring` holds HMAC keys by id; the one active
   key mints new challenges, every key verifies. Keys are never
   written to a session — only key ids are — and a ring is

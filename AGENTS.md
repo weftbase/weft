@@ -281,7 +281,14 @@ dec := weft.NewOutputDecoder[Verdict]()                                 // parti
 //    RequireSigned(), durable in the header); s.Request(callID) → ring.Sign(r, d) | key.Sign → s.DecideSigned.
 //    Keys (ADR 0031): every session call's Call.IdempotencyKey is thread.IdempotencyKey(session, assistant entry, call) —
 //    stable across crash, restart and resume; Request.IdempotencyKey names it on a parked call; Request.Metadata the run
-//    metadata it parked under.
+//    metadata it parked under. The key follows an unknown outcome (ADR 0032, 2026-11-10): once a call's outcome is unknown
+//    (a still-running handler, a skipped recovery request, OUTCOME_UNKNOWN read), a later call to the same tool (not
+//    ReplaySafe) with the same canonical arguments runs under that call's key until a call under it answers — read from
+//    the file in order, recorded before it runs (approval_audit step "key", format 7), carried by Fork with the origin's
+//    keys (as is every copied call that may run again). The still-running gate: while an abandoned handler of a tool runs
+//    in this process for a call the session holds, a new call to that tool parks ("an earlier call of this tool is still
+//    running: …"), no grant or Approver; Decide refuses approve/edit with ErrStillRunning until it returns. Mirrors carry
+//    the child's key (pool parent: same answers).
 //    Pool (ADR 0022, thread/pool): p := pool.New(max), the bound per Pool value; p.MustWrap(name, desc,
 //    agent[, pool.Async()]) (p.Wrap returns (tool, error)); p.Submit(ctx, parent, agent, prompt);
 //    p.Decide(ctx, parent, ds...) error records and arms, p.Wait(ctx, parent, id) follows; p.Cancel,

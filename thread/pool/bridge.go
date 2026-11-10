@@ -654,6 +654,10 @@ func mirrorRequests(reqs []thread.Request, child, wrapper string) []thread.Appro
 			CallID: mirrorCallID(child, r.CallID), Tool: r.Tool, Args: r.Args, ArgsSHA256: r.ArgsSHA256,
 			RunID: r.RunID, Reason: r.Reason, Expiry: r.Expiry, Quorum: r.Quorum,
 			Child: child, Wrapper: wrapper, Recovery: r.Recovery,
+			// The child's key rides the mirror: a recovery request
+			// opens its effect on the parent under it (ADR 0032,
+			// 2026-11-10), so the parent's identical call inherits it.
+			IdempotencyKey: r.IdempotencyKey,
 		}
 		if len(r.Metadata) > 0 {
 			// The child run's labels ride the mirror, so the parent's

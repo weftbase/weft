@@ -214,3 +214,23 @@ The rule follows 0.22.1's and 0.24.0's abandon lock (a handler not
 entered by the deadline never starts). No text the model reads changes:
 the refusal is the abandoned handler's to read. Test:
 `TestCallToolAfterTheOuterCallSettledIsRefused`.
+
+## Amendment (2026-11-10 — a gate may park)
+
+Decision 3 said a gate's error stops the call with an `ErrNotDispatched`
+result. A gate that wraps `ErrApprovalRequired` in its error instead
+**parks** the call: the handler never runs, the call is pending
+(`RunResult.Pending`), the run ends at the approval boundary as for any
+park (ADR 0007), and its siblings run. A resume that approves the call
+passes it through the gate again — the gate is the last word — so a gate
+still holding it parks it again. A call dispatched with `CallTool` that
+the gate parks fails its outer call as any dispatched park does (ADR
+0032's final-review amendment, P2-3). The gate still writes nothing for a
+parked call; `AfterDispatch` is not called (no handler started).
+
+Why: `weft/thread`'s still-running gate (ADR 0032, 2026-11-10) must hold a
+call for a person while an abandoned handler of the same tool still runs —
+"not now, a person decides", which is a park, not a refusal; a refusal
+would read as the tool's failure and invite the model to retry. The core
+always matched `ErrApprovalRequired` through the gate's wrapped error; this
+amendment makes it the contract. Test: `TestBeforeDispatchParkParksTheCall`.

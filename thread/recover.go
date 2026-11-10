@@ -33,6 +33,7 @@ const (
 	reasonDelegated      = "cut off while it delegated: the delegated work may have run; approve to delegate it again, deny to skip it"
 	reasonRetriesSpent   = "outcome unknown: the session's automatic retries are spent; approve to retry it with the same idempotency key, deny to skip it"
 	reasonStillRunning   = "outcome unknown: the call's handler is still running past its bound; approve to retry it with the same idempotency key once it has returned, deny to skip it"
+	reasonEarlierRunning = "an earlier call of this tool is still running: its handler was abandoned and has not returned; approve once it has returned, deny to skip this call"
 	reasonDelegationOpen = "delegated: its thread/pool delegation is still open and the pool settles it; an approval, which would delegate again, is refused until it settles"
 	reasonDelegationDone = "delegated: its thread/pool delegation settled and its answer is on the receipt; the pool resolves the call with it (pool.Recover), and an approval, which would delegate again, is refused"
 	reasonReconcileFound = "cut off: the system of record reports the call took effect; its result is recorded"
@@ -304,6 +305,12 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 			if !sp.started[sp.calls[c.Outer]+"\x00"+c.Outer] && !sp.inner[c.Outer] {
 				return fmt.Errorf("call %q is dispatched from call %q, which this session did not record as dispatched (a ReplaySafe tool starts no effect)", c.CallID, c.Outer)
 			}
+			if s.toolRunningLocked(def.Name) {
+				// The still-running gate holds for a dispatched call too:
+				// the core reads its park as the outer call's failure (a
+				// dispatched call is never parked for one).
+				return fmt.Errorf("%w: %s", core.ErrApprovalRequired, reasonEarlierRunning)
+			}
 			if f, ok := s.st.(Fencer); ok {
 				if err := f.Fence(ctx, s.header.ID); err != nil {
 					return refuse(fmt.Errorf("the session's lock is not held: %w", err))
@@ -322,14 +329,43 @@ func (s *Session) dispatchGate(ctx context.Context, sp *stepPersist, t *Turn) co
 		if entry == "" {
 			return refuse(fmt.Errorf("call %q is not in this run's recorded steps", c.CallID))
 		}
-		want := IdempotencyKey(s.header.ID, entry, c.CallID, "")
-		if sp.resume {
-			want = s.callKeyLocked(entry, c.CallID)
-		}
+		want := s.stepKeyLocked(entry, c.CallID, sp.resume)
 		if c.IdempotencyKey != want {
 			// The loop named the call before its step was durable: its
 			// key is run-scoped, not the session's.
 			return refuse(fmt.Errorf("call %q carries no recovery-stable key", c.CallID))
+		}
+		if s.toolRunningLocked(def.Name) {
+			// The still-running gate (ADR 0032, 2026-11-10): an
+			// abandoned handler of this tool still runs in this process
+			// for a call this session holds. A second call beside it,
+			// whatever its arguments, could repeat its effect and the
+			// tool cannot tell: the call parks for a person — before
+			// anything is recorded, so it never started. The core reads
+			// the gate's ErrApprovalRequired as a park; the turn's end
+			// gives it this reason, and Decide refuses an approval
+			// while the handler runs.
+			sp.gated[entry+"\x00"+c.CallID] = true
+			return fmt.Errorf("%w: %s", core.ErrApprovalRequired, reasonEarlierRunning)
+		}
+		if derived := s.derivedRunKeyLocked(entry, c.CallID, sp.resume); want != derived {
+			// It runs under an inherited key — an earlier call's to the
+			// same tool with the same arguments, whose outcome is
+			// unknown. Recorded before acting, beside its dispatch
+			// record, so a restart, a reopen and a recovery retry run it
+			// under the same key from the file.
+			cpart, _ := s.callInEntryLocked(entry, c.CallID)
+			hash := effectHash(cpart.Args)
+			if ea, _, edited, ok := editedArgsOf(s.approvalWalkLocked().requests[c.CallID], cpart); sp.resume && edited && ok {
+				hash = effectHash(ea)
+			}
+			if err := s.appendLocked(ctx, func(id, parent string, created time.Time) Entry {
+				return ApprovalAuditEntry{ID: id, ParentID: parent, Created: created,
+					CallID: c.CallID, Step: StepKey, RunID: c.RunID,
+					Entry: entry, Tool: def.Name, ArgsSHA256: hash, Key: want}
+			}); err != nil {
+				return refuse(fmt.Errorf("the inherited key of call %q is not recorded: %w", c.CallID, err))
+			}
 		}
 		// Record before acting: the dispatch is on file and, with the
 		// step before it, flushed (WR-1: under a backend that defers its

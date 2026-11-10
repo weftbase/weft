@@ -109,3 +109,11 @@ func AbandonedHandler(runID, callID string) <-chan struct{} {
 func handlerRunning(run, callID string) bool {
 	return AbandonedHandler(run, callID) != nil
 }
+
+// empty reports whether no abandoned handler is registered: the
+// common case, where the still-running gate reads nothing more.
+func (r *abandonedRegistry) empty() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.m) == 0
+}

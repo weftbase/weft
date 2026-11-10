@@ -587,7 +587,7 @@ older reader can safely ignore is added without a version.
 | `custom_message` | 1 | — | `kind`, `message` | yes |
 | `approval_request` | 2 | 2 (6 with `recovery`) | `call_id`, `tool`, `args_sha256`, `run_id`, *`args`*, *`reason`*, *`expiry`*, *`child`*, *`wrapper`* (the last two on a mirrored pool request), *`run`* (the parked run's `core.RunSettings`: `park`, `only_tools`, `max_steps`, `parallelism`, `instructions`, `thinking`, `tool_choice`, `params`, `metadata` — the session's run metadata merged under the send's own, since 0.22), *`schema_sha256`* (the tool's input schema when the call parked), *`quorum`* (the approvals it needs, above 1), *`recovery`* (a recovery request, ADR 0032), *`revision_of`* (an edit's revision, 6) | no |
 | `approval_decision` | 2 | 2 (6 with `edit`) | `call_id`, `outcome` (`approve`, `deny`, `resolve`, `resolve_error`, `edit`), *`reason`*, *`content`*, *`who`*, *`via`* (`user`, `signed`, `approver`, `grant`, `expiry`, `interrupt`, `child`, `parent`, `recovery`, `reconcile`), *`run_id`*, *`nonce`*, *`key_id`*, *`request_id`*, *`args_sha256`* (the arguments the decider saw), *`always`*, *`edited_args`*, *`edited_args_sha256`* (an edit's, canonical), *`cosigners`*, *`approved_by`* (the deciding call's `WithApprovedBy` class) | no |
-| `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`, `recover`), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
+| `approval_audit` | 2 | 2 | `step` (`grant`, `approver`, `park`, `expiry`, `resume`, `signed`, `recover`, `dispatch` — v6, `key` — v7), *`call_id`*, *`outcome`*, *`detail`*, *`run_id`*, *`grant_id`*, *`grant_shared`*, *`key_id`*, *`decisions`* | no |
 | `grant` | 2 | 2 | `tool`, *`args`* = `[{pointer, equals \| prefix \| glob}]`, *`deny`*, *`reason`*, *`expiry`*, *`max_uses`*, *`who`* (the grantor), *`via`* (the door it came through), *`schema_sha256`* (the tool's input schema at the mint; the grant matches only while it holds) | no |
 | `grant_revoked` | 2 | 2 | `grant_id` | no |
 | `receipt` | 3 | 3 | `status` (`queued`, `accepted`, `delivered`, `deferred`, `dropped`), *`receipt`* (the acceptance entry a later one settles), *`msg`*, *`run_id`*, *`turn`*, *`unanswered`*, *`run`* (a queued or accepted receipt's `core.RunSettings`) | no |
@@ -597,7 +597,12 @@ older reader can safely ignore is added without a version.
 v0.1, 2 approvals (v0.2), 3 steering receipts (v0.3), 4 the pool
 (v0.5), 5 the trim record (the 2026-10-01 fix train), 6 recovery and
 edits — the cut-off turn, the recovery request, the edit decision and
-its revision request (ADR 0032, ADR 0021's 2026-11-04 amendment, v0.22).
+its revision request (ADR 0032, ADR 0021's 2026-11-04 amendment, v0.22),
+7 the key record — an `approval_audit` entry with step `key` and its
+fields `entry`, `tool`, `args_sha256`, `key`: the call runs under an
+inherited key (ADR 0032's 2026-11-10 amendment; the `approval_audit`
+kind reads up to 7). `approval_request.idempotency_key` (a mirror's
+child key) is additive.
 `approval_decision.cosigners` and `approved_by`, and `grant.schema_sha256`, are additive (no version). Fields and
 status values added without a version, because an older reader loses
 nothing by ignoring them: `message.run_id`; `turn.policy`, `rerun`,
@@ -612,8 +617,8 @@ not enforce it, and one from before `run` resumes a parked boundary
 or a restored send without the settings it recorded.
 
 Goldens: one file per kind and variant under
-`thread/testdata/format1` … `format6`, with a whole session in
+`thread/testdata/format1` … `format7`, with a whole session in
 `format1/session.jsonl`; `TestReadEveryGolden` (formats 1–4) and
 `TestTrimRecordGolden` (format 5) and `TestRecoveryFormatGoldens`
-(format 6) read them back and re-marshal them
+(format 6) and `TestKeyRecordFormatGolden` (format 7) read them back and re-marshal them
 to the same bytes.
