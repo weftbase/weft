@@ -236,7 +236,7 @@ func TestReadEveryGolden(t *testing.T) {
 	// One row per format directory: how many goldens it holds. A
 	// directory without a row, or a count that moved, fails here — a
 	// golden is added with its row and never silently lost.
-	counts := map[string]int{"format1": 15, "format2": 13, "format3": 6, "format4": 8, "format5": 1, "format6": 7}
+	counts := map[string]int{"format1": 15, "format2": 13, "format3": 6, "format4": 8, "format5": 1, "format6": 7, "format7": 1}
 	dirs, err := filepath.Glob(filepath.Join("testdata", "format*"))
 	if err != nil {
 		t.Fatal(err)

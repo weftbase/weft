@@ -1717,7 +1717,11 @@ type DispatchFunc = core.DispatchFunc
 // closed when a precondition of starting a side effect does not hold.
 // weft/thread's gate refuses a call that is not ReplaySafe unless the
 // step entry holding it is durable, so a crash never leaves a side
-// effect the session file does not show was issued. A middleware that
+// effect the session file does not show was issued. A gate error
+// wrapping ErrApprovalRequired parks the call instead of failing it
+// (ADR 0031, 2026-11-10): the handler never runs, the call is pending,
+// and a resume that approves it passes the gate again (weft/thread's
+// still-running gate parks this way). A middleware that
 // calls next more than once passes the gate once per attempt. The
 // gate runs inside the call's Timeout: a call whose Timeout passes (or
 // whose run is canceled) before the gate returns is answered as timed
