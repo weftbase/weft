@@ -87,3 +87,33 @@ func ExampleOpen_secondWriter() {
 	// Output:
 	// true
 }
+
+// An erasure request: Delete, and when a reader kept the write-ahead
+// log in use, finish the erasure with Checkpoint once it is gone — a
+// second Delete would answer ErrNotFound, the rows being gone already.
+func ExampleCheckpoint() {
+	dir, err := os.MkdirTemp("", "weft-sqlite-erase")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	st, err := sqlite.Open(filepath.Join(dir, "sessions.db"))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = st.(io.Closer).Close() }()
+	ctx := context.Background()
+	if err := st.Create(ctx, thread.Header{ID: "s_user42", Created: time.Now().UTC()}); err != nil {
+		fmt.Println(err)
+		return
+	}
+	err = thread.Delete(ctx, st, "s_user42")
+	if errors.Is(err, sqlite.ErrErasureIncomplete) {
+		err = sqlite.Checkpoint(ctx, st) // until it returns nil
+	}
+	fmt.Println("erased:", err == nil)
+	// Output:
+	// erased: true
+}

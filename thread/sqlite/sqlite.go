@@ -71,18 +71,26 @@ import (
 
 // connParams are the per-connection settings every DSN carries:
 // immediate write transactions (a deferred transaction upgrading to a
-// writer can deadlock against another), a long busy timeout, and
-// foreign keys on — the entries and lock rows go with their session.
+// writer can deadlock against another), a long busy timeout, foreign
+// keys on — the entries and lock rows go with their session — and
+// secure_delete on: a deleted row's cell, and every page a delete
+// frees, is overwritten with zeros, so a deleted session's bytes do
+// not linger in the file's free space (see Delete).
 const connParams = "_txlock=immediate" +
 	"&_pragma=busy_timeout(30000)" +
-	"&_pragma=foreign_keys(ON)"
+	"&_pragma=foreign_keys(ON)" +
+	"&_pragma=secure_delete(ON)"
+
+// busyWait is connParams' busy_timeout: how long any statement waits
+// for a lock another connection holds.
+const busyWait = 30 * time.Second
 
 // Open opens (creating if needed) the sessions database at path and
 // brings its schema up to date, returning a thread.Storage. ":memory:"
 // works — one private in-process database per Open, for tests and
 // examples, alive for as long as the returned Storage is. Connections
-// carry busy_timeout=30000, foreign_keys=ON, and immediate write
-// transactions (preventing deferred-to-writer upgrade deadlocks;
+// carry busy_timeout=30000, foreign_keys=ON, secure_delete=ON, and
+// immediate write transactions (preventing deferred-to-writer upgrade deadlocks;
 // read-only transactions stay deferred and take no write lock), and
 // the handle uses a single working connection so every write is
 // serialized. WAL is not a connection pragma: it is a persistent
@@ -192,6 +200,8 @@ func Open(path string, opts ...thread.OpenOption) (thread.Storage, error) {
 		alive:   pidAlive,
 		startOf: procStart,
 		held:    map[string]*lease{},
+
+		eraseWait: busyWait,
 	}
 	b.started = b.startOf(b.pid)
 	if memory {
@@ -334,6 +344,12 @@ type backend struct {
 	// that counted a session's rows keeps the count only if nothing
 	// was written while it looked.
 	writes uint64
+
+	// eraseWait is how long the truncating checkpoint after a Delete
+	// waits for readers to leave the write-ahead log: busyWait, the
+	// bound every other statement has; a field so a test can give up
+	// at once instead of waiting it out.
+	eraseWait time.Duration
 }
 
 // lease is this instance's hold on one session: the lock row is ours,
@@ -832,14 +848,103 @@ func (b *backend) List(ctx context.Context, q thread.Query) (_ thread.Page, err 
 }
 
 // Delete removes the session's rows — header, entries, lock — in one
-// transaction. An unknown session fails with ErrNotFound; a session
-// held by a live writer other than this instance fails with ErrLocked:
-// deleting under a live writer would lose the writes it is about to
-// make. A dead holder's lock is taken over first, so a crashed
-// writer's session can always be deleted. A lease on this instance
-// (Acquire) does not refuse it: Delete through the holder's own
-// Storage removes the session and the lease with it.
-func (b *backend) Delete(ctx context.Context, id string) (err error) {
+// transaction, then erases their bytes from the files. An unknown
+// session fails with ErrNotFound; a session held by a live writer
+// other than this instance fails with ErrLocked: deleting under a live
+// writer would lose the writes it is about to make. A dead holder's
+// lock is taken over first, so a crashed writer's session can always
+// be deleted. A lease on this instance (Acquire) does not refuse it:
+// Delete through the holder's own Storage removes the session and the
+// lease with it.
+//
+// # Erasure
+//
+// A nil return means none of the session's bytes are left readable in
+// the database file or its write-ahead log. secure_delete (on every
+// connection) zeroes the deleted cells and the pages the delete frees;
+// after the commit Delete runs a truncating checkpoint — PRAGMA
+// wal_checkpoint(TRUNCATE) — which copies the zeroed pages over the
+// main file and empties the log, whose older frames still held every
+// version of those pages the session ever wrote.
+//
+// The checkpoint cannot finish while another connection reads from the
+// log — a watcher, an Inspector, another process's Load in flight. It
+// waits for them as any statement waits for a lock, up to the busy
+// timeout (30 s), or until ctx ends. A reader that outlasts that
+// leaves the session deleted — the commit stands, Load answers
+// ErrNotFound — but its bytes in the log, and Delete says so instead
+// of returning nil: the error wraps ErrErasureIncomplete. A retry of
+// Delete answers ErrNotFound; Checkpoint, once the reader is gone,
+// finishes the erasure. (The last connection to the database closing —
+// every process's Storage — checkpoints and removes the log too.)
+//
+// The cost is writes: secure_delete writes zeros over every byte any
+// delete frees — a torn row's, a lock row's, not only a session's —
+// and each Delete copies every page the log holds into the main file
+// and fsyncs it. What no database operation reaches — backups, copies,
+// the filesystem's and the device's own blocks — is listed in
+// docs/thread-operations.md (Retention).
+func (b *backend) Delete(ctx context.Context, id string) error {
+	if err := b.deleteRows(ctx, id); err != nil {
+		return err
+	}
+	return b.erase(ctx)
+}
+
+// ErrErasureIncomplete is what a Delete or a Checkpoint error wraps
+// when the truncating checkpoint could not run to the end — a reader
+// kept the write-ahead log in use past the busy timeout, or ctx ended —
+// so deleted rows' bytes may still be readable in the log. The rows
+// themselves are gone; Checkpoint finishes the erasure.
+var ErrErasureIncomplete = errors.New("sqlite: deleted data may still be in the write-ahead log")
+
+// Checkpoint finishes an erasure a Delete reported incomplete: it
+// copies every page the write-ahead log holds into the database file
+// and truncates the log to empty — the step Delete runs after its
+// commit. It waits for the log's readers up to the busy timeout (30 s)
+// or until ctx ends, and fails with an error wrapping
+// ErrErasureIncomplete when one is still there. On a ":memory:"
+// database it does nothing.
+func Checkpoint(ctx context.Context, st thread.Storage) error {
+	b, ok := st.(*backend)
+	if !ok {
+		return fmt.Errorf("sqlite: Checkpoint needs a Storage opened by this package, got %T", st)
+	}
+	return b.erase(ctx)
+}
+
+// erase runs the truncating checkpoint, waiting at most eraseWait for
+// the log's readers.
+func (b *backend) erase(ctx context.Context) error {
+	if b.keeper != nil {
+		return nil // ":memory:": no file, no log
+	}
+	incomplete := func(err error) error { return fmt.Errorf("%w: %w", ErrErasureIncomplete, err) }
+	conn, err := b.db.Conn(ctx)
+	if err != nil {
+		return incomplete(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if b.eraseWait != busyWait {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", b.eraseWait.Milliseconds())); err != nil {
+			return incomplete(err)
+		}
+		defer func() {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf("PRAGMA busy_timeout = %d", busyWait.Milliseconds()))
+		}()
+	}
+	var busy, frames, copied int
+	if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &copied); err != nil {
+		return incomplete(err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("%w: a reader kept the log in use (%d of %d frames copied)", ErrErasureIncomplete, copied, frames)
+	}
+	return nil
+}
+
+// deleteRows is Delete's transaction: the rows, not yet their bytes.
+func (b *backend) deleteRows(ctx context.Context, id string) (err error) {
 	defer func() { err = txCanceled(ctx, err) }()
 	if err := ctx.Err(); err != nil {
 		return err
