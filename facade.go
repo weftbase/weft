@@ -1322,13 +1322,16 @@ func OutputOf[Out any](res *RunResult) (Out, error) { return core.OutputOf[Out](
 // result) and returns ErrNoOutput when none finished. Never
 // model-visible: the decoder reads the stream and writes nothing back.
 //
-// Cost: every delta rescans the buffered arguments (the close is
-// linear in what has arrived), so a submission's decode cost grows
-// with the square of its size — the price of a fresh partial on every
-// delta. At tool-argument scale (a few KiB) it is noise; a UI feeding
-// very large submissions can trade freshness for linearity by calling
-// Feed less often — the decoder keeps the last good partial across
-// the deltas it skips.
+// Cost: a decode attempt rescans the buffered arguments (the close is
+// linear in what has arrived), so the decoder spaces its attempts:
+// every args delta is decoded while the submission is small (4 KiB),
+// and past that a delta is decoded once the arguments have grown by an
+// eighth since the last attempt. A submission's total decode work is
+// then linear in its size, never its square; a large submission's
+// partials arrive at that spacing (each still the longest closed
+// prefix at its delta, still only growing), and the whole-call
+// ToolStart that follows the deltas is always decoded, so the last
+// partial is the complete submission. Result is exact either way.
 type OutputDecoder[Out any] = core.OutputDecoder[Out]
 
 // NewOutputDecoder returns a decoder ready to feed a run's events.
