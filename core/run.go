@@ -458,7 +458,9 @@ func (o parkSourceOption) apply(a *Agent) {
 // parks like any other, and a Subagent tool's call parks before its
 // child runs. Like ParkOn, the set covers the run it was read for: a
 // Subagent's child run reads its own agent's sources, not this one's.
-// It is how a platform's debugger breakpoints can reach the runs the
+// Agent.ServeCall reads them too, once per served call: a call they
+// name (any call, when one panicked) is refused with
+// ErrApprovalRequired and does not run. It is how a platform's debugger breakpoints can reach the runs the
 // app starts itself (Weftbase's runtime supplies one).
 //
 // fn receives the run's context (its metadata placed) and must return

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 )
 
 // ServeCall executes one tool call the way the loop executes a call it
@@ -27,9 +28,13 @@ import (
 // whose handler started and gave no answer of its own — its Timeout
 // passed, ctx ended under it, it panicked — answers with the pinned
 // "OUTCOME_UNKNOWN: …" text and an error matching ErrOutcomeUnknown
-// (ADR 0032). A RequireApproval tool, or a middleware's park before the
-// handler ran, returns an error wrapping ErrApprovalRequired: there is
-// no run to park, so the call does not run. A middleware's park after a
+// (ADR 0032). A RequireApproval tool, a tool the agent's ParkSource
+// names (read once per served call, as a run reads it once at its
+// start; a source that panicked parks every call but the agent's
+// Output answer, failing closed as in a run — ADR 0030), or a
+// middleware's park before the handler ran, returns an error wrapping
+// ErrApprovalRequired: there is no run to park, so the call does not
+// run. A middleware's park after a
 // handler that is not ReplaySafe ran (and did not fail on its own) is
 // that unknown outcome instead, as in a run: the call did run. A
 // ToolSource that panics is the call's error, never a crash of the
@@ -53,7 +58,7 @@ func (a *Agent) ServeCall(ctx context.Context, call ToolCallPart, key string) (s
 	}
 	ctx = withCall(ctx, Call{CallID: call.ID, Name: call.Name, IdempotencyKey: key})
 	mark := new(handlerMark)
-	fn := a.chain(def, strict, parkRuleFrom(ctx), mark, nil)
+	fn := a.chain(def, strict, a.servedParkRule(ctx), mark, nil)
 	var out string
 	var fail toolFailure
 	if timeout <= 0 {
@@ -79,6 +84,43 @@ func (a *Agent) ServeCall(ctx context.Context, call ToolCallPart, key string) (s
 	}
 	text, _ = capResultN(text, resultCap)
 	return "", &servedCallError{text: text, err: fail.err, unknown: unknown}
+}
+
+// servedParkRule is the park rule a served call runs under: the one on
+// ctx (a ServeCall made inside a run's tool call), merged with the
+// agent's ParkSources, read once for this call as a run reads them once
+// at its start (ADR 0030). A source that panicked leaves its set
+// unknown, so every call parks but the agent's own Output answer —
+// fail closed, exactly as in a run. ctx's rule is never mutated.
+func (a *Agent) servedParkRule(ctx context.Context) *parkRule {
+	base := parkRuleFrom(ctx)
+	if len(a.parkSources) == 0 {
+		return base
+	}
+	names, failed := a.readParkSources(ctx, "")
+	if len(names) == 0 && !failed {
+		return base
+	}
+	rule := &parkRule{sourceFailed: failed}
+	if base != nil {
+		rule.all, rule.except = base.all, base.except
+		rule.sourceFailed = rule.sourceFailed || base.sourceFailed
+		rule.on = maps.Clone(base.on)
+		rule.sourced = maps.Clone(base.sourced)
+	}
+	for _, name := range names {
+		if rule.on[name] {
+			continue
+		}
+		if rule.on == nil {
+			rule.on = map[string]bool{}
+		}
+		if rule.sourced == nil {
+			rule.sourced = map[string]bool{}
+		}
+		rule.on[name], rule.sourced[name] = true, true
+	}
+	return rule
 }
 
 // servedTools is dispatchTools contained: a ToolSource that panics

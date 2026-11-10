@@ -174,3 +174,21 @@ parks every call (`weft.tool.pending.source` `park_source`) except the
 agent's own `Output` submission, and the loop logs one Warn line
 "park source panicked: every call of the run parks" on the agent's
 `Logger`, naming the run and the panic value.
+
+## Amendment (2026-11-10 — a served call reads the source too)
+
+`Agent.ServeCall` — the one call a server answers outside any run
+(`weft/mcp`'s `Serve`) — took its park rule from the context alone and
+never read the agent's sources: a tool a breakpoint named ran over
+MCP, and a panicking source, which fails closed in a run, failed open
+there. A served call is the server's run of one call, so it now reads
+the agent's `ParkSource`s once per call, with the call's context, and
+merges their names into the rule exactly as a run does at its start. A
+call the set names, or any call but the agent's `Output` answer when a
+source panicked (the same Warn line, with no run id), is refused with
+the error `RequireApproval` already gets there — wrapping
+`ErrApprovalRequired`, reading `weft: tool call requires approval: tool
+"x"` — and its handler never runs: there is no run to park it in, and
+MCP has no approval channel. Nothing model-visible inside a run
+changes. Pinned by `core/servecall_parksource_test.go` and
+`mcp/serve_parksource_test.go`.
