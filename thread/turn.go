@@ -1236,7 +1236,10 @@ func (s *Session) runTurn(persist, ctx context.Context, item workItem, callerOpt
 	// own line of it.
 	var firstOverflow error
 	var sp *stepPersist
-	s.locked(func() { sp = s.newStepPersistLocked(t.resume) })
+	s.locked(func() {
+		sp = s.newStepPersistLocked(t.resume)
+		s.liveSP = sp
+	})
 	for attempt := 0; ; attempt++ {
 		// The input is the session's context — the walk already includes
 		// the prompt entry appended for this turn, or the boundary's

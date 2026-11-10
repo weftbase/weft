@@ -997,6 +997,12 @@ same. A call that never started and inherits nothing — an ordinary
 pending request — keeps a key of its own in the fork, as before (ADR
 0031: a forked call is the fork's).
 
+A fork taken *during* a turn copies a running call as cut off; `Fork`
+files the origin's still-running handlers of copied dispatched calls in
+the registry, so the fork's `RecoverTurn` parks such a call for a person
+(the still-running reason) instead of retrying it or asking `Reconcile`
+beside the live handler (`TestForkDuringARunningCallParksItForAPerson`).
+
 **The still-running gate.** While an abandoned handler of a tool that is
 not `ReplaySafe` still runs in this process, for a call this session
 holds a recovery request of (its own, a reopen's, a fork's copy, or a

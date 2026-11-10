@@ -390,6 +390,11 @@ type Session struct {
 	// runner takes an item or exits.
 	running     bool
 	inFlight    *Turn
+	// liveSP is the per-step state of the latest run attempt: its
+	// running handlers are the ones a Fork files as still running
+	// (forkFileRunningLocked). A stale one is harmless — a handler it
+	// counts as running is running. Guarded by mu.
+	liveSP *stepPersist
 	between     bool
 	runnerMoved chan struct{}
 	// houseCancel cancels the runner's between-turn compaction while one

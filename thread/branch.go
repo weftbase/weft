@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/weftbase/weft/core"
@@ -278,7 +279,11 @@ const forkedStop = "forked: the delegation belongs to the session this one was f
 // forking at the running turn's latest entry copies a transcript the
 // run is still extending, and calls the run has issued but not yet
 // answered read in the fork as an open boundary (Pending lists them;
-// Resume denies the undecided ones). Fork also works on a closed
+// Resume denies the undecided ones). A copied call whose handler is
+// still running here is filed as still running (the process's
+// registry, AbandonedHandler): the fork's RecoverTurn parks it for a
+// person — no keyed retry, no Reconcile beside the live handler — and
+// an approval there waits for the handler to return. Fork also works on a closed
 // session — it reads this session and writes another.
 //
 // The fork is durable when Fork returns. If its entries cannot be
@@ -311,6 +316,7 @@ func (s *Session) Fork(ctx context.Context, entryID string, opts ...SessionOptio
 	var keyRecs []ApprovalAuditEntry
 	if err == nil {
 		keyRecs = s.forkKeyRecordsLocked(entryID, path)
+		s.forkFileRunningLocked(path)
 	}
 	st := s.storageLocked()
 	forkedRun := s.lastRunOnPathLocked(path)
@@ -588,4 +594,40 @@ func appendForkKeys(cfg *sessionConfig, entries []Entry, recs []ApprovalAuditEnt
 		last = id
 	}
 	return entries, nil
+}
+
+// forkFileRunningLocked files, in the process's registry of abandoned
+// handlers, every handler of this session's live run attempt that is
+// still running for a dispatched call the fork copies (review finding
+// E1-B). The fork reads such a call as cut off — the origin's turn has
+// not ended — and without this its RecoverTurn would retry it, or ask
+// its Reconcile, beside the live handler; filed, the fork parks it for
+// a person as still running and refuses an approval until the handler
+// returns (core.AfterDispatch releases it). The origin is untouched: it
+// holds no recovery request for the call. Callers hold s.mu.
+func (s *Session) forkFileRunningLocked(path []Entry) {
+	sp := s.liveSP
+	if sp == nil {
+		return
+	}
+	copied := make(map[string]bool, len(path))
+	run := map[string]string{} // call id → its dispatch record's run, on the path
+	for _, e := range path {
+		copied[idOf(e)] = true
+		if a, ok := e.(ApprovalAuditEntry); ok && a.Step == StepDispatch {
+			run[a.CallID] = a.RunID
+		}
+	}
+	for key, h := range sp.running {
+		if h == nil || h.n == 0 {
+			continue
+		}
+		entry, callID, _ := strings.Cut(key, "\x00")
+		if !copied[entry] || run[callID] == "" {
+			continue
+		}
+		k := abandonKey{run: run[callID], call: callID}
+		h.abandoned = append(h.abandoned, k)
+		abandoned.add(k, h.done)
+	}
 }
