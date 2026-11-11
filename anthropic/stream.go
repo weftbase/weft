@@ -119,7 +119,7 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 				case anthropic.SignatureDelta:
 					// The signature completes a thinking block; the core
 					// keeps the last non-empty signature of the step.
-					if !yield(core.ModelReasoningDelta{Signature: d.Signature}, nil) {
+					if !yield(core.ModelReasoningDelta{Signature: d.Signature, Provider: provider}, nil) {
 						return
 					}
 				case anthropic.InputJSONDelta:

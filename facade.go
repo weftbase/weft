@@ -969,7 +969,8 @@ type TextPart = core.TextPart
 // type before invoking the handler. Signature is the provider's opaque
 // token attached to the call itself (Gemini's thought signatures ride
 // functionCall parts and must return on the same part); empty for
-// providers without one.
+// providers without one. Provider names who issued Signature, under
+// the rule on ReasoningPart: the token returns to its issuer only.
 type ToolCallPart = core.ToolCallPart
 
 // ToolResultPart is the outcome of one tool call, returned to the model as
@@ -982,11 +983,24 @@ type ToolResultPart = core.ToolResultPart
 // that expose it (Anthropic thinking blocks, Gemini thought parts). Weft
 // preserves it in the transcript but does not act on it. Signature
 // is the provider's opaque token for the block (Anthropic rejects
-// thinking sent back without its signature); adapters echo it unchanged.
-// A step yields one ReasoningPart per provider block — a delta carrying
-// a signature closes the block (see ModelReasoningDelta) — placed before
-// the TextPart of the same assistant message, in the order the model
-// produced them.
+// thinking sent back without its signature); the adapter that issued it
+// echoes it unchanged. A step yields one ReasoningPart per provider
+// block — a delta carrying a signature closes the block (see
+// ModelReasoningDelta) — placed before the TextPart of the same
+// assistant message, in the order the model produced them.
+//
+// Provider names who issued Signature: the ModelInfo.Provider id of the
+// adapter that produced it ("anthropic", "google"). A signature means
+// something to its issuer only, so an adapter sends one back only when
+// the tag is its own, and treats a part tagged with another provider as
+// unsigned — after a mid-session model switch the other provider's
+// token is dropped, never sent. Provider is empty on a part without a
+// signature, and on a transcript recorded before the tag existed
+// (weft 0.24 and earlier): an adapter sends such an untagged signature
+// as it always did, so a session that stayed on one provider keeps its
+// reasoning. An untagged signature from another provider cannot be
+// told apart and is still sent; only a tagged one is safe across a
+// switch.
 type ReasoningPart = core.ReasoningPart
 
 // FilePart is a file the user supplies to the model: an image, a PDF,
@@ -1217,6 +1231,11 @@ type ModelTextDelta = core.ModelTextDelta
 // the round trip. Reasoning without any signature accumulates into a
 // single block — nothing downstream can send unsigned blocks back
 // anyway, so their boundaries are not load-bearing.
+//
+// Provider names who issued Signature: an adapter sets it, to its own
+// ModelInfo.Provider id, on every delta that carries a signature (see
+// ReasoningPart for the rule it serves). The loop records it only
+// beside a signature; on a delta without one it is ignored.
 type ModelReasoningDelta = core.ModelReasoningDelta
 
 // ModelToolCall is one complete tool invocation request. ID is the
@@ -1225,7 +1244,9 @@ type ModelReasoningDelta = core.ModelReasoningDelta
 // decisions key on it). Signature is the provider's opaque token
 // attached to the call itself (Gemini attaches thought signatures to
 // functionCall parts and requires them returned on the same part);
-// adapters that do not have one leave it empty.
+// adapters that do not have one leave it empty. Provider names who
+// issued Signature, as on ModelReasoningDelta: set with a signature,
+// ignored without one.
 type ModelToolCall = core.ModelToolCall
 
 // ModelToolCallDelta is an increment of a streamed tool call's

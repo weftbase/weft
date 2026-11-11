@@ -267,17 +267,34 @@ func userBlocks(msg core.Message) ([]anthropic.ContentBlockParamUnion, error) {
 	return blocks, nil
 }
 
+// ownSignature returns sig when this adapter may send it back: when
+// issuer is this adapter's provider id, or empty. An opaque signature
+// means something to its issuer only (core.ReasoningPart), so one
+// tagged with another provider reads as no signature at all. The empty
+// tag is the legacy rule: a transcript recorded before the tag existed
+// has untagged signatures, and they are sent as they always were, so a
+// session that stayed on Anthropic keeps its thinking blocks.
+func ownSignature(sig, issuer string) string {
+	if issuer != "" && issuer != provider {
+		return ""
+	}
+	return sig
+}
+
 // assistantBlocks converts an assistant message in Anthropic's required
 // block order: thinking first, then text, then tool_use. A ReasoningPart
-// without a signature — a transcript that came from another provider —
-// is dropped rather than failing the call; Anthropic rejects unsigned
-// thinking blocks.
+// goes back as a thinking block only with a signature Anthropic issued
+// (ownSignature): one without a signature, or tagged with another
+// provider — a transcript that came from another model — is dropped
+// rather than failing the call; Anthropic rejects thinking blocks that
+// are unsigned or carry a signature it did not issue. A ToolCallPart's
+// signature is never sent: tool_use has no field for one.
 func assistantBlocks(msg core.Message) []anthropic.ContentBlockParamUnion {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
 	for _, part := range msg.Content {
 		if r, ok := part.(core.ReasoningPart); ok {
-			if r.Signature != "" {
-				blocks = append(blocks, anthropic.NewThinkingBlock(r.Signature, r.Text))
+			if sig := ownSignature(r.Signature, r.Provider); sig != "" {
+				blocks = append(blocks, anthropic.NewThinkingBlock(sig, r.Text))
 			}
 			continue
 		}

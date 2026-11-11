@@ -14,9 +14,12 @@
 //     tool result travels as "(empty tool output)", a user message
 //     with no sendable parts as "(empty message)", and an assistant
 //     message with nothing sendable is skipped.
-//   - Reasoning round-trips as thinking blocks with their signature;
-//     an unsigned ReasoningPart (a transcript from another provider)
-//     is dropped rather than failing the call.
+//   - Reasoning round-trips as thinking blocks with their signature,
+//     which the adapter tags with its provider id ("anthropic"); a
+//     ReasoningPart that is unsigned, or whose signature is tagged
+//     with another provider (a transcript from another model), is
+//     dropped rather than failing the call. An untagged signature (a
+//     transcript from before the tag) is sent.
 //   - SequentialTools sets tool_choice.auto with
 //     disable_parallel_tool_use.
 //   - ModelRequest.Thinking overrides the Thinking(true) construction

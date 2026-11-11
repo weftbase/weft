@@ -264,10 +264,13 @@ func userParts(msg core.Message) ([]*genai.Part, error) {
 // return there), on a thought part otherwise. Each call carries its own
 // recorded signature; a transcript from before per-call signatures
 // (which kept the step's single signature on the ReasoningPart) falls
-// back to returning that one on the first call. Unsigned reasoning — a
-// transcript from another provider — is dropped rather than failing the
-// call. Signatures are stored base64 (see Stream); decoding failures
-// send the value as-is.
+// back to returning that one on the first call. Only a signature Gemini
+// issued goes back (ownSignature): reasoning that is unsigned, or whose
+// signature is tagged with another provider — a transcript from another
+// model — is dropped rather than failing the call, and a call tagged
+// with another provider is sent without a signature. Signatures are
+// stored base64 (see Stream); an untagged value that does not decode is
+// sent as-is.
 func modelParts(msg core.Message) []*genai.Part {
 	var (
 		parts     []*genai.Part
@@ -279,12 +282,12 @@ func modelParts(msg core.Message) []*genai.Part {
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case core.ReasoningPart:
-			if p.Signature != "" && !legacySet {
-				legacy, legacySet = decodeSignature(p.Signature), true
+			if sig := ownSignature(p.Signature, p.Provider); sig != "" && !legacySet {
+				legacy, legacySet = decodeSignature(sig), true
 			}
 		case core.ToolCallPart:
 			hasCalls = true
-			if p.Signature != "" {
+			if ownSignature(p.Signature, p.Provider) != "" {
 				callSigs = true
 			}
 		}
@@ -297,13 +300,14 @@ func modelParts(msg core.Message) []*genai.Part {
 			}
 			parts = append(parts, &genai.Part{Text: p.Text})
 		case core.ReasoningPart:
-			if p.Signature == "" || hasCalls {
+			sig := ownSignature(p.Signature, p.Provider)
+			if sig == "" || hasCalls {
 				continue
 			}
 			parts = append(parts, &genai.Part{
 				Text:             p.Text,
 				Thought:          true,
-				ThoughtSignature: decodeSignature(p.Signature),
+				ThoughtSignature: decodeSignature(sig),
 			})
 		case core.ToolCallPart:
 			args := map[string]any{}
@@ -313,9 +317,10 @@ func modelParts(msg core.Message) []*genai.Part {
 			fc := &genai.Part{
 				FunctionCall: &genai.FunctionCall{ID: p.ID, Name: p.Name, Args: args},
 			}
+			sig := ownSignature(p.Signature, p.Provider)
 			switch {
-			case p.Signature != "":
-				fc.ThoughtSignature = decodeSignature(p.Signature)
+			case sig != "":
+				fc.ThoughtSignature = decodeSignature(sig)
 			case legacySet && !callSigs:
 				fc.ThoughtSignature = legacy
 				legacySet = false // the first call returns the step's signature
@@ -326,13 +331,30 @@ func modelParts(msg core.Message) []*genai.Part {
 	return parts
 }
 
+// ownSignature returns sig when this adapter may send it back: when
+// issuer is this adapter's provider id, or empty. An opaque signature
+// means something to its issuer only (core.ReasoningPart,
+// core.ToolCallPart), so one tagged with another provider reads as no
+// signature at all. The empty tag is the legacy rule: a transcript
+// recorded before the tag existed has untagged signatures, and they
+// are sent as they always were, so a session that stayed on Gemini
+// keeps its thought signatures.
+func ownSignature(sig, issuer string) string {
+	if issuer != "" && issuer != provider {
+		return ""
+	}
+	return sig
+}
+
 // encodeSignature renders the API's opaque signature bytes as the
 // string ReasoningPart.Signature carries: base64, so a recorded
 // transcript survives encoding/json (raw bytes need not be UTF-8).
 func encodeSignature(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 // decodeSignature inverts encodeSignature; a value that is not base64
-// (hand-written, or from another adapter) is sent as its raw bytes.
+// (hand-written, or an untagged one from before signatures named their
+// issuer) is sent as its raw bytes. Callers pass it only what
+// ownSignature let through.
 func decodeSignature(s string) []byte {
 	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
 		return b

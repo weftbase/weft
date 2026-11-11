@@ -30,6 +30,7 @@ import (
 type rblock struct {
 	text strings.Builder
 	sig  string
+	prov string // who issued sig (ReasoningPart.Provider)
 	open bool
 }
 
@@ -694,6 +695,7 @@ func (a *Agent) runLoop(ctx context.Context, cfg runConfig, sink func(Event)) (o
 					cur.text.WriteString(e.Text)
 					if e.Signature != "" {
 						cur.sig = e.Signature
+						cur.prov = e.Provider
 						cur.open = false
 					}
 				case ModelToolCall:
@@ -710,7 +712,11 @@ func (a *Agent) runLoop(ctx context.Context, cfg runConfig, sink func(Event)) (o
 					if e.Name == "" {
 						return fmt.Errorf("%w: tool call with an empty name", ErrModelContract)
 					}
-					calls = append(calls, ToolCallPart(e))
+					call := ToolCallPart(e)
+					if call.Signature == "" {
+						call.Provider = "" // the tag names a signature's issuer
+					}
+					calls = append(calls, call)
 				case ModelToolCallDelta:
 					// Progress only — the assembled call still arrives
 					// as a ModelToolCall before ModelFinish.
@@ -754,7 +760,7 @@ func (a *Agent) runLoop(ctx context.Context, cfg runConfig, sink func(Event)) (o
 		for i := range rblocks {
 			b := &rblocks[i]
 			if b.text.Len() > 0 || b.sig != "" {
-				msg.Content = append(msg.Content, ReasoningPart{Text: b.text.String(), Signature: b.sig})
+				msg.Content = append(msg.Content, ReasoningPart{Text: b.text.String(), Signature: b.sig, Provider: b.prov})
 			}
 		}
 		if text := sb.String(); text != "" {

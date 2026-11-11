@@ -141,6 +141,7 @@ type fixtureEvent struct {
 	Type      string          `json:"type"` // text | reasoning | tool_call | tool_call_delta | finish
 	Text      string          `json:"text,omitempty"`
 	Signature string          `json:"signature,omitempty"`
+	Provider  string          `json:"provider,omitempty"` // reasoning, tool_call: who issued Signature
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Args      json.RawMessage `json:"args,omitempty"`      // tool_call: the JSON value
@@ -156,9 +157,9 @@ func toFixtureEvent(ev core.ModelEvent) (fixtureEvent, error) {
 	case core.ModelTextDelta:
 		return fixtureEvent{Type: "text", Text: e.Text}, nil
 	case core.ModelReasoningDelta:
-		return fixtureEvent{Type: "reasoning", Text: e.Text, Signature: e.Signature}, nil
+		return fixtureEvent{Type: "reasoning", Text: e.Text, Signature: e.Signature, Provider: e.Provider}, nil
 	case core.ModelToolCall:
-		return fixtureEvent{Type: "tool_call", ID: e.ID, Name: e.Name, Args: e.Args, Signature: e.Signature}, nil
+		return fixtureEvent{Type: "tool_call", ID: e.ID, Name: e.Name, Args: e.Args, Signature: e.Signature, Provider: e.Provider}, nil
 	case core.ModelToolCallDelta:
 		return fixtureEvent{Type: "tool_call_delta", Index: e.Index, Name: e.Name, ArgsText: e.Args}, nil
 	case core.ModelFinish:
@@ -174,9 +175,9 @@ func fromFixtureEvent(fe fixtureEvent) (core.ModelEvent, error) {
 	case "text":
 		return core.ModelTextDelta{Text: fe.Text}, nil
 	case "reasoning":
-		return core.ModelReasoningDelta{Text: fe.Text, Signature: fe.Signature}, nil
+		return core.ModelReasoningDelta{Text: fe.Text, Signature: fe.Signature, Provider: fe.Provider}, nil
 	case "tool_call":
-		return core.ModelToolCall{ID: fe.ID, Name: fe.Name, Args: fe.Args, Signature: fe.Signature}, nil
+		return core.ModelToolCall{ID: fe.ID, Name: fe.Name, Args: fe.Args, Signature: fe.Signature, Provider: fe.Provider}, nil
 	case "tool_call_delta":
 		return core.ModelToolCallDelta{Index: fe.Index, Name: fe.Name, Args: fe.ArgsText}, nil
 	case "finish":

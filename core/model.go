@@ -250,9 +250,15 @@ type ModelTextDelta struct {
 // the round trip. Reasoning without any signature accumulates into a
 // single block — nothing downstream can send unsigned blocks back
 // anyway, so their boundaries are not load-bearing.
+//
+// Provider names who issued Signature: an adapter sets it, to its own
+// ModelInfo.Provider id, on every delta that carries a signature (see
+// ReasoningPart for the rule it serves). The loop records it only
+// beside a signature; on a delta without one it is ignored.
 type ModelReasoningDelta struct {
 	Text      string
 	Signature string
+	Provider  string
 }
 
 // ModelToolCall is one complete tool invocation request. ID is the
@@ -261,12 +267,15 @@ type ModelReasoningDelta struct {
 // decisions key on it). Signature is the provider's opaque token
 // attached to the call itself (Gemini attaches thought signatures to
 // functionCall parts and requires them returned on the same part);
-// adapters that do not have one leave it empty.
+// adapters that do not have one leave it empty. Provider names who
+// issued Signature, as on ModelReasoningDelta: set with a signature,
+// ignored without one.
 type ModelToolCall struct {
 	ID        string
 	Name      string
 	Args      json.RawMessage
 	Signature string
+	Provider  string
 }
 
 // ModelToolCallDelta is an increment of a streamed tool call's

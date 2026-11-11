@@ -1,12 +1,14 @@
 package wefttest_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -587,5 +589,40 @@ func TestReplayKeyToolChoice(t *testing.T) {
 	}
 	if evs, err := streamAll(t, p, base); err != nil || textOf(evs) != "recorded" {
 		t.Errorf("unmodified request = (%q, %v), want the recorded reply", textOf(evs), err)
+	}
+}
+
+// The provider tag of a signature survives a record/replay round trip:
+// a replayed stream names the issuer the recorded one did.
+func TestReplayKeepsSignatureProvider(t *testing.T) {
+	dir := t.TempDir()
+	req := core.ModelRequest{Messages: []core.Message{core.User("hi")}}
+	given := []core.ModelEvent{
+		core.ModelReasoningDelta{Text: "plan"},
+		core.ModelReasoningDelta{Signature: "c2lnLXI=", Provider: "google"},
+		core.ModelToolCall{ID: "c1", Name: "echo", Args: json.RawMessage(`{"msg":"hi"}`), Signature: "c2lnLWM=", Provider: "google"},
+		core.ModelFinish{Reason: core.StopToolCalls},
+	}
+	if _, err := streamAll(t, wefttest.Record(t, dir, wefttest.Script(wefttest.Raw(given...))), req); err != nil {
+		t.Fatal(err)
+	}
+	got, err := streamAll(t, wefttest.Replay(t, dir), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture file re-indents a call's arguments; compare them as
+	// JSON values and everything else exactly.
+	if len(got) == len(given) {
+		if c, ok := got[2].(core.ModelToolCall); ok {
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, c.Args); err != nil {
+				t.Fatal(err)
+			}
+			c.Args = buf.Bytes()
+			got[2] = c
+		}
+	}
+	if !reflect.DeepEqual(got, given) {
+		t.Errorf("replayed events:\n got  %+v\n want %+v", got, given)
 	}
 }

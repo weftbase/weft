@@ -115,13 +115,14 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 							Name:      part.FunctionCall.Name,
 							Args:      args,
 							Signature: encodeSignature(part.ThoughtSignature),
+							Provider:  provider,
 						})
 					case part.Thought:
 						if part.Text != "" && !yield(core.ModelReasoningDelta{Text: part.Text}, nil) {
 							return
 						}
 						if len(part.ThoughtSignature) > 0 &&
-							!yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature)}, nil) {
+							!yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature), Provider: provider}, nil) {
 							return
 						}
 					case part.Text != "":
@@ -129,7 +130,7 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 							return
 						}
 						if len(part.ThoughtSignature) > 0 &&
-							!yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature)}, nil) {
+							!yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature), Provider: provider}, nil) {
 							return
 						}
 					case len(part.ThoughtSignature) > 0:
@@ -137,7 +138,7 @@ func (m *model) Stream(ctx context.Context, req core.ModelRequest) iter.Seq2[cor
 						// text: the text is nothing but the signature must
 						// still stream back — Gemini validates its return
 						// on the next request, so losing it fails the call.
-						if !yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature)}, nil) {
+						if !yield(core.ModelReasoningDelta{Signature: encodeSignature(part.ThoughtSignature), Provider: provider}, nil) {
 							return
 						}
 					}

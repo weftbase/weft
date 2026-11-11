@@ -102,6 +102,33 @@ Pinned by `TestReasoningMultipleBlocksKeepBoundaries`,
 `TestUnsignedReasoningStaysOneBlock`, and
 `TestToolCallSignatureRoundTrip`.
 
+## Amendment (2026-11-11 — a signature names its issuer)
+
+A signature is opaque and means something to the provider that issued
+it only, but nothing on the part said who that was: after a
+mid-session switch from Gemini to Anthropic the anthropic adapter sent
+a Gemini thought signature as a thinking signature, and the google
+adapter sent an Anthropic one to Gemini as raw bytes.
+
+- `ReasoningPart` and `ToolCallPart` gain `Provider`
+  (`json:"provider,omitempty"`, additive; empty encodes exactly as
+  before), and `ModelReasoningDelta` and `ModelToolCall` the same
+  field. An adapter sets it, to its `ModelInfo.Provider` id, on every
+  event that carries a signature; the loop records it only beside a
+  signature.
+- An adapter sends a signature back only when the tag is its own. A
+  part tagged with another provider is treated as unsigned (dropped
+  reasoning, a call sent without a signature).
+- **Legacy rule**: an empty tag — a transcript recorded before this
+  amendment — is sent as before, so a session that stayed on one
+  provider keeps its reasoning. An untagged signature from another
+  provider cannot be told apart and is still sent. No format bump: an
+  older reader ignores the field and applies the legacy rule.
+
+Pinned by `TestSignatureProviderTagRoundTrip` (core),
+`TestConvertSignatureProviderTag` and
+`TestStreamSignatureCarriesProvider` (anthropic, google).
+
 ## Amendment (2026-09-10 — FilePart and ErrUnsupported, TODO §2.3)
 
 `FilePart{MediaType, Data, URL}` joins the closed part set

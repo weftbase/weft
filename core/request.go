@@ -1165,7 +1165,7 @@ func structEqual(a, b Message) bool {
 			y, ok := b.Content[i].(ToolCallPart)
 			// nil and empty arguments encode differently ("null" versus
 			// an encoding error): equal only when both or neither are nil.
-			if !ok || x.ID != y.ID || x.Name != y.Name || x.Signature != y.Signature ||
+			if !ok || x.ID != y.ID || x.Name != y.Name || x.Signature != y.Signature || x.Provider != y.Provider ||
 				(x.Args == nil) != (y.Args == nil) || !bytes.Equal(x.Args, y.Args) {
 				return false
 			}

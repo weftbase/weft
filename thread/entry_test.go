@@ -170,6 +170,24 @@ func TestEntryRoundTrip(t *testing.T) {
 			},
 		},
 	})
+	// The provider tag of a signature (who issued it) survives the
+	// entry wire on both parts that carry one, and on a turn entry's
+	// pending calls.
+	all = append(all, thread.MessageEntry{
+		ID: entryID0, Created: at(1),
+		Message: core.Message{
+			Role: core.RoleAssistant,
+			Content: []core.Part{
+				core.ReasoningPart{Text: "checking", Signature: "c2lnLTE=", Provider: "google"},
+				core.ToolCallPart{ID: "call_3", Name: "lookup", Args: json.RawMessage(`{"order_id":"7"}`), Signature: "c2lnLTI=", Provider: "google"},
+			},
+		},
+	}, thread.TurnEntry{
+		ID: entryID0, Created: at(1), RunID: "run_tag",
+		Pending: []core.ToolCallPart{
+			{ID: "call_3", Name: "lookup", Args: json.RawMessage(`{"order_id":"7"}`), Signature: "c2lnLTI=", Provider: "google"},
+		},
+	})
 	// FilePart's other half — inline Data, base64 on the wire —
 	// round-trips byte-for-byte too.
 	all = append(all, thread.MessageEntry{
