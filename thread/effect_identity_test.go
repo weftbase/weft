@@ -246,6 +246,13 @@ func TestRepeatParksWhileTheFirstHandlerRuns(t *testing.T) {
 						if _, err := rt.Wait(); err != nil {
 							t.Fatal(err)
 						}
+						// s2's Timeout spans the dispatch gate: on slow storage
+						// it can pass while the gate records the park, and s2 is
+						// answered "timed out" — nothing parked. A timing
+						// artifact (outlive): again, with twice the Timeout.
+						if gateTimedOut(s) {
+							return false
+						}
 						if keys, _ := ship.snapshot(); len(keys) != 1 {
 							t.Fatalf("ship started %d handlers while the first ran, want 1", len(keys))
 						}
